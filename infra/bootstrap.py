@@ -39,6 +39,19 @@ def boot(config_path: str | Path | None = None,
     cfg = load_config(config_path)
     setup_logging(cfg)
     db = Database(cfg.storage.db_path)
+    # Persistent memory — surface what carried over from prior runs so the
+    # continuity is visible (the SQLite knowledge base survives restarts).
+    try:
+        nf = db.fetchone("SELECT COUNT(*) AS n FROM findings")
+        nt = db.fetchone(
+            "SELECT COUNT(*) AS n FROM regression_tests WHERE deprecated = 0")
+        nz = db.fetchone("SELECT COUNT(*) AS n FROM surface_zones")
+        print(f"[memory] Loaded {nf['n'] if nf else 0} findings, "
+              f"{nt['n'] if nt else 0} regression tests, "
+              f"{nz['n'] if nz else 0} zones from persistent memory "
+              f"({cfg.storage.db_path})", flush=True)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("could not read persistent memory: %s", e)
     dispatcher = AlertDispatcher(cfg.notifications)
     mcp = MCPServer(db, alert_sink=dispatcher.send)
     if use_mock_provisioner:
