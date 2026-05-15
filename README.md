@@ -6,7 +6,7 @@
   <img alt="MonkeyClaw" src="assets/monkeyclaw-light.png" width="320">
 </picture>
 
-# MonkeyClaw 🐒🦞
+# MonkeyClaw
 
 **Autonomous red-team / blue-team security agent for NVIDIA NemoClaw.**
 
