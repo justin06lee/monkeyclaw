@@ -5,8 +5,8 @@ embedding:
   dim: 384
 
 ideation:
-  model: claude-sonnet-4-6
-  temperature: 0.75
+  model: nvidia/nemotron-3-super-120b-a12b
+  temperature: 0.7
   max_tokens_per_mode: 2000
   dedup_threshold: 0.92
   near_dup_threshold: 0.80
@@ -20,7 +20,7 @@ lanes:
 
 judgment:
   tier2_zones: [PROMPT-INJ, SOCIAL-ENG, MEM-STATE, MEM-SHARED]
-  tier2_model: claude-sonnet-4-6
+  tier2_model: nvidia/nemotron-3-super-120b-a12b
   tier2_confidence_threshold: 0.5
 
 repro:
@@ -42,10 +42,15 @@ orchestrator:
   persist_queue_state: true
 
 notifications:
+  # Supply the bot token + chat id at runtime (keeps secrets out of git):
+  #   export MC_NOTIFICATIONS__TELEGRAM_BOT_TOKEN=<token from @BotFather>
+  #   export MC_NOTIFICATIONS__TELEGRAM_CHAT_ID=<your chat id>
   telegram_bot_token: null
   telegram_chat_id: null
   webhook_urls: []
-  alert_severity_floor: high
+  # `info` so judges see a live feed: every confirmed vuln AND every
+  # cycle-completion summary is pushed to Telegram.
+  alert_severity_floor: info
 
 logging:
   level: INFO

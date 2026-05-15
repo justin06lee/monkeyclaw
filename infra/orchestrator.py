@@ -175,6 +175,16 @@ class Orchestrator:
         self.blue.process_blue_queue()
         # End-of-cycle bookkeeping
         zones = sorted({r.zone_targeted for r in results})
+        # Person 2's judge writes findings to the DB during the judge loop
+        # above — read back the real verdict counts for this cycle.
+        try:
+            cyc = self.rt.db.fetchall(
+                "SELECT verdict FROM findings WHERE cycle_id = ?", (cycle_id,)
+            )
+            confirmed = sum(1 for f in cyc if f["verdict"] == "confirmed")
+            suspicious = sum(1 for f in cyc if f["verdict"] == "suspicious")
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("could not read cycle findings: %s", e)
         self.rt.mcp.log_cycle_summary(CycleSummaryInput(
             cycle_id=cycle_id,
             summary=(f"Cycle {cycle_id}: {len(ideas)} ideas, "
@@ -189,6 +199,18 @@ class Orchestrator:
             total_tokens_used=sum(r.tokens_used_attacker + r.tokens_used_victim for r in results),
             wall_time_seconds=time.time() - start,
         ))
+        # Telegram live-feed: one summary message per completed cycle. Routing
+        # already alerts on each confirmed vuln individually; this is the
+        # per-cycle digest. Delivered when a Telegram token is configured.
+        try:
+            self.rt.mcp.send_alert(
+                f"Cycle {cycle_id} complete — {len(ideas)} ideas, "
+                f"{len(results)} lanes, {confirmed} confirmed, "
+                f"{suspicious} suspicious. Zones: {', '.join(zones) or '-'}",
+                severity="high" if confirmed else "info",
+            )
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("cycle-summary alert failed: %s", e)
         # Coverage decay for unvisited zones
         all_zones = {z.zone_id for z in self.rt.mcp.get_coverage_gaps(top_n=999)}
         for zid in all_zones - set(zones):
