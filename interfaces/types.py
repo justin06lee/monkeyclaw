@@ -1,0 +1,465 @@
+"""Shared data objects — Contract 2.
+
+All three persons import from here. Person 1 owns this file.
+Any field addition is non-breaking; any rename or removal is breaking and must
+be coordinated via the daily sync (see .agents/timeline.md).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Literal
+
+# ---------------------------------------------------------------------------
+# String literal types — narrow but kept as `str` in fields for SQL friendliness.
+# Validators in `interfaces.validators` will check these at boundaries.
+# ---------------------------------------------------------------------------
+
+Verdict = Literal["confirmed", "suspicious", "clean", "timeout", "error"]
+Severity = Literal["critical", "high", "medium", "low"]
+SourceMode = Literal["creative", "code_grounded", "history_informed"]
+TierCaught = Literal["programmatic", "semantic", "none"]
+FailureClass = Literal[
+    "sandbox_escape",
+    "pii_leak",
+    "prompt_injection",
+    "permission_escalation",
+    "behavioral_manipulation",
+    "memory_corruption",
+    "skill_trust_bypass",
+    "information_disclosure",
+    "policy_modification",
+    "none",
+]
+PatchStatus = Literal["open", "in_progress", "patched", "verified"]
+BlueTeamStatus = Literal["queued", "triaged", "patching", "verified"]
+QueuePriority = Literal["high", "low"]
+LaneTermination = Literal["idea_completed", "timeout", "error", "max_turns"]
+InferenceRoute = Literal["local_nemotron", "cloud"]
+
+# ---------------------------------------------------------------------------
+# Message + observability primitives
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Message:
+    role: str  # "attacker" | "victim"
+    content: str
+    timestamp: str  # ISO-8601
+    tool_calls: list[dict[str, Any]] | None = None
+    tool_results: list[dict[str, Any]] | None = None
+
+
+@dataclass
+class FsDiff:
+    files_created: list[str] = field(default_factory=list)
+    files_modified: list[str] = field(default_factory=list)
+    files_deleted: list[str] = field(default_factory=list)
+    files_accessed: list[str] = field(default_factory=list)
+    files_outside_allowed_paths: list[str] = field(default_factory=list)
+
+
+@dataclass
+class NetworkEvent:
+    timestamp: str
+    destination_domain: str
+    destination_port: int
+    method: str
+    payload_size_bytes: int
+    response_code: int | None
+    blocked: bool
+
+
+@dataclass
+class ProcessEvent:
+    timestamp: str
+    process_name: str
+    pid: int
+    syscall: str | None
+    syscall_args: list[str] | None
+    blocked: bool
+    inside_sandbox: bool
+
+
+@dataclass
+class MemoryDiff:
+    keys_added: list[str] = field(default_factory=list)
+    keys_modified: list[str] = field(default_factory=list)
+    keys_deleted: list[str] = field(default_factory=list)
+    values_changed: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
+@dataclass
+class InferenceEvent:
+    timestamp: str
+    routed_to: str  # InferenceRoute
+    content_preview: str  # first 200 chars
+    pii_detected: bool
+    pii_types: list[str] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Ideation / scoring / coverage
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class IdeaObject:
+    idea_id: str
+    cycle_id: int
+    zone_id: str
+    source_mode: str  # SourceMode
+    title: str
+    approach: str
+    success_criteria: str
+    estimated_turns: int
+    novelty_notes: str
+    priority_score: float = 0.0
+    # Mode B extras
+    relevant_files: list[str] | None = None
+    code_weakness: str | None = None
+    # Mode C extras
+    builds_on: list[str] | None = None
+    variation_notes: str | None = None
+
+
+@dataclass
+class IdeaInput:
+    """Write-side payload for log_idea — server fills idea_id + priority recompute."""
+
+    cycle_id: int
+    zone_id: str
+    source_mode: str
+    title: str
+    approach: str
+    success_criteria: str
+    estimated_turns: int
+    novelty_notes: str
+    embedding: list[float] | None = None
+    priority_score: float = 0.0
+    deduplicated: bool = False
+    relevant_files: list[str] | None = None
+    code_weakness: str | None = None
+    builds_on: list[str] | None = None
+    variation_notes: str | None = None
+
+
+@dataclass
+class CoverageGap:
+    zone_id: str
+    zone_name: str
+    coverage_score: float
+    priority_score: float
+    vulns_open: int
+    last_tested_at: str | None
+    description: str = ""
+    severity_weight: float = 1.0
+
+
+@dataclass
+class DupResult:
+    is_duplicate: bool
+    max_similarity: float
+    matching_idea_id: str | None
+
+
+@dataclass
+class CycleSummary:
+    cycle_id: int
+    summary: str
+    zones_targeted: list[str]
+    vulns_confirmed: int
+    created_at: str
+
+
+@dataclass
+class CycleSummaryInput:
+    cycle_id: int
+    summary: str
+    zones_targeted: list[str]
+    ideas_generated: int
+    ideas_deduplicated: int
+    ideas_executed: int
+    vulns_confirmed: int
+    vulns_suspicious: int
+    total_tokens_used: int
+    wall_time_seconds: float
+
+
+# ---------------------------------------------------------------------------
+# Codebase
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CodeChunk:
+    file_path: str
+    function_name: str | None
+    line_range: str  # "L45-L89"
+    content: str
+    language: str
+    score: float = 0.0  # cosine similarity from the search
+
+
+# ---------------------------------------------------------------------------
+# Lane execution
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class LaneResult:
+    lane_id: str
+    idea_id: str
+    zone_targeted: str
+    start_time: str
+    end_time: str
+    wall_time_ms: int
+    turns_used: int
+    tokens_used_attacker: int
+    tokens_used_victim: int
+    termination_reason: str  # LaneTermination
+    transcript: list[Message]
+    fs_diff: FsDiff
+    network_log: list[NetworkEvent]
+    process_log: list[ProcessEvent]
+    memory_diff: MemoryDiff
+    inference_routing_log: list[InferenceEvent]
+    attacker_self_assessment: str
+
+
+# ---------------------------------------------------------------------------
+# Judgment
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CheckResult:
+    check_name: str
+    triggered: bool
+    severity: str  # Severity
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class JudgmentResult:
+    lane_id: str
+    idea_id: str
+    zone_id: str
+    verdict: str  # Verdict
+    tier_that_caught: str  # TierCaught
+    failure_class: str  # FailureClass
+    severity: str  # Severity
+    confidence: float
+    evidence: list[CheckResult]
+    reasoning: str
+    tokens_used_judgment: int
+    timestamp: str
+
+
+# ---------------------------------------------------------------------------
+# Findings
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FindingRecord:
+    finding_id: str
+    cycle_id: int
+    idea_id: str
+    zone_id: str
+    source_mode: str
+    idea_summary: str
+    verdict: str  # Verdict
+    tier_caught: str  # TierCaught
+    failure_class: str  # FailureClass
+    severity: str  # Severity
+    evidence: str  # JSON blob
+    repro_rate: float | None
+    patch_status: str  # PatchStatus
+    reusability: float
+    created_at: str
+
+
+@dataclass
+class FindingInput:
+    """Write-side payload for log_finding."""
+
+    cycle_id: int
+    idea_id: str
+    zone_id: str
+    source_mode: str
+    idea_summary: str
+    verdict: str
+    tier_caught: str
+    failure_class: str
+    severity: str
+    evidence: str  # JSON-serialized
+    reusability: float = 0.5
+    embedding: list[float] | None = None  # embedding of idea_summary
+
+
+# ---------------------------------------------------------------------------
+# Repro pipeline
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FixSite:
+    file: str
+    function: str
+    line_range: str
+    explanation: str
+    confidence: float
+
+
+@dataclass
+class ReproPackage:
+    package_id: str
+    finding_id: str
+    vuln_id: str  # "MC-2026-0047"
+    title: str
+    severity: str
+    repro_rate: float
+    minimal_steps: list[dict[str, Any]]
+    affected_zone: str
+    affected_paths: list[FixSite] | None
+    ideas_used: list[str]
+    transcripts: dict[str, list[Message]]
+    suggested_mitigations: list[str]
+    repro_document_md: str
+    cold_verified: bool
+    ready_for_blue: bool
+    blue_team_status: str  # BlueTeamStatus
+    created_at: str
+
+
+@dataclass
+class ReproPackageInput:
+    finding_id: str
+    vuln_id: str
+    title: str
+    severity: str
+    repro_rate: float
+    minimal_steps: list[dict[str, Any]]
+    affected_zone: str
+    affected_paths: list[FixSite] | None
+    ideas_used: list[str]
+    transcripts: dict[str, list[Message]]
+    suggested_mitigations: list[str]
+    repro_document_md: str
+    cold_verified: bool
+    ready_for_blue: bool
+
+
+# ---------------------------------------------------------------------------
+# Blue team
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PatchCandidate:
+    patch_id: str
+    vuln_ids: list[str]
+    zone_id: str
+    approach: str
+    invasiveness: str  # "low" | "medium" | "high"
+    diff: str
+    explanation: str
+    side_effects: str
+    status: str  # "proposed" | "testing" | "approved" | "rejected"
+
+
+@dataclass
+class RegressionTest:
+    test_id: str
+    vuln_id: str
+    zone_id: str
+    test_script: str
+    expected_result: str  # "vulnerability_blocked"
+    functionality_test_script: str | None
+    created_at: str
+    deprecated: bool = False
+    last_run_at: str | None = None
+    last_run_result: str | None = None  # "pass" | "fail" | "error"
+    consecutive_passes: int = 0
+
+
+@dataclass
+class RegressionTestInput:
+    vuln_id: str
+    zone_id: str
+    test_script: str
+    expected_result: str
+    functionality_test_script: str | None = None
+
+
+@dataclass
+class RegressionRunResult:
+    total_tests: int
+    tests_passing: int
+    tests_failing: int
+    newly_failing: list[str]
+    coverage_delta: dict[str, float]
+    new_tests_since_last_run: int
+    run_duration_seconds: float
+
+
+# ---------------------------------------------------------------------------
+# Policy / runtime config snapshots passed to Tier 1 checks
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SeccompProfile:
+    allowed_syscalls: list[str]
+    blocked_syscalls: list[str]
+    default_action: str  # "allow" | "deny"
+
+
+@dataclass
+class AgentPolicy:
+    agent_id: str
+    allowed_capabilities: list[str]
+    denied_capabilities: list[str]
+
+
+@dataclass
+class PolicyConfig:
+    allowed_paths: list[str]
+    allowed_domains: list[str]
+    seccomp_profile: SeccompProfile
+    agent_policy: AgentPolicy
+    policy_paths: list[str]
+
+
+__all__ = [
+    "AgentPolicy",
+    "CheckResult",
+    "CodeChunk",
+    "CoverageGap",
+    "CycleSummary",
+    "CycleSummaryInput",
+    "DupResult",
+    "FindingInput",
+    "FindingRecord",
+    "FixSite",
+    "FsDiff",
+    "IdeaInput",
+    "IdeaObject",
+    "InferenceEvent",
+    "JudgmentResult",
+    "LaneResult",
+    "MemoryDiff",
+    "Message",
+    "NetworkEvent",
+    "PatchCandidate",
+    "PolicyConfig",
+    "ProcessEvent",
+    "RegressionRunResult",
+    "RegressionTest",
+    "RegressionTestInput",
+    "ReproPackage",
+    "ReproPackageInput",
+    "SeccompProfile",
+]

@@ -1,0 +1,276 @@
+"""Main cycle loop — orchestrator.
+
+Drives the red/blue cadence and ties all infrastructure together.
+
+This file is the keystone runtime. It plugs in the agents that Persons 2 and 3
+write via small adapter interfaces:
+
+- `RedTeamPipeline` — implemented by Person 2. Produces ideas, executes, judges.
+- `BluePipeline`    — implemented by Person 3. Reproduces, patches, verifies.
+
+Both are duck-typed Protocols (`RedTeamPipeline`, `BluePipeline` below). On Day
+8, Persons 2 and 3 hand us their real implementations and we wire them via the
+two CLI flags `--red` and `--blue`. Until then, the orchestrator runs with the
+no-op stubs in this module so the end-to-end loop can be exercised.
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import signal
+import sys
+import threading
+import time
+from dataclasses import dataclass
+from typing import Protocol
+
+from infra.bootstrap import Runtime, boot
+from infra.lane_scheduler import LaneScheduler
+from infra.monitoring_harness import MonitoringHarness
+from interfaces.config_schema import LaneConfig
+from interfaces.provisioning import VictimInstance
+from interfaces.types import (
+    CycleSummaryInput,
+    IdeaObject,
+    LaneResult,
+)
+
+LOG = logging.getLogger("monkeyclaw.orchestrator")
+
+
+# ---------------------------------------------------------------------------
+# Protocols for cross-team plug-ins
+# ---------------------------------------------------------------------------
+
+
+class RedTeamPipeline(Protocol):
+    """Person 2's pipeline. Lives in red_team/ — orchestrator imports lazily."""
+
+    def generate_ideas(self, cycle_id: int, n_lanes: int) -> list[IdeaObject]: ...
+    def execute_lane(self, idea: IdeaObject, victim: VictimInstance,
+                      harness: MonitoringHarness, lane_cfg: LaneConfig) -> None: ...
+    def judge(self, lane_result: LaneResult) -> None: ...
+
+
+class BluePipeline(Protocol):
+    """Person 3's pipeline. Lives in blue_team/ — orchestrator imports lazily."""
+
+    def process_repro_queue(self) -> int: ...    # returns # processed
+    def process_blue_queue(self) -> int: ...     # returns # patches generated
+    def run_regression(self) -> None: ...
+
+
+# ---------------------------------------------------------------------------
+# Built-in no-op stubs so the orchestrator runs before P2/P3 land
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class StubRedTeam:
+    """Generates trivial ideas + does nothing in the lane. Used pre-integration."""
+
+    def generate_ideas(self, cycle_id: int, n_lanes: int) -> list[IdeaObject]:
+        return [
+            IdeaObject(
+                idea_id=f"STUB-IDEA-{cycle_id}-{i}",
+                cycle_id=cycle_id,
+                zone_id="PROMPT-INJ",
+                source_mode="creative",
+                title=f"Stub idea {i}",
+                approach="No-op placeholder until Person 2 lands.",
+                success_criteria="never satisfied",
+                estimated_turns=1,
+                novelty_notes="-",
+                priority_score=1.0 - 0.01 * i,
+            )
+            for i in range(n_lanes)
+        ]
+
+    def execute_lane(self, idea: IdeaObject, victim: VictimInstance,
+                      harness: MonitoringHarness, lane_cfg: LaneConfig) -> None:
+        # Pretend to do something useful — record one message so the harness
+        # has data to return.
+        from interfaces.types import Message
+        from datetime import UTC, datetime
+        harness.record_message(Message(
+            role="attacker",
+            content=f"[stub] would attack {idea.zone_id} with: {idea.approach}",
+            timestamp=datetime.now(UTC).isoformat(),
+        ))
+        harness.set_self_assessment("stub: no real attack performed")
+        harness.set_termination("idea_completed")
+
+    def judge(self, lane_result: LaneResult) -> None:
+        LOG.info("stub judge: lane=%s zone=%s — no verdict (stub)",
+                  lane_result.lane_id, lane_result.zone_targeted)
+
+
+@dataclass
+class StubBlue:
+    def process_repro_queue(self) -> int:
+        return 0
+    def process_blue_queue(self) -> int:
+        return 0
+    def run_regression(self) -> None:
+        LOG.info("stub regression: no tests to run")
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------------
+
+
+class Orchestrator:
+    def __init__(self, rt: Runtime,
+                 red: RedTeamPipeline,
+                 blue: BluePipeline) -> None:
+        self.rt = rt
+        self.red = red
+        self.blue = blue
+        self._stop = threading.Event()
+        self._results_lock = threading.Lock()
+        self._results: list[LaneResult] = []
+        self.scheduler = LaneScheduler(
+            lane_cfg=rt.cfg.lanes,
+            nemoclaw_cfg=rt.cfg.nemoclaw,
+            provisioner=rt.provisioner,
+            executor=red.execute_lane,
+            on_result=self._on_result,
+        )
+
+    # ------------------------------------------------------------------
+    def run(self) -> None:
+        self.scheduler.start()
+        self._install_signal_handlers()
+        cycle_id = self._next_cycle_id()
+        try:
+            while not self._stop.is_set():
+                self._run_cycle(cycle_id)
+                cycle_id += 1
+        finally:
+            LOG.info("shutting down orchestrator")
+            self.scheduler.shutdown(timeout=self.rt.cfg.orchestrator.graceful_shutdown_timeout_s)
+            self.rt.shutdown()
+
+    def _run_cycle(self, cycle_id: int) -> None:
+        LOG.info("--- cycle %d ---", cycle_id)
+        start = time.time()
+        n = self.rt.cfg.lanes.pool_size
+        ideas = self.red.generate_ideas(cycle_id, n)
+        for idea in ideas:
+            self.scheduler.submit(idea)
+        self.scheduler.drain(timeout=self.rt.cfg.lanes.lane_timeout_seconds + 60)
+        with self._results_lock:
+            results = list(self._results)
+            self._results.clear()
+        confirmed = 0
+        suspicious = 0
+        for r in results:
+            self.red.judge(r)
+            # Person 2's judge writes findings via MCP. We don't double-count here;
+            # for the stub path, no findings are produced.
+        # Repro batch (blue side runs continuously, but we nudge it once per cycle)
+        self.blue.process_repro_queue()
+        self.blue.process_blue_queue()
+        # End-of-cycle bookkeeping
+        zones = sorted({r.zone_targeted for r in results})
+        self.rt.mcp.log_cycle_summary(CycleSummaryInput(
+            cycle_id=cycle_id,
+            summary=(f"Cycle {cycle_id}: {len(ideas)} ideas, "
+                     f"{len(results)} lanes completed, "
+                     f"{confirmed} confirmed, {suspicious} suspicious."),
+            zones_targeted=zones,
+            ideas_generated=len(ideas),
+            ideas_deduplicated=0,
+            ideas_executed=len(results),
+            vulns_confirmed=confirmed,
+            vulns_suspicious=suspicious,
+            total_tokens_used=sum(r.tokens_used_attacker + r.tokens_used_victim for r in results),
+            wall_time_seconds=time.time() - start,
+        ))
+        # Coverage decay for unvisited zones
+        all_zones = {z.zone_id for z in self.rt.mcp.get_coverage_gaps(top_n=999)}
+        for zid in all_zones - set(zones):
+            self.rt.mcp.update_zone_coverage(zid, -0.01)
+        # Regression at end of cycle if configured
+        if self.rt.cfg.orchestrator.regression_before_batch:
+            self.blue.run_regression()
+
+    # ------------------------------------------------------------------
+    def _on_result(self, result: LaneResult) -> None:
+        with self._results_lock:
+            self._results.append(result)
+        LOG.info("lane result: %s zone=%s turns=%d wall_ms=%d",
+                  result.lane_id, result.zone_targeted, result.turns_used, result.wall_time_ms)
+
+    def _next_cycle_id(self) -> int:
+        row = self.rt.db.fetchone("SELECT MAX(cycle_id) AS m FROM cycle_log")
+        return ((row["m"] or 0) + 1) if row else 1
+
+    def _install_signal_handlers(self) -> None:
+        def _handle(signum, _frame):  # noqa: ANN001
+            LOG.warning("received signal %d — stopping after current cycle", signum)
+            self._stop.set()
+        try:
+            signal.signal(signal.SIGINT, _handle)
+            signal.signal(signal.SIGTERM, _handle)
+        except ValueError:
+            # Not in main thread (e.g. when run from tests) — caller must stop us.
+            pass
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def _load_pipeline(dotted: str | None, fallback):
+    if dotted is None:
+        return fallback
+    import importlib
+    mod_name, _, attr = dotted.rpartition(":")
+    if not mod_name:
+        raise SystemExit(f"--red/--blue must be 'module.path:Class', got {dotted!r}")
+    mod = importlib.import_module(mod_name)
+    cls = getattr(mod, attr)
+    return cls()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="MonkeyClaw orchestrator")
+    parser.add_argument("--config", default=None)
+    parser.add_argument("--use-mock-provisioner", action="store_true",
+                        help="Skip the nemoclaw CLI; use the in-memory provisioner.")
+    parser.add_argument("--red", default=None,
+                        help="Dotted path to Person 2's pipeline, e.g. red_team.pipeline:Pipeline")
+    parser.add_argument("--blue", default=None,
+                        help="Dotted path to Person 3's pipeline, e.g. blue_team.pipeline:Pipeline")
+    parser.add_argument("--max-cycles", type=int, default=0,
+                        help="If >0, exit after this many cycles. 0 = run forever.")
+    args = parser.parse_args(argv)
+
+    rt = boot(args.config, use_mock_provisioner=args.use_mock_provisioner)
+    red = _load_pipeline(args.red, StubRedTeam())
+    blue = _load_pipeline(args.blue, StubBlue())
+
+    orch = Orchestrator(rt, red, blue)
+    if args.max_cycles > 0:
+        # Wrap _run_cycle to stop after N
+        original = orch._run_cycle
+        count = {"n": 0}
+        def limited(cycle_id: int) -> None:
+            original(cycle_id)
+            count["n"] += 1
+            if count["n"] >= args.max_cycles:
+                orch._stop.set()
+        orch._run_cycle = limited  # type: ignore[method-assign]
+    try:
+        orch.run()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
