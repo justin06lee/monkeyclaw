@@ -46,8 +46,13 @@ def boot(config_path: str | Path | None = None,
     else:
         provisioner = NemoClawProvisioner(
             cli_binary=cfg.nemoclaw.cli_binary,
-            repo_path=cfg.nemoclaw.repo_path,
-            default_timeout_s=cfg.nemoclaw.sandbox_create_timeout_s,
+            sandbox_name=cfg.nemoclaw.sandbox_name,
+            sandbox_namespace=cfg.nemoclaw.sandbox_namespace,
+            clean_snapshot=cfg.nemoclaw.clean_snapshot,
+            gateway_endpoint=cfg.nemoclaw.gateway_endpoint,
+            gateway_container=cfg.nemoclaw.gateway_container,
+            snapshot_restore_timeout_s=cfg.nemoclaw.snapshot_restore_timeout_s,
+            recover_timeout_s=cfg.nemoclaw.recover_timeout_s,
         )
     set_provisioner(provisioner)
     return Runtime(cfg=cfg, db=db, mcp=mcp, provisioner=provisioner,

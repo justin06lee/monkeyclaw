@@ -22,6 +22,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import shlex
+import subprocess
 import threading
 import time
 from collections.abc import Callable
@@ -90,6 +92,55 @@ def snapshot_paths(roots: Iterable[str | Path]) -> FsSnapshot:
                 except OSError:
                     continue
                 snap.files[str(p)] = (st.st_size, st.st_mtime, _hash_head(p))
+    return snap
+
+
+def snapshot_sandbox_paths(
+    container: str,
+    namespace: str,
+    pod: str,
+    roots: Iterable[str | Path],
+    *,
+    timeout_s: int = 120,
+) -> FsSnapshot:
+    """Snapshot paths *inside* a NemoClaw sandbox pod.
+
+    The sandbox runs as a k3s pod inside the gateway container, so we reach
+    its filesystem via `docker exec <container> kubectl exec <pod> -- find`.
+    One `find` call returns size + mtime + path for every file; the fs-diff
+    compares those tuples (no content hash — an mtime/size change is enough
+    to flag a created/modified/deleted file).
+    """
+    snap = FsSnapshot()
+    root_list = [str(r) for r in roots]
+    if not root_list:
+        return snap
+    quoted = " ".join(shlex.quote(r) for r in root_list)
+    # 2>/dev/null: some roots may not exist in a given image — tolerate that.
+    find_cmd = f"find {quoted} -type f -printf '%s\\t%T@\\t%p\\n' 2>/dev/null"
+    cmd = [
+        "docker", "exec", container,
+        "kubectl", "exec", "-n", namespace, "-c", "agent", pod,
+        "--", "sh", "-c", find_cmd,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        LOG.warning("sandbox fs snapshot failed (%s/%s): %s", container, pod, e)
+        return snap
+    if proc.returncode != 0 and not proc.stdout:
+        LOG.warning("sandbox fs snapshot returned %d: %s",
+                    proc.returncode, proc.stderr.strip()[:200])
+        return snap
+    for line in proc.stdout.splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) != 3:
+            continue
+        size_s, mtime_s, path = parts
+        try:
+            snap.files[path] = (int(size_s), float(mtime_s), "")
+        except ValueError:
+            continue
     return snap
 
 
@@ -224,6 +275,12 @@ class HarnessConfig:
     sandbox_pid: int | None = None
     seccomp_allowed_pids: set[int] = field(default_factory=set)
     psutil_interval: float = 0.5
+    # When `sandbox_container` is set, the filesystem snapshot is taken
+    # inside the NemoClaw sandbox pod (docker exec -> kubectl exec) rather
+    # than against host paths. `sandbox_pod` defaults to the sandbox name.
+    sandbox_container: str | None = None
+    sandbox_namespace: str = "openshell"
+    sandbox_pod: str | None = None
 
 
 class MonitoringHarness:
@@ -266,16 +323,28 @@ class MonitoringHarness:
         self.stop()
 
     def start(self, initial_memory: dict | None = None) -> None:
-        self._fs_before = snapshot_paths(self.cfg.watched_paths)
+        self._fs_before = self._snapshot()
         self._mem_before = dict(initial_memory or {})
         self._sampler.start()
         self._started_at = time.time()
         self._start_iso = _now()
 
     def stop(self, final_memory: dict | None = None) -> None:
-        self._fs_after = snapshot_paths(self.cfg.watched_paths)
+        self._fs_after = self._snapshot()
         self._mem_after = dict(final_memory or {})
         self._sampler.stop()
+
+    def _snapshot(self) -> FsSnapshot:
+        """Snapshot the watched paths — inside the sandbox pod if this lane
+        targets a real NemoClaw victim, otherwise against host paths."""
+        if self.cfg.sandbox_container:
+            return snapshot_sandbox_paths(
+                self.cfg.sandbox_container,
+                self.cfg.sandbox_namespace,
+                self.cfg.sandbox_pod or "monkey-victim",
+                self.cfg.watched_paths,
+            )
+        return snapshot_paths(self.cfg.watched_paths)
 
     # ------------------------------------------------------------------
     # Event recording — callbacks for the execution lane

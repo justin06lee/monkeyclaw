@@ -16,14 +16,13 @@ from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from interfaces.nemoclaw_policy import nemoclaw_policy_config
 from interfaces.types import (
-    AgentPolicy,
     CheckResult,
     FindingRecord,
     LaneResult,
     Message,
     PolicyConfig,
-    SeccompProfile,
 )
 
 LOG = logging.getLogger("monkeyclaw.blue")
@@ -96,69 +95,23 @@ CHECK_TO_FAILURE: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
-# Policy construction — derived from MonkeyClawConfig (or fallback defaults)
+# Policy construction
 # ---------------------------------------------------------------------------
 
 
-# Allowlist of cloud endpoints that we never want to flag as "network
-# violations" during replay. Mirrors red_team.pipeline.DEFAULT_CLOUD_DOMAINS
-# but redeclared here so blue_team doesn't import red_team.pipeline.
-DEFAULT_CLOUD_DOMAINS = [
-    "*.anthropic.com",
-    "*.openai.com",
-    "*.googleapis.com",
-    "api.nemoclaw.local",
-]
-
-
 def policy_from_config(cfg: Any) -> PolicyConfig:
-    """Map a MonkeyClawConfig (or test stand-in) into a PolicyConfig.
+    """The Tier 1 checks judge against the live NemoClaw sandbox policy.
 
-    Accepts anything with the right shape — Pydantic config, plain dict via
-    attribute access, or a SimpleNamespace — so blue_team modules can be
-    invoked from contexts without a full Runtime.
+    `cfg` is accepted for signature compatibility with existing callers but
+    is no longer consulted — the policy is the real sandbox's Landlock
+    allow-set and network allowlist (see `interfaces.nemoclaw_policy`).
     """
-    if cfg is None:
-        return default_policy()
-    nemoclaw = getattr(cfg, "nemoclaw", None)
-    if nemoclaw is None:
-        return default_policy()
-    allowed_paths = list(getattr(nemoclaw, "allowed_paths", []) or [])
-    policy_paths = [getattr(nemoclaw, "default_policy_path", "configs/default_policy.yaml")]
-    return PolicyConfig(
-        allowed_paths=allowed_paths or ["/tmp/openshell"],
-        allowed_domains=list(DEFAULT_CLOUD_DOMAINS),
-        seccomp_profile=SeccompProfile(
-            allowed_syscalls=[],
-            blocked_syscalls=["execve", "ptrace", "kexec_load",
-                              "init_module", "delete_module"],
-            default_action="deny",
-        ),
-        agent_policy=AgentPolicy(
-            agent_id="nemoclaw_default",
-            allowed_capabilities=["chat", "read_files:/tmp/openshell"],
-            denied_capabilities=["install_skill:unsigned", "exec:privileged"],
-        ),
-        policy_paths=policy_paths,
-    )
+    return nemoclaw_policy_config()
 
 
 def default_policy() -> PolicyConfig:
-    return PolicyConfig(
-        allowed_paths=["/tmp/openshell"],
-        allowed_domains=list(DEFAULT_CLOUD_DOMAINS),
-        seccomp_profile=SeccompProfile(
-            allowed_syscalls=[],
-            blocked_syscalls=["execve", "ptrace", "kexec_load"],
-            default_action="deny",
-        ),
-        agent_policy=AgentPolicy(
-            agent_id="default",
-            allowed_capabilities=["read_files:/tmp/openshell", "chat"],
-            denied_capabilities=["install_skill:unsigned", "exec:privileged"],
-        ),
-        policy_paths=["configs/default_policy.yaml"],
-    )
+    """The live NemoClaw sandbox policy."""
+    return nemoclaw_policy_config()
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +197,6 @@ def to_jsonable(obj: Any) -> Any:
 
 __all__ = [
     "CHECK_TO_FAILURE",
-    "DEFAULT_CLOUD_DOMAINS",
     "LOG",
     "SEVERITY_ORDER",
     "default_policy",

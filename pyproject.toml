@@ -21,6 +21,8 @@ dependencies = [
     "pydantic>=2.8",
     "watchdog>=4.0",
     "anthropic>=0.40",
+    "websockets>=13.0",
+    "cryptography>=43.0",
 ]
 
 [project.scripts]

@@ -254,7 +254,7 @@ class ColdVerifier:
         document as unclear).
         """
         from interfaces.types import FsDiff, MemoryDiff
-        from red_team.victim_client import VictimClient, VictimError
+        from interfaces.victim_client import VictimClient, VictimError
 
         chat_history: list[LLMMessage] = [
             LLMMessage(role="user", content=(

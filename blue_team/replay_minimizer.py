@@ -58,7 +58,6 @@ from interfaces.types import (
 from red_team.checks import run_all_tier1_checks
 
 from blue_team._common import (
-    DEFAULT_CLOUD_DOMAINS,
     default_policy,
     lane_result_from_finding,
     now_iso,
@@ -190,7 +189,7 @@ def make_mock_replay_fn(
     *,
     network_passthrough: bool = True,
 ) -> ReplayFn:
-    """Build a replay function that uses `red_team.victim_client.VictimClient`
+    """Build a replay function that uses `interfaces.victim_client.VictimClient`
     against a registered mock victim and synthesizes a LaneResult from the
     interaction.
 
@@ -198,7 +197,7 @@ def make_mock_replay_fn(
     uses the harness directly via `_real_replay_fn` (TODO when Person 1's
     real provisioner is wired end-to-end).
     """
-    from red_team.victim_client import VictimClient, VictimError  # local import
+    from interfaces.victim_client import VictimClient, VictimError  # local import
 
     def _fn(transcript: list[Message], victim: VictimInstance) -> LaneResult:
         from interfaces.types import FsDiff, MemoryDiff

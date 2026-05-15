@@ -33,6 +33,10 @@ Person 1 implements ALL tools. Persons 2 & 3 only call them.
 
 These type definitions live in `interfaces/types.py`. All three persons import from here. Person 1 owns this file.
 
+### Read-side dataclasses (returned by MCP tools)
+
+The dataclasses below describe what readers get back. Their write-side `*Input` counterparts (see "Write-side payloads") carry only the fields a writer is allowed to set — server-assigned IDs, timestamps, and lifecycle fields like `blue_team_status` are omitted from the input variants.
+
 ### IdeaObject
 ```python
 @dataclass
@@ -275,6 +279,127 @@ class InferenceEvent:
     pii_types: list[str] | None
 ```
 
+### Write-side payloads
+
+Every MCP tool that writes takes one of these `*Input` dataclasses (see Contract 1 signatures). They omit server-assigned IDs, timestamps, and lifecycle fields. The server fills those in and returns the generated ID.
+
+```python
+@dataclass
+class IdeaInput:
+    cycle_id: int
+    zone_id: str
+    source_mode: str
+    title: str
+    approach: str
+    success_criteria: str
+    estimated_turns: int
+    novelty_notes: str
+    embedding: list[float] | None = None
+    priority_score: float = 0.0
+    deduplicated: bool = False
+    relevant_files: list[str] | None = None
+    code_weakness: str | None = None
+    builds_on: list[str] | None = None
+    variation_notes: str | None = None
+
+@dataclass
+class FindingInput:
+    cycle_id: int
+    idea_id: str
+    zone_id: str
+    source_mode: str
+    idea_summary: str
+    verdict: str
+    tier_caught: str
+    failure_class: str
+    severity: str
+    evidence: str             # JSON-serialized
+    reusability: float = 0.5
+    embedding: list[float] | None = None  # embedding of idea_summary
+
+@dataclass
+class CycleSummaryInput:
+    cycle_id: int
+    summary: str
+    zones_targeted: list[str]
+    ideas_generated: int
+    ideas_deduplicated: int
+    ideas_executed: int
+    vulns_confirmed: int
+    vulns_suspicious: int
+    total_tokens_used: int
+    wall_time_seconds: float
+
+@dataclass
+class ReproPackageInput:
+    finding_id: str
+    vuln_id: str
+    title: str
+    severity: str
+    repro_rate: float
+    minimal_steps: list[dict]
+    affected_zone: str
+    affected_paths: list[FixSite] | None
+    ideas_used: list[str]
+    transcripts: dict[str, list[Message]]
+    suggested_mitigations: list[str]
+    repro_document_md: str
+    cold_verified: bool
+    ready_for_blue: bool
+
+@dataclass
+class RegressionTestInput:
+    vuln_id: str
+    zone_id: str
+    test_script: str
+    expected_result: str
+    functionality_test_script: str | None = None
+```
+
+### Policy snapshots (consumed by Tier 1 checks)
+
+The Tier 1 check runner takes a `PolicyConfig` (or a plain dict with the same field names — see Contract 4). These are pure value objects that capture the runtime policy at the moment a lane runs.
+
+```python
+@dataclass
+class SeccompProfile:
+    allowed_syscalls: list[str]
+    blocked_syscalls: list[str]
+    default_action: str       # "allow" | "deny"
+
+@dataclass
+class AgentPolicy:
+    agent_id: str
+    allowed_capabilities: list[str]
+    denied_capabilities: list[str]
+
+@dataclass
+class PolicyConfig:
+    allowed_paths: list[str]
+    allowed_domains: list[str]
+    seccomp_profile: SeccompProfile
+    agent_policy: AgentPolicy
+    policy_paths: list[str]
+```
+
+### Regression run output
+
+```python
+@dataclass
+class RegressionRunResult:
+    total_tests: int
+    tests_passing: int
+    tests_failing: int
+    newly_failing: list[str]
+    coverage_delta: dict[str, float]
+    new_tests_since_last_run: int
+    run_duration_seconds: float
+```
+
+### String-literal aliases
+
+`interfaces/types.py` also exports `Literal[...]` aliases for the closed sets of valid string values: `Verdict`, `Severity`, `SourceMode`, `TierCaught`, `FailureClass`, `PatchStatus`, `BlueTeamStatus`, `QueuePriority`, `LaneTermination`, `InferenceRoute`. Dataclass fields keep `str` for SQL friendliness; the aliases are for validators and type hints.
+
 ---
 
 ## Contract 3: Victim Provisioning API
@@ -286,36 +411,67 @@ Both Person 2 (execution lanes) and Person 3 (replay, cold verification, patch v
 
 @dataclass
 class VictimConfig:
-    nemoclaw_version: str       # From global config
-    policy_path: str            # Path to NemoClaw policy YAML
-    agent_type: str             # "coding_assistant" | "general_purpose" | custom
-    agent_config_path: str      # Path to victim agent config
-    enable_monitoring: bool     # Whether to attach the monitoring harness
-    patch_diff: str | None      # Optional: apply this patch before starting
+    """Inputs for spinning up a single fresh NemoClaw victim instance."""
+    nemoclaw_version: str            # From global config
+    policy_path: str                 # Path to NemoClaw policy YAML
+    agent_type: str                  # "coding_assistant" | "general_purpose" | custom
+    agent_config_path: str           # Path to victim agent config
+    enable_monitoring: bool = True   # Whether to attach the monitoring harness
+    patch_diff: str | None = None    # Optional: apply this patch before starting
+    nemoclaw_repo_path: str | None = None  # Override location of NemoClaw checkout
+    env: dict[str, str] = field(default_factory=dict)
+    inference_routing: str = "default"  # "default" | "force_local" | "force_cloud"
 
 @dataclass
 class VictimInstance:
+    """Connection details for a running victim. teardown_victim(instance_id) cleans up."""
     instance_id: str
-    chat_endpoint: str          # URL or socket path for interacting with the victim
-    shell_endpoint: str | None  # For sandbox-level attacks
-    status: str                 # "running" | "stopped" | "error"
+    chat_endpoint: str               # URL or socket path for chat-style attacks
+    shell_endpoint: str | None       # For sandbox-level attacks
+    status: str                      # "running" | "stopped" | "error"
+    sandbox_id: str | None = None    # NemoClaw sandbox identifier, if any
+    pid: int | None = None
+    started_at: str = ""             # ISO-8601
+    metadata: dict[str, str] = field(default_factory=dict)
 
-def provision_victim(config: VictimConfig) -> VictimInstance:
-    """Spin up a fresh NemoClaw sandbox with a victim agent. Returns connection details."""
 
-def teardown_victim(instance_id: str) -> None:
-    """Destroy a victim instance and clean up resources."""
+@runtime_checkable
+class VictimProvisioner(Protocol):
+    """Abstract provisioning surface. Implemented by:
+
+    - `infra.provisioning_nemoclaw.NemoClawProvisioner` — real (shells to `nemoclaw`)
+    - `infra.provisioning_mock.MockProvisioner`         — for tests
+    """
+    def provision_victim(self, config: VictimConfig) -> VictimInstance: ...
+    def teardown_victim(self, instance_id: str) -> None: ...
+    def list_victims(self) -> list[VictimInstance]: ...
+
+
+class ProvisioningError(RuntimeError):
+    """Raised when a victim cannot be provisioned."""
+
+
+# Module-level convenience: code that just calls `provision_victim(...)` /
+# `teardown_victim(...)` gets the configured backend via a process-wide
+# singleton. `infra.bootstrap` calls `set_provisioner(...)` once at startup.
+
+def set_provisioner(p: VictimProvisioner) -> None: ...
+def get_provisioner() -> VictimProvisioner: ...
+def provision_victim(config: VictimConfig) -> VictimInstance: ...
+def teardown_victim(instance_id: str) -> None: ...
 ```
 
-Person 2 calls this via Person 1's lane scheduler (the scheduler handles provisioning automatically). Person 3 calls it directly for replays, cold verification, and patch verification.
+Person 2 calls this via Person 1's lane scheduler (the scheduler handles provisioning automatically). Person 3 calls it directly for replays, cold verification, and patch verification — either through the module-level convenience functions or by holding a `VictimProvisioner` reference passed in at construction time.
 
 ---
 
-## Contract 4: The One Cross-Person Code Dependency
+## Contract 4: Cross-Boundary Code Dependencies
 
-Person 2 packages the 6 Tier 1 checks as a standalone importable module.
+Two — and only two — modules may be imported across the red_team / blue_team / infra boundary. Anything else is a contract violation.
 
-**File:** `red_team/checks.py`
+### 4a. `red_team/checks.py` — Tier 1 programmatic judgment
+
+Person 2 packages the 6 Tier 1 checks as a standalone importable module. Person 3 imports it for replay verification and patch testing.
 
 **Rules:**
 - Single file with pure functions
@@ -323,15 +479,60 @@ Person 2 packages the 6 Tier 1 checks as a standalone importable module.
 - NO side effects (no database writes, no network calls, no file modifications)
 - All inputs and outputs use types from `interfaces/types.py`
 
-**Functions Person 3 will import:**
+**Functions Person 3 imports:**
 ```python
 def check_filesystem_breach(fs_diff: FsDiff, allowed_paths: list[str]) -> CheckResult
 def check_network_violation(network_log: list[NetworkEvent], allowed_domains: list[str]) -> CheckResult
-def check_process_escape(process_log: list[ProcessEvent], seccomp_profile: dict) -> CheckResult
-def check_permission_escalation(memory_diff: MemoryDiff, process_log: list[ProcessEvent], policy: dict) -> CheckResult
+def check_process_escape(process_log: list[ProcessEvent], seccomp_profile: SeccompProfile | dict) -> CheckResult
+def check_permission_escalation(memory_diff: MemoryDiff, process_log: list[ProcessEvent], policy: AgentPolicy | dict) -> CheckResult
 def check_pii_in_cloud_route(inference_routing_log: list[InferenceEvent]) -> CheckResult
 def check_policy_modification(fs_diff: FsDiff, policy_paths: list[str]) -> CheckResult
-def run_all_tier1_checks(lane_result: LaneResult, policy_config: dict) -> list[CheckResult]
+def run_all_tier1_checks(lane_result: LaneResult, policy_config: PolicyConfig | dict) -> list[CheckResult]
 ```
 
+Each check accepts the corresponding `PolicyConfig` field as either the typed dataclass (`SeccompProfile`, `AgentPolicy`, `PolicyConfig`) or a plain dict with matching keys — convenient for tests that synthesize policies inline.
+
 **Timeline:** Person 2 publishes function signatures (with stub implementations that return empty results) by Day 3. Person 3 can import and mock from that point. Real implementations filled in by Day 5.
+
+### 4b. `interfaces/victim_client.py` — shared victim transport
+
+A transport-agnostic chat client both red and blue need: red_team's execution agent uses it to drive the victim during a lane; blue_team's replay-minimizer and cold-verifier use it to drive a victim during replay. Since the client itself contains no team-specific logic, it lives in `interfaces/` and is owned by Person 1.
+
+**Rules:**
+- Pure transport: `mock://` (in-process registry), `http(s)://` (POST `{"message": ...}` → `{"reply": ...}`), `ipc:///path/to.sock` (newline-delimited JSON).
+- NO imports from `red_team/` or `blue_team/`. Depends only on stdlib + `httpx` + `interfaces/types.py`.
+- Test fixtures (the planted-vulnerability `MockVictim`) live in `red_team/mock_victim.py` and register themselves with the shared registry exposed here.
+
+**Public surface:**
+```python
+# interfaces/victim_client.py
+
+class VictimError(RuntimeError): ...
+
+@dataclass
+class TurnSideEffects:
+    fs_files_written: list[str]
+    network_events: list[NetworkEvent]
+    inference_events: list[InferenceEvent]
+    revealed_secret: bool
+
+@runtime_checkable
+class MockVictimProtocol(Protocol):
+    def chat(self, message: str) -> tuple[str, TurnSideEffects]: ...
+
+# Process-wide mock-victim registry, keyed by chat_endpoint
+def register(endpoint: str, victim: MockVictimProtocol) -> None: ...
+def unregister(endpoint: str) -> None: ...
+def lookup(endpoint: str) -> MockVictimProtocol | None: ...
+def reset_all() -> None: ...
+
+class VictimClient:
+    def __init__(self, chat_endpoint: str, timeout_s: float = 30.0) -> None: ...
+    def send(self, message: str) -> tuple[str, TurnSideEffects | None]: ...
+    def close(self) -> None: ...
+    # also a context manager
+
+def estimate_tokens(s: str) -> int: ...
+```
+
+`red_team/mock_victim.py` re-exports `TurnSideEffects`, `register`, `unregister`, `lookup`, and `reset_all` from this module so existing test code that reaches them via `red_team.mock_victim.<name>` keeps working.

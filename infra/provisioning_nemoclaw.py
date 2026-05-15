@@ -1,14 +1,22 @@
 """NemoClaw-backed victim provisioner.
 
-Shells out to the `nemoclaw` CLI to spin up a fresh sandbox + OpenClaw agent
-for each lane. The CLI must be on PATH (installed via the official installer).
+Provisions against a single, persistent NemoClaw sandbox (`monkey-victim`)
+using a snapshot-restore strategy rather than create/destroy:
+
+- `provision_victim` restores the sandbox to a clean snapshot and restarts
+  its gateway/agent (`recover`), giving each lane a genuinely fresh agent
+  with no carried-over conversation or runtime state.
+- `teardown_victim` is a no-op — the sandbox persists; state is reset on the
+  next `provision_victim`.
+
+Because there is exactly one sandbox, lanes must run serially (the lane
+scheduler enforces this).
 
 For the dev path where NemoClaw isn't available locally, see `MockProvisioner`.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import shutil
@@ -16,7 +24,6 @@ import subprocess
 import tempfile
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 
 from interfaces.provisioning import (
     ProvisioningError,
@@ -33,114 +40,153 @@ def _now() -> str:
 
 
 class NemoClawProvisioner(VictimProvisioner):
-    """Provision via the real `nemoclaw` CLI.
+    """Provision via the real `nemoclaw` CLI against one persistent sandbox.
 
-    NemoClaw v0.1 alpha is interactive by default; we set
-    NEMOCLAW_NON_INTERACTIVE=1 to run inside our orchestrator.
+    Per `provision_victim`:
+      1. `nemoclaw <sandbox> snapshot restore <clean_snapshot>` — reset state
+      2. `nemoclaw <sandbox> recover` — restart gateway + agent
+      3. fetch the gateway auth token
+
+    The resulting `VictimInstance.chat_endpoint` is the gateway WebSocket;
+    `VictimClient` speaks the gateway protocol to it. The token is published
+    in `metadata["gateway_token"]` and mirrored into `MC_GATEWAY_TOKEN` so
+    `VictimClient(endpoint)` constructed without an explicit token still
+    authenticates.
     """
 
-    def __init__(self, cli_binary: str = "nemoclaw",
-                 repo_path: str | None = None,
-                 default_timeout_s: int = 120) -> None:
+    def __init__(
+        self,
+        cli_binary: str = "nemoclaw",
+        *,
+        sandbox_name: str = "monkey-victim",
+        sandbox_namespace: str = "openshell",
+        clean_snapshot: str = "clean-baseline",
+        gateway_endpoint: str = "ws://localhost:18789/",
+        gateway_container: str = "openshell-cluster-nemoclaw",
+        snapshot_restore_timeout_s: int = 180,
+        recover_timeout_s: int = 600,
+    ) -> None:
         self.cli = cli_binary
-        self.repo_path = Path(repo_path).expanduser() if repo_path else None
-        self.default_timeout_s = default_timeout_s
+        self.sandbox_name = sandbox_name
+        self.sandbox_namespace = sandbox_namespace
+        self.clean_snapshot = clean_snapshot
+        self.gateway_endpoint = gateway_endpoint
+        self.gateway_container = gateway_container
+        self.snapshot_restore_timeout_s = snapshot_restore_timeout_s
+        self.recover_timeout_s = recover_timeout_s
         self._instances: dict[str, VictimInstance] = {}
 
     # ------------------------------------------------------------------
     def provision_victim(self, config: VictimConfig) -> VictimInstance:
-        if not shutil.which(self.cli) and self.repo_path is None:
+        if not shutil.which(self.cli):
             raise ProvisioningError(
-                f"nemoclaw CLI not found on PATH and no repo_path configured. "
-                f"Install with `curl -fsSL https://www.nvidia.com/nemoclaw.sh | bash` "
-                f"or set nemoclaw.repo_path in config."
+                f"`{self.cli}` CLI not found on PATH. Install NemoClaw, or use "
+                f"the MockProvisioner (orchestrator flag --use-mock-provisioner)."
             )
-        instance_id = f"VICT-{uuid.uuid4().hex[:10]}"
-        sandbox_name = f"mc-{instance_id.lower()}"
-
-        env = {**os.environ,
-               "NEMOCLAW_NON_INTERACTIVE": "1",
-               "NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE": "1",
-               **config.env}
-
-        # Note: the real CLI surface depends on the alpha version. We invoke
-        # `nemoclaw sandbox create --name ... --policy ... --agent-config ...`
-        # which mirrors the documented `nemoclaw onboard` pipeline. If the
-        # actual subcommand differs in a given NemoClaw build, this method
-        # is the one place that needs updating.
-        cmd = [
-            self.cli, "sandbox", "create",
-            "--name", sandbox_name,
-            "--policy", config.policy_path,
-            "--agent-config", config.agent_config_path,
-            "--agent-type", config.agent_type,
-        ]
         if config.patch_diff:
-            patch_path = self._materialize_patch(config.patch_diff)
-            cmd.extend(["--apply-patch", str(patch_path)])
-        LOG.info("provisioning victim %s via %s", instance_id, " ".join(cmd))
-        try:
-            proc = subprocess.run(
-                cmd, env=env, capture_output=True, text=True,
-                timeout=self.default_timeout_s, cwd=self.repo_path,
-            )
-        except subprocess.TimeoutExpired as e:
-            raise ProvisioningError(f"timed out after {self.default_timeout_s}s") from e
-        if proc.returncode != 0:
+            # The snapshot model resets to a fixed baseline; per-lane patch
+            # application would need the patch baked into a snapshot. Not
+            # supported on this path yet — surface it loudly rather than
+            # silently running an unpatched victim.
             raise ProvisioningError(
-                f"nemoclaw exited {proc.returncode}:\nSTDERR: {proc.stderr}\nSTDOUT: {proc.stdout}"
+                "VictimConfig.patch_diff is set, but the snapshot-based "
+                "NemoClawProvisioner cannot apply per-lane patches. Build a "
+                "patched snapshot and point `clean_snapshot` at it instead."
             )
-        # The CLI is expected to emit a JSON envelope on stdout in NON_INTERACTIVE
-        # mode. Real alpha builds may print a banner instead — parse defensively.
-        details = self._parse_create_output(proc.stdout)
+
+        instance_id = f"VICT-{uuid.uuid4().hex[:10]}"
+        LOG.info("provisioning victim %s: restoring %s -> %s, then recover",
+                 instance_id, self.sandbox_name, self.clean_snapshot)
+
+        # 1. Reset filesystem/state to the clean snapshot.
+        self._run(
+            [self.cli, self.sandbox_name, "snapshot", "restore", self.clean_snapshot],
+            timeout=self.snapshot_restore_timeout_s,
+            what="snapshot restore",
+        )
+        # 2. Restart the gateway + agent so no runtime/session state carries over.
+        self._run(
+            [self.cli, self.sandbox_name, "recover"],
+            timeout=self.recover_timeout_s,
+            what="recover",
+        )
+        # 3. Fetch the gateway auth token for VictimClient.
+        token = self._run(
+            [self.cli, self.sandbox_name, "gateway-token", "--quiet"],
+            timeout=30,
+            what="gateway-token",
+        ).strip()
+        if not token:
+            raise ProvisioningError("gateway-token returned empty output")
+        # Mirror into the environment so a bare VictimClient(endpoint) — as
+        # constructed by the red/blue replay paths — picks it up.
+        os.environ["MC_GATEWAY_TOKEN"] = token
+
         instance = VictimInstance(
             instance_id=instance_id,
-            chat_endpoint=details.get("chat_endpoint", f"ipc:///tmp/openshell/{sandbox_name}.sock"),
-            shell_endpoint=details.get("shell_endpoint"),
+            chat_endpoint=self.gateway_endpoint,
+            shell_endpoint=None,
             status="running",
-            sandbox_id=details.get("sandbox_id", sandbox_name),
-            pid=details.get("pid"),
+            sandbox_id=self.sandbox_name,
             started_at=_now(),
-            metadata={"policy_path": config.policy_path,
-                      "agent_config_path": config.agent_config_path,
-                      "nemoclaw_version": config.nemoclaw_version},
+            metadata={
+                "gateway_token": token,
+                "sandbox_name": self.sandbox_name,
+                "sandbox_namespace": self.sandbox_namespace,
+                "sandbox_container": self.gateway_container,
+                "nemoclaw_version": config.nemoclaw_version,
+            },
         )
         self._instances[instance_id] = instance
+        LOG.info("victim %s ready: endpoint=%s", instance_id, self.gateway_endpoint)
         return instance
 
     def teardown_victim(self, instance_id: str) -> None:
+        # No-op: the sandbox is persistent and reset on the next
+        # provision_victim. We only mark our local record stopped.
         instance = self._instances.get(instance_id)
-        if instance is None:
-            return
-        sandbox = instance.sandbox_id or instance_id
-        try:
-            subprocess.run(
-                [self.cli, "sandbox", "destroy", "--name", sandbox, "--force"],
-                check=False, capture_output=True, text=True, timeout=60,
-            )
-        except Exception as e:  # noqa: BLE001
-            LOG.warning("teardown error for %s: %s", sandbox, e)
-        instance.status = "stopped"
+        if instance is not None:
+            instance.status = "stopped"
+        LOG.debug("teardown_victim(%s): no-op (sandbox persists, reset on "
+                  "next provision)", instance_id)
 
     def list_victims(self) -> list[VictimInstance]:
         return list(self._instances.values())
 
     # ------------------------------------------------------------------
-    def _parse_create_output(self, stdout: str) -> dict:
-        for line in stdout.splitlines():
-            line = line.strip()
-            if line.startswith("{") and line.endswith("}"):
-                try:
-                    return json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-        return {}
+    def _run(self, cmd: list[str], *, timeout: int, what: str) -> str:
+        """Run a nemoclaw subcommand and return its stdout.
 
-    def _materialize_patch(self, diff: str) -> Path:
-        f = tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False)
-        f.write(diff)
-        f.close()
-        return Path(f.name)
+        Output is captured to temp files rather than pipes: `recover`
+        daemonizes the dashboard port-forward (an ssh child) which inherits
+        the parent's stdio. With `capture_output=True` (pipes), `subprocess`
+        would block in `communicate()` waiting for that lingering child to
+        close the pipe — long after `nemoclaw` itself exited. A file fd has
+        no such EOF dependency.
+        """
+        try:
+            with (tempfile.TemporaryFile(mode="w+") as out,
+                  tempfile.TemporaryFile(mode="w+") as err):
+                proc = subprocess.run(
+                    cmd, stdout=out, stderr=err,
+                    stdin=subprocess.DEVNULL, timeout=timeout,
+                )
+                out.seek(0)
+                err.seek(0)
+                stdout_text = out.read()
+                stderr_text = err.read()
+        except subprocess.TimeoutExpired as e:
+            raise ProvisioningError(
+                f"`{what}` timed out after {timeout}s ({' '.join(cmd)})"
+            ) from e
+        except OSError as e:
+            raise ProvisioningError(f"`{what}` failed to start: {e}") from e
+        if proc.returncode != 0:
+            raise ProvisioningError(
+                f"`{what}` exited {proc.returncode}: "
+                f"{(stderr_text or stdout_text).strip()[:500]}"
+            )
+        return stdout_text
 
 
 class MockProvisioner(VictimProvisioner):

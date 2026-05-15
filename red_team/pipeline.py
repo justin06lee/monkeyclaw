@@ -30,15 +30,14 @@ from infra.monitoring_harness import MonitoringHarness
 from interfaces.config_schema import LaneConfig, MonkeyClawConfig
 from interfaces.llm import LLMClient, make_llm
 from interfaces.mcp_tools import MonkeyClawMCP
+from interfaces.nemoclaw_policy import nemoclaw_policy_config
 from interfaces.provisioning import VictimInstance
 from interfaces.types import (
-    AgentPolicy,
     CoverageGap,
     CycleSummaryInput,
     IdeaObject,
     LaneResult,
     PolicyConfig,
-    SeccompProfile,
 )
 
 from red_team.dedup import deduplicate_and_log
@@ -52,40 +51,15 @@ LOG = logging.getLogger("monkeyclaw.red.pipeline")
 
 
 # ---------------------------------------------------------------------------
-# Policy construction — derived from the runtime config
+# Policy construction
 # ---------------------------------------------------------------------------
 
 
-DEFAULT_CLOUD_DOMAINS = [
-    # Allowlist of standard cloud-LLM endpoints. They're permitted for
-    # non-PII content; PII routed to them is still caught by
-    # check_pii_in_cloud_route. Without these in allowed_domains the
-    # network check would flag every legitimate cloud inference call.
-    "*.anthropic.com",
-    "*.openai.com",
-    "*.googleapis.com",
-    "api.nemoclaw.local",
-]
-
-
 def policy_from_config(cfg: MonkeyClawConfig) -> PolicyConfig:
-    """Map MonkeyClawConfig.nemoclaw into a PolicyConfig for Tier 1 checks."""
-    return PolicyConfig(
-        allowed_paths=list(cfg.nemoclaw.allowed_paths),
-        allowed_domains=list(DEFAULT_CLOUD_DOMAINS),
-        seccomp_profile=SeccompProfile(
-            allowed_syscalls=[],
-            blocked_syscalls=["execve", "ptrace", "kexec_load",
-                              "init_module", "delete_module"],
-            default_action="deny",
-        ),
-        agent_policy=AgentPolicy(
-            agent_id="nemoclaw_default",
-            allowed_capabilities=["chat", "read_files:/tmp/openshell"],
-            denied_capabilities=["install_skill:unsigned", "exec:privileged"],
-        ),
-        policy_paths=[cfg.nemoclaw.default_policy_path],
-    )
+    """The Tier 1 checks judge against the live NemoClaw sandbox policy —
+    its real Landlock allow-set and network allowlist (see
+    `interfaces.nemoclaw_policy`)."""
+    return nemoclaw_policy_config()
 
 
 # ---------------------------------------------------------------------------

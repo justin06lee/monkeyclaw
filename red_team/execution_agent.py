@@ -30,8 +30,12 @@ from interfaces.llm import LLMClient, LLMMessage
 from interfaces.provisioning import VictimInstance
 from interfaces.types import IdeaObject, Message
 
-from red_team.mock_victim import TurnSideEffects
-from red_team.victim_client import VictimClient, VictimError, estimate_tokens
+from interfaces.victim_client import (
+    TurnSideEffects,
+    VictimClient,
+    VictimError,
+    estimate_tokens,
+)
 
 LOG = logging.getLogger("monkeyclaw.red.execution")
 

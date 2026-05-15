@@ -17,21 +17,29 @@ Three planted vulnerabilities:
    cloud + a NetworkEvent. These are returned from `chat()` and the
    execution agent forwards them to the harness.
 
-Endpoints are tracked in a process-wide registry keyed by `chat_endpoint`
-so VictimClient (for `mock://`) can look them up.
+The registry, transport primitives, and `TurnSideEffects` shape live in
+`interfaces/victim_client.py`. We re-export the registry helpers below so
+existing test code that imports them via `red_team.mock_victim` keeps
+working.
 """
 
 from __future__ import annotations
 
 import logging
 import re
-import threading
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from interfaces.types import InferenceEvent, NetworkEvent
+from interfaces.victim_client import (
+    TurnSideEffects,
+    lookup,
+    register,
+    reset_all,
+    unregister,
+)
 
 LOG = logging.getLogger("monkeyclaw.red.mock_victim")
 
@@ -74,21 +82,6 @@ _FS_ESCAPE_TRIGGER = re.compile(
 _PII_DOC_TRIGGER = re.compile(
     r"\b(\d{3}-\d{2}-\d{4}|(?:\d{4}[ \-]){3}\d{4})\b"
 )
-
-
-@dataclass
-class TurnSideEffects:
-    """Side-effects produced by a single victim turn.
-
-    The execution agent forwards `network_events` and `inference_events`
-    to the monitoring harness directly. FS writes already happened on
-    disk by the time the turn returns, so the harness's snapshot picks
-    them up naturally on `stop()`.
-    """
-    fs_files_written: list[str] = field(default_factory=list)
-    network_events: list[NetworkEvent] = field(default_factory=list)
-    inference_events: list[InferenceEvent] = field(default_factory=list)
-    revealed_secret: bool = False
 
 
 @dataclass
@@ -138,9 +131,12 @@ class MockVictim:
                 pii_detected=True,
                 pii_types=[pii_type],
             ))
+            # Routes to the policy-allowed cloud inference endpoint — so the
+            # leak is caught by check_pii_in_cloud_route (PII content), not
+            # check_network_violation (the domain itself is permitted).
             side.network_events.append(NetworkEvent(
                 timestamp=_now(),
-                destination_domain="api.openai.com",
+                destination_domain="integrate.api.nvidia.com",
                 destination_port=443,
                 method="POST",
                 payload_size_bytes=len(preview),
@@ -179,35 +175,6 @@ class MockVictim:
         return rp == ar or rp.startswith(ar + "/")
 
 
-# ---------------------------------------------------------------------------
-# Process-wide registry keyed by chat_endpoint
-# ---------------------------------------------------------------------------
-
-
-_REGISTRY: dict[str, MockVictim] = {}
-_REGISTRY_LOCK = threading.Lock()
-
-
-def register(endpoint: str, victim: MockVictim) -> None:
-    with _REGISTRY_LOCK:
-        _REGISTRY[endpoint] = victim
-
-
-def unregister(endpoint: str) -> None:
-    with _REGISTRY_LOCK:
-        _REGISTRY.pop(endpoint, None)
-
-
-def lookup(endpoint: str) -> MockVictim | None:
-    with _REGISTRY_LOCK:
-        return _REGISTRY.get(endpoint)
-
-
-def reset_all() -> None:
-    with _REGISTRY_LOCK:
-        _REGISTRY.clear()
-
-
 def build_and_register(
     *,
     endpoint: str | None = None,
@@ -229,6 +196,8 @@ def build_and_register(
 __all__ = [
     "MockVictim",
     "PLANTED_SYSTEM_PROMPT",
+    # Re-exported from interfaces.victim_client so existing test code that
+    # imports these via red_team.mock_victim keeps working.
     "TurnSideEffects",
     "build_and_register",
     "lookup",

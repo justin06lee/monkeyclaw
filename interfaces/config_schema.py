@@ -89,6 +89,18 @@ class NemoClawConfig(BaseModel):
     default_agent_config_path: str = "configs/default_agent.yaml"
     monitored_paths: list[str] = ["/tmp/openshell", "~/.nemoclaw"]
     allowed_paths: list[str] = ["/tmp/openshell"]
+    # --- live snapshot-based sandbox (the `monkey-victim` instance) ---
+    # The real provisioner resets this sandbox to a clean snapshot per lane
+    # rather than create/destroy. teardown is a no-op.
+    sandbox_name: str = "monkey-victim"
+    sandbox_namespace: str = "openshell"
+    clean_snapshot: str = "clean-baseline"
+    gateway_endpoint: str = "ws://localhost:18789/"
+    gateway_container: str = "openshell-cluster-nemoclaw"
+    snapshot_restore_timeout_s: int = 180
+    # `recover` restarts the gateway + agent; after a state restore the agent
+    # reloads on a CPU-bound host, so this is deliberately generous.
+    recover_timeout_s: int = 600
 
 
 class MonkeyClawConfig(BaseModel):
