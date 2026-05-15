@@ -85,7 +85,16 @@ def load_config(path: str | Path | None = None) -> MonkeyClawConfig:
             data = yaml.safe_load(f) or {}
         merged = _deep_merge(merged, data)
     merged = _deep_merge(merged, _env_overrides())
-    return MonkeyClawConfig(**merged)
+    cfg = MonkeyClawConfig(**merged)
+    # Convenience env vars for the two most-overridden secrets — simpler than
+    # the nested MC_NOTIFICATIONS__TELEGRAM_BOT_TOKEN form.
+    tok = os.environ.get("MC_TELEGRAM_BOT_TOKEN")
+    if tok:
+        cfg.notifications.telegram_bot_token = tok
+    chat = os.environ.get("MC_TELEGRAM_CHAT_ID")
+    if chat:
+        cfg.notifications.telegram_chat_id = chat
+    return cfg
 
 
 def setup_logging(cfg: MonkeyClawConfig) -> None:

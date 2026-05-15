@@ -272,6 +272,40 @@ def _cmd_blueteam(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# test — self-checks (notification delivery)
+# ---------------------------------------------------------------------------
+
+
+def _cmd_test(args: argparse.Namespace) -> int:
+    if args.kind != "notification":
+        print(f"unknown test: {args.kind!r}")
+        return 1
+    from infra.notifications import AlertDispatcher
+
+    cfg = load_config()
+    n = cfg.notifications
+    if not n.telegram_bot_token:
+        print("no Telegram bot token — set MC_TELEGRAM_BOT_TOKEN.")
+        return 1
+    if not n.telegram_chat_id:
+        print("no Telegram chat id — set MC_TELEGRAM_CHAT_ID.")
+        return 1
+    disp = AlertDispatcher(n)
+    try:
+        # Call the telegram path directly so a failure surfaces here rather
+        # than being swallowed as a warning inside the multiplexed send().
+        disp._send_telegram(f"[TEST] {args.message}")
+        print(f"notification delivered to chat {n.telegram_chat_id}: "
+              f"{args.message!r}")
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print(f"telegram delivery FAILED: {e}")
+        return 1
+    finally:
+        disp.close()
+
+
+# ---------------------------------------------------------------------------
 # dashboard
 # ---------------------------------------------------------------------------
 
@@ -332,6 +366,12 @@ def build_parser() -> argparse.ArgumentParser:
     bt.add_argument("vuln_id", nargs="?", default=None,
                     help="optional: limit to one vuln_id / finding_id")
     bt.set_defaults(func=_cmd_blueteam)
+
+    ts = sub.add_parser("test", help="self-checks (e.g. notification delivery)")
+    ts.add_argument("kind", choices=["notification"], help="what to test")
+    ts.add_argument("message", nargs="?", default="MonkeyClaw test notification",
+                    help="message body for the test")
+    ts.set_defaults(func=_cmd_test)
 
     db = sub.add_parser("dashboard", help="start the live web dashboard")
     db.add_argument("--port", type=int, default=8787, help="HTTP port (default 8787)")
