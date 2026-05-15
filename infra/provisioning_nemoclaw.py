@@ -141,6 +141,41 @@ class NemoClawProvisioner(VictimProvisioner):
         LOG.info("victim %s ready: endpoint=%s", instance_id, self.gateway_endpoint)
         return instance
 
+    def connect_existing(self) -> VictimInstance:
+        """Return a `VictimInstance` for the already-running sandbox WITHOUT
+        restoring or restarting it.
+
+        Used for ad-hoc, direct probing of the victim's live state — the
+        operator (or MonkeyClaw itself) talks to the victim to try things
+        out, rather than running a full reset-and-attack lane.
+        """
+        if not shutil.which(self.cli):
+            raise ProvisioningError(f"`{self.cli}` CLI not found on PATH.")
+        token = self._run(
+            [self.cli, self.sandbox_name, "gateway-token", "--quiet"],
+            timeout=30, what="gateway-token",
+        ).strip()
+        if not token:
+            raise ProvisioningError("gateway-token returned empty output")
+        os.environ["MC_GATEWAY_TOKEN"] = token
+        instance_id = f"VICT-{uuid.uuid4().hex[:10]}"
+        instance = VictimInstance(
+            instance_id=instance_id,
+            chat_endpoint=self.gateway_endpoint,
+            shell_endpoint=None,
+            status="running",
+            sandbox_id=self.sandbox_name,
+            started_at=_now(),
+            metadata={
+                "gateway_token": token,
+                "sandbox_name": self.sandbox_name,
+                "sandbox_namespace": self.sandbox_namespace,
+                "sandbox_container": self.gateway_container,
+            },
+        )
+        self._instances[instance_id] = instance
+        return instance
+
     def teardown_victim(self, instance_id: str) -> None:
         # No-op: the sandbox is persistent and reset on the next
         # provision_victim. We only mark our local record stopped.

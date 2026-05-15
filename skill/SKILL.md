@@ -32,8 +32,26 @@ shell commands.
 | `monkeyclaw_run_cycle` | `monkeyclaw run --cycles 1 --target <sandbox>` | One full red-team cycle: ideation → execution → judgment |
 | `monkeyclaw_get_findings` | `monkeyclaw findings` | All confirmed / suspicious findings |
 | `monkeyclaw_run_repro` | `monkeyclaw repro <finding_id>` | Replay + minimize + document a finding |
+| `monkeyclaw_probe` | `monkeyclaw probe -m "<message>"` | Talk directly to the victim — send one message, see its reply |
+| `monkeyclaw_run_blue_team` | `monkeyclaw blue-team` | Triage → patch → test for queued repros (output only) |
 
 `monkeyclaw run --perpetual --target <sandbox>` runs the loop indefinitely.
+
+## Direct probing
+
+`monkeyclaw probe` is a direct line to the victim, separate from the full
+cycle. Use it to **try things by hand** — develop a jailbreak phrasing, test a
+prompt-injection wording, attempt PII exfiltration, or check how the victim
+reacts to a specific message — before committing an idea to a full cycle.
+
+- `monkeyclaw probe -m "<message>"` — send one message, print the reply.
+- `monkeyclaw probe` — interactive: a back-and-forth session with the victim.
+- The victim's session persists between probes, so a sequence of `probe -m`
+  calls is one continuing conversation. Add `--reset` to start from a clean
+  victim (snapshot restore + recover).
+
+When a probe reveals something promising, run a full `monkeyclaw run` cycle so
+the attempt is judged and recorded in persistent memory.
 
 ## Autonomous loop
 

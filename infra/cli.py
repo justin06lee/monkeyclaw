@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 
 from infra.config import load_config
 
@@ -146,6 +147,80 @@ def _cmd_repro(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# probe — talk directly to the victim
+# ---------------------------------------------------------------------------
+
+
+def _build_provisioner(target: str):
+    from infra.provisioning_nemoclaw import NemoClawProvisioner
+
+    nc = load_config().nemoclaw
+    return NemoClawProvisioner(
+        cli_binary=nc.cli_binary,
+        sandbox_name=target,
+        sandbox_namespace=nc.sandbox_namespace,
+        clean_snapshot=nc.clean_snapshot,
+        gateway_endpoint=nc.gateway_endpoint,
+        gateway_container=nc.gateway_container,
+        snapshot_restore_timeout_s=nc.snapshot_restore_timeout_s,
+        recover_timeout_s=nc.recover_timeout_s,
+    ), nc
+
+
+def _cmd_probe(args: argparse.Namespace) -> int:
+    """Direct line to the victim — send messages and see its replies.
+
+    Use it to try things by hand: prompt-engineering experiments, PII
+    exfiltration attempts, jailbreak phrasings. The victim's session
+    persists between turns, so a sequence of probes is one conversation.
+    """
+    from interfaces.provisioning import VictimConfig
+    from interfaces.victim_client import VictimClient
+
+    prov, nc = _build_provisioner(args.target)
+    if args.reset:
+        print(f"provisioning a fresh '{args.target}' (snapshot restore + recover) ...")
+        inst = prov.provision_victim(VictimConfig(
+            nemoclaw_version=nc.version,
+            policy_path=nc.default_policy_path,
+            agent_type="coding_assistant",
+            agent_config_path=nc.default_agent_config_path,
+        ))
+    else:
+        inst = prov.connect_existing()
+    token = inst.metadata["gateway_token"]
+    print(f"connected to victim '{args.target}' @ {inst.chat_endpoint}")
+
+    def _send(client: VictimClient, msg: str) -> None:
+        t0 = time.time()
+        try:
+            reply, _ = client.send(msg)
+        except Exception as e:  # noqa: BLE001
+            print(f"  [transport error: {e}]\n")
+            return
+        print(f"victim> {reply}   ({time.time() - t0:.0f}s)\n")
+
+    with VictimClient(inst.chat_endpoint, auth_token=token) as client:
+        if args.message:
+            print(f"\nyou> {args.message}")
+            _send(client, args.message)
+            return 0
+        print("interactive probe — type a message; 'exit' or Ctrl-D to quit.\n")
+        while True:
+            try:
+                msg = input("you> ").strip()
+            except EOFError:
+                print()
+                break
+            if msg in ("exit", "quit"):
+                break
+            if not msg:
+                continue
+            _send(client, msg)
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # blue-team — demo mode: triage -> patch -> test, output only
 # ---------------------------------------------------------------------------
 
@@ -242,6 +317,15 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("vuln_id", help="finding_id to reproduce")
     rp.add_argument("--mock", action="store_true", help="use the mock provisioner")
     rp.set_defaults(func=_cmd_repro)
+
+    pr = sub.add_parser("probe",
+                        help="talk directly to the victim (interactive or one-shot)")
+    pr.add_argument("--target", default="monkey-victim", help="target sandbox name")
+    pr.add_argument("-m", "--message", default=None,
+                    help="one-shot: send this message and exit")
+    pr.add_argument("--reset", action="store_true",
+                    help="snapshot-restore + recover the victim first (clean slate)")
+    pr.set_defaults(func=_cmd_probe)
 
     bt = sub.add_parser("blue-team",
                         help="demo: triage -> patch -> test for queued repros")
