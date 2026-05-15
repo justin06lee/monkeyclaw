@@ -1,6 +1,16 @@
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/monkeyclaw-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="assets/monkeyclaw-light.png">
+  <img alt="MonkeyClaw" src="assets/monkeyclaw-light.png" width="320">
+</picture>
+
 # MonkeyClaw 🐒🦞
 
 **Autonomous red-team / blue-team security agent for NVIDIA NemoClaw.**
+
+</div>
 
 MonkeyClaw is an OpenClaw agent that continuously probes NemoClaw's security
 controls — sandbox isolation, privacy routing, permission enforcement, and
@@ -143,5 +153,3 @@ autonomous loop through the `monkeyclaw` CLI.
 ## Team
 
 Justin Lee, Ezzy Rappeport, George Gong
-
-## Hack-a-Claw × NVIDIA @ UCSC — May 2026

@@ -99,7 +99,7 @@ Fix any remaining integration issues.
 - Fix remaining bugs discovered during full pipeline test
 - Prepare demo: set up a victim agent with known vulnerabilities for a live demo run
 - Write README and setup instructions
-- Record a demo video if needed for hackathon submission
+- Record a demo video if needed
 
 ---
 
