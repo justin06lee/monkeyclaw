@@ -250,10 +250,12 @@ class MockMCP(MonkeyClawMCP):
     # Ideation
     # ------------------------------------------------------------------
     def check_duplicate(
-        self, embedding: list[float], zone: str, threshold: float
+        self, text: str, zone: str, threshold: float
     ) -> DupResult:
+        # The mock doesn't actually embed — we just need shape-correct output.
         # Vary the response to give Person 2 something interesting to handle:
         # ~80% novel, 15% near-dup (below threshold), 5% above-threshold dup.
+        _ = text  # held so signature matches the real server
         roll = self.rand.random()
         if roll < 0.80:
             return DupResult(is_duplicate=False, max_similarity=self.rand.uniform(0.0, 0.6),
@@ -505,12 +507,11 @@ def _smoke_test(mcp: MockMCP) -> None:
     gaps = mcp.get_coverage_gaps(top_n=3)
     print("coverage_gaps:", [(g.zone_id, round(g.priority_score, 2)) for g in gaps])
     mcp.update_zone_coverage(gaps[0].zone_id, 0.05)
-    embedding = [0.01] * 384
-    print("dup:", mcp.check_duplicate(embedding, gaps[0].zone_id, 0.92))
+    print("dup:", mcp.check_duplicate("smoke idea text", gaps[0].zone_id, 0.92))
     iid = mcp.log_idea(IdeaInput(
         cycle_id=1, zone_id=gaps[0].zone_id, source_mode="creative",
         title="Test", approach="x", success_criteria="y", estimated_turns=5,
-        novelty_notes="z", embedding=embedding,
+        novelty_notes="z",
     ))
     print("logged_idea:", iid)
     fid = mcp.log_finding(FindingInput(

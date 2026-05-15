@@ -194,8 +194,10 @@ class MCPServer(MonkeyClawMCP):
     # Ideation
     # ------------------------------------------------------------------
     def check_duplicate(
-        self, embedding: list[float], zone: str, threshold: float
+        self, text: str, zone: str, threshold: float
     ) -> DupResult:
+        # Embed server-side so callers don't need the model.
+        embedding = self.embedder.encode_one(text).tolist()
         # KNN against only ideas in this zone. We don't have a filter inside vec0
         # so we widen the KNN, then post-filter by zone.
         candidates = self.db.vector_search("ideas_vec", "idea_id", embedding, top_k=20)
@@ -535,7 +537,7 @@ def _smoke(server: MCPServer) -> int:
     ))
     print("logged idea:", iid)
     dup = server.check_duplicate(
-        embedding=server.embedder.encode_one("Smoke test idea\nTry X then Y").tolist(),
+        text="Smoke test idea\nTry X then Y",
         zone=gaps[0].zone_id, threshold=0.92,
     )
     print("dup (expect ~1.0):", dup)

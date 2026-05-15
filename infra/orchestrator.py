@@ -225,15 +225,29 @@ class Orchestrator:
 # ---------------------------------------------------------------------------
 
 
-def _load_pipeline(dotted: str | None, fallback):
+def _load_pipeline(dotted: str | None, fallback, rt: "Runtime | None" = None):
+    """Instantiate a pipeline class loaded from a dotted path.
+
+    Tries calling `cls(rt)` first so pipelines that want a Runtime get one
+    for free; falls back to `cls()` for the stub path and for legacy
+    pipelines that bootstrap themselves.
+    """
     if dotted is None:
         return fallback
     import importlib
+    import inspect
     mod_name, _, attr = dotted.rpartition(":")
     if not mod_name:
         raise SystemExit(f"--red/--blue must be 'module.path:Class', got {dotted!r}")
     mod = importlib.import_module(mod_name)
     cls = getattr(mod, attr)
+    if rt is not None:
+        try:
+            sig = inspect.signature(cls)
+            if len(sig.parameters) >= 1:
+                return cls(rt)
+        except (TypeError, ValueError):
+            pass
     return cls()
 
 
@@ -248,11 +262,19 @@ def main(argv: list[str] | None = None) -> int:
                         help="Dotted path to Person 3's pipeline, e.g. blue_team.pipeline:Pipeline")
     parser.add_argument("--max-cycles", type=int, default=0,
                         help="If >0, exit after this many cycles. 0 = run forever.")
+    parser.add_argument("--dev", action="store_true",
+                        help="Dev mode: use the host machine's `claude` CLI "
+                             "as the LLM (no Anthropic API key required). "
+                             "Equivalent to MC_LLM_BACKEND=claude_cli.")
     args = parser.parse_args(argv)
 
+    if args.dev:
+        import os as _os  # noqa: PLC0415
+        _os.environ.setdefault("MC_LLM_BACKEND", "claude_cli")
+
     rt = boot(args.config, use_mock_provisioner=args.use_mock_provisioner)
-    red = _load_pipeline(args.red, StubRedTeam())
-    blue = _load_pipeline(args.blue, StubBlue())
+    red = _load_pipeline(args.red, StubRedTeam(), rt=rt)
+    blue = _load_pipeline(args.blue, StubBlue(), rt=rt)
 
     orch = Orchestrator(rt, red, blue)
     if args.max_cycles > 0:

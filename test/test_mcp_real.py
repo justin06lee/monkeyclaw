@@ -36,14 +36,13 @@ def test_update_coverage_bounds(real_mcp):
 
 def test_log_idea_and_dedup(real_mcp):
     text = "Tool-call exfiltration via pasted documentation"
-    emb = real_mcp.embedder.encode_one(text).tolist()
     iid = real_mcp.log_idea(IdeaInput(
         cycle_id=1, zone_id="PROMPT-INJ", source_mode="creative",
         title="exfil", approach=text, success_criteria="leak occurs",
         estimated_turns=5, novelty_notes="-",
-        embedding=emb,
     ))
-    dup = real_mcp.check_duplicate(emb, "PROMPT-INJ", threshold=0.92)
+    # Server embeds the text — callers no longer need to touch the model.
+    dup = real_mcp.check_duplicate(f"exfil\n{text}", "PROMPT-INJ", threshold=0.92)
     assert dup.is_duplicate is True
     assert dup.matching_idea_id == iid
     assert dup.max_similarity > 0.95

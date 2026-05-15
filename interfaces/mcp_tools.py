@@ -79,12 +79,16 @@ class MonkeyClawMCP(Protocol):
     # Ideation
     # ------------------------------------------------------------------
     def check_duplicate(
-        self, embedding: list[float], zone: str, threshold: float
+        self, text: str, zone: str, threshold: float
     ) -> DupResult:
         """Cosine similarity against all prior ideas for this zone.
 
+        The server embeds the text with the configured embedding model and
+        compares it against the vector index for the given zone. Keeping the
+        embedding model server-side means red_team/ and blue_team/ never need
+        to import sentence-transformers.
+
         Returns max similarity + matching idea_id if above threshold.
-        Embedding must be 384-dim float32.
         """
         ...
 
