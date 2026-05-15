@@ -146,6 +146,57 @@ def _cmd_repro(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# blue-team — demo mode: triage -> patch -> test, output only
+# ---------------------------------------------------------------------------
+
+
+def _indent(text: str, pad: str = "      ") -> str:
+    return "\n".join(pad + ln for ln in (text or "").splitlines())
+
+
+def _cmd_blueteam(args: argparse.Namespace) -> int:
+    from infra.bootstrap import boot
+
+    # The blue triage/patch/test stages never provision a victim (only the
+    # verifier does, which demo mode skips) — boot with the mock provisioner.
+    rt = boot(use_mock_provisioner=True)
+    try:
+        packages = list(rt.mcp.get_blue_team_queue())
+        if args.vuln_id:
+            packages = [p for p in packages if args.vuln_id in (p.vuln_id, p.finding_id)]
+        if not packages:
+            print("no repro packages ready for the blue team. "
+                  "Run `monkeyclaw repro <finding_id>` first.")
+            return 0
+        from blue_team.pipeline import Pipeline as BluePipeline
+
+        blue = BluePipeline(rt)
+        tasks = blue.triage.triage(packages)
+        print("=== BLUE TEAM (demo mode — output only, nothing applied) ===")
+        print(f"triaged {len(packages)} package(s) -> {len(tasks)} fix task(s)\n")
+        for task in tasks:
+            print(f"--- task {task.task_id}  severity={task.severity}  "
+                  f"vulns={','.join(task.vuln_ids)}")
+            candidates = blue.patch_generator.generate_for_task(task)
+            print(f"  {len(candidates)} patch candidate(s):")
+            for c in candidates:
+                print(f"\n  [{c.patch_id}] {c.approach}  (invasiveness: {c.invasiveness})")
+                print(f"    {c.explanation}")
+                if c.diff.strip():
+                    print("    diff:")
+                    print(_indent(c.diff[:1200]))
+            if candidates and task.packages:
+                pair = blue.test_generator.generate(task.packages[0], candidates[0])
+                print(f"\n  regression test [{pair.vuln_id}]:")
+                print(_indent(pair.positive_test.test_script[:900]))
+            print()
+        print("(demo mode — patches were NOT applied or verified against NemoClaw)")
+        return 0
+    finally:
+        rt.shutdown()
+
+
+# ---------------------------------------------------------------------------
 # dashboard
 # ---------------------------------------------------------------------------
 
@@ -191,6 +242,12 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("vuln_id", help="finding_id to reproduce")
     rp.add_argument("--mock", action="store_true", help="use the mock provisioner")
     rp.set_defaults(func=_cmd_repro)
+
+    bt = sub.add_parser("blue-team",
+                        help="demo: triage -> patch -> test for queued repros")
+    bt.add_argument("vuln_id", nargs="?", default=None,
+                    help="optional: limit to one vuln_id / finding_id")
+    bt.set_defaults(func=_cmd_blueteam)
 
     db = sub.add_parser("dashboard", help="start the live web dashboard")
     db.add_argument("--port", type=int, default=8787, help="HTTP port (default 8787)")
