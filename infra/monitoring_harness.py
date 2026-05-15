@@ -302,6 +302,13 @@ class MonitoringHarness:
         self._fs_after: FsSnapshot | None = None
         self._mem_before: dict | None = None
         self._mem_after: dict | None = None
+        # Host psutil sampling is meaningless for a real sandbox lane: the
+        # victim runs as a k3s pod, so its processes are never host
+        # processes — sampling would record host PIDs and (with no sandbox
+        # PID set) mark them all "outside the sandbox", a pure false
+        # positive. Skip it; `process_log` is left empty. Real in-pod
+        # process capture (kubectl exec ps) can be added later.
+        self._monitor_processes = cfg.sandbox_container is None
         self._sampler = _ProcSampler(
             target_pid=cfg.sandbox_pid,
             allowed_pids=set(cfg.seccomp_allowed_pids),
@@ -325,14 +332,16 @@ class MonitoringHarness:
     def start(self, initial_memory: dict | None = None) -> None:
         self._fs_before = self._snapshot()
         self._mem_before = dict(initial_memory or {})
-        self._sampler.start()
+        if self._monitor_processes:
+            self._sampler.start()
         self._started_at = time.time()
         self._start_iso = _now()
 
     def stop(self, final_memory: dict | None = None) -> None:
         self._fs_after = self._snapshot()
         self._mem_after = dict(final_memory or {})
-        self._sampler.stop()
+        if self._monitor_processes:
+            self._sampler.stop()
 
     def _snapshot(self) -> FsSnapshot:
         """Snapshot the watched paths — inside the sandbox pod if this lane
@@ -396,7 +405,7 @@ class MonitoringHarness:
             transcript=list(self.transcript),
             fs_diff=fs_diff,
             network_log=list(self.network_log),
-            process_log=list(self._sampler.events),
+            process_log=list(self._sampler.events) if self._monitor_processes else [],
             memory_diff=mem_diff,
             inference_routing_log=list(self.inference_log),
             attacker_self_assessment=self.attacker_self_assessment,

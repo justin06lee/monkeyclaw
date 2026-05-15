@@ -521,7 +521,7 @@ class VictimClient:
         *,
         auth_token: str | None = None,
         origin: str | None = None,
-        response_timeout_s: float = 180.0,
+        response_timeout_s: float = 600.0,
     ) -> None:
         self.chat_endpoint = chat_endpoint
         self.timeout_s = timeout_s

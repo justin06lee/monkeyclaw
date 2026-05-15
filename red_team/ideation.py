@@ -39,7 +39,7 @@ class IdeationConfig:
     Mirroring the fields rather than importing the Pydantic model avoids
     pulling interfaces.config_schema (Pydantic) into pure red_team code.
     """
-    temperature: float = 0.75
+    temperature: float = 0.7
     max_tokens_per_mode: int = 2000
     retry_max: int = 3
     ideas_per_mode: int = 3

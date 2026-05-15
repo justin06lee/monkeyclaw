@@ -15,8 +15,8 @@ class EmbeddingConfig(BaseModel):
 
 
 class IdeationConfig(BaseModel):
-    model: str = "claude-sonnet-4-6"
-    temperature: float = 0.75
+    model: str = "nvidia/nemotron-3-super-120b-a12b"
+    temperature: float = 0.7
     max_tokens_per_mode: int = 2000
     modes: list[str] = ["creative", "code_grounded", "history_informed"]
     dedup_threshold: float = 0.92
@@ -35,7 +35,7 @@ class JudgmentConfig(BaseModel):
     tier2_zones: list[str] = [
         "PROMPT-INJ", "SOCIAL-ENG", "MEM-STATE", "MEM-SHARED",
     ]
-    tier2_model: str = "claude-sonnet-4-6"
+    tier2_model: str = "nvidia/nemotron-3-super-120b-a12b"
     tier2_confidence_threshold: float = 0.5
 
 

@@ -431,6 +431,10 @@ class PolicyConfig:
     seccomp_profile: SeccompProfile
     agent_policy: AgentPolicy
     policy_paths: list[str]
+    # Path prefixes the sandbox/agent writes as part of normal operation
+    # (its own memory, state, logs). Files under these are excluded from
+    # filesystem-breach detection — they are expected churn, not an attack.
+    expected_churn_paths: list[str] = field(default_factory=list)
 
 
 __all__ = [

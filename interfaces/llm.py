@@ -3,25 +3,26 @@
 Lives in `interfaces/` like `types.py` and `mcp_tools.py`: Person 1 owns it,
 red_team and blue_team both import from here. No pipeline-specific logic.
 
-Three backends:
+MonkeyClaw runs on **NVIDIA Nemotron** (`nemotron-3-super-120b-a12b`) via the
+OpenAI-compatible NVIDIA inference API. Three backends:
 
-1. `AnthropicLLM` — production. Uses the anthropic Python SDK against
-   `ANTHROPIC_API_KEY`. Model defaults to the same `claude-sonnet-4-6` the
-   spec calls for, overridable via `MC_LLM_MODEL`.
+1. `NemotronLLM` — production. Talks to an OpenAI-compatible endpoint:
+   - default `https://integrate.api.nvidia.com/v1` (NVIDIA-hosted), auth via
+     `NVIDIA_API_KEY` (or `NIM_API_KEY`).
+   - or the in-sandbox managed route `https://inference.local/v1`, where the
+     NemoClaw gateway injects the credential — set `MC_NEMOTRON_BASE_URL` and
+     no key is needed.
 
-2. `ClaudeCLILLM` — `--dev` mode. Shells out to the locally-installed
-   `claude` CLI (Claude Code) with `--print` and treats stdout as the
-   response. Useful when developing without an Anthropic API key on the
-   host machine — the CLI uses the user's own login session.
+2. `ClaudeCLILLM` — dev/test fallback. Shells out to a locally-installed
+   `claude` CLI when no NVIDIA key is available. No SDK dependency.
 
-3. `MockLLM` — tests. Deterministic, pattern-matched responses keyed off the
-   prompt content so unit tests don't need network or a CLI.
+3. `MockLLM` — tests. Deterministic, pattern-matched responses.
 
-Backend selection (in priority order):
+Backend selection (priority order):
 - explicit `make_llm(backend=...)` argument
-- `MC_LLM_BACKEND` env var: `anthropic` | `claude_cli` | `mock`
-- default: `anthropic` if `ANTHROPIC_API_KEY` is set, else `claude_cli` if
-  the binary is on PATH, else `mock`.
+- `MC_LLM_BACKEND` env var: `nemotron` | `claude_cli` | `mock`
+- default: `nemotron` if an NVIDIA key is set, else `claude_cli` if the
+  binary is on PATH, else `mock`.
 """
 
 from __future__ import annotations
@@ -39,8 +40,19 @@ from typing import Any
 LOG = logging.getLogger("monkeyclaw.llm")
 
 
-DEFAULT_MODEL = "claude-sonnet-4-6"
+# NVIDIA Nemotron — the model MonkeyClaw is built on.
+DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+DEFAULT_NEMOTRON_BASE_URL = "https://integrate.api.nvidia.com/v1"
 DEFAULT_CLI_BINARY = "claude"
+
+# Appended to any prompt that expects JSON back. Nemotron, unlike Claude,
+# benefits from an explicit, terminal instruction to suppress preamble and
+# markdown fences. `extract_json` tolerates both anyway, but this keeps
+# responses clean and cheap to parse.
+JSON_ONLY_INSTRUCTION = (
+    "Respond ONLY with valid JSON. No preamble, no markdown fences, "
+    "no explanation."
+)
 
 
 @dataclass
@@ -78,24 +90,56 @@ class LLMClient(ABC):
 
 
 # ---------------------------------------------------------------------------
-# Anthropic SDK backend
+# NVIDIA Nemotron backend (OpenAI-compatible API)
 # ---------------------------------------------------------------------------
 
 
-class AnthropicLLM(LLMClient):
-    """Production backend — talks to the real Anthropic API."""
+class NemotronLLM(LLMClient):
+    """Production backend — NVIDIA Nemotron via the OpenAI-compatible API.
 
-    name = "anthropic"
+    The NVIDIA inference API speaks the OpenAI chat-completions protocol, so
+    we use the `openai` SDK pointed at an NVIDIA `base_url`. Works against
+    both the public `integrate.api.nvidia.com` endpoint (key required) and
+    the NemoClaw in-sandbox `inference.local` managed route (gateway injects
+    the credential — pass `base_url` and any placeholder key).
+    """
 
-    def __init__(self, model: str = DEFAULT_MODEL, api_key: str | None = None) -> None:
+    name = "nemotron"
+
+    def __init__(
+        self,
+        model: str = DEFAULT_MODEL,
+        *,
+        base_url: str | None = None,
+        api_key: str | None = None,
+    ) -> None:
         try:
-            import anthropic  # noqa: PLC0415
+            from openai import OpenAI  # noqa: PLC0415
         except ImportError as e:  # pragma: no cover - hard import
             raise RuntimeError(
-                "anthropic SDK not installed. `uv add anthropic` or pick a different backend."
+                "openai SDK not installed. `uv add openai` or pick a different backend."
             ) from e
         self.model = model
-        self._client = anthropic.Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
+        self.base_url = (
+            base_url
+            or os.environ.get("MC_NEMOTRON_BASE_URL")
+            or DEFAULT_NEMOTRON_BASE_URL
+        )
+        # A real key is required for integrate.api.nvidia.com; the in-sandbox
+        # managed route (inference.local) has the gateway inject auth, so a
+        # placeholder is accepted there.
+        key = (
+            api_key
+            or os.environ.get("NVIDIA_API_KEY")
+            or os.environ.get("NIM_API_KEY")
+        )
+        if not key and "inference.local" not in self.base_url:
+            raise RuntimeError(
+                "No NVIDIA API key found. Set NVIDIA_API_KEY (or NIM_API_KEY), "
+                "or point MC_NEMOTRON_BASE_URL at the in-sandbox managed route "
+                "(inference.local)."
+            )
+        self._client = OpenAI(base_url=self.base_url, api_key=key or "managed")
 
     def complete(
         self,
@@ -104,38 +148,41 @@ class AnthropicLLM(LLMClient):
         max_tokens: int = 2000,
         temperature: float = 0.7,
     ) -> LLMResponse:
-        api_messages = [{"role": m.role, "content": m.content} for m in messages]
-        kwargs: dict[str, Any] = {
-            "model": self.model,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "messages": api_messages,
-        }
+        # OpenAI chat format carries the system prompt as a leading message.
+        api_messages: list[dict[str, str]] = []
         if system:
-            kwargs["system"] = system
-        resp = self._client.messages.create(**kwargs)
-        text = "".join(
-            block.text for block in resp.content if getattr(block, "type", None) == "text"
+            api_messages.append({"role": "system", "content": system})
+        api_messages.extend(
+            {"role": m.role, "content": m.content} for m in messages
         )
+        resp = self._client.chat.completions.create(
+            model=self.model,
+            messages=api_messages,  # type: ignore[arg-type]
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        choice = resp.choices[0]
+        text = choice.message.content or ""
+        usage = resp.usage
         return LLMResponse(
             text=text,
-            input_tokens=getattr(resp.usage, "input_tokens", 0),
-            output_tokens=getattr(resp.usage, "output_tokens", 0),
-            raw={"stop_reason": resp.stop_reason, "id": resp.id},
+            input_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
+            output_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
+            raw={"finish_reason": choice.finish_reason, "id": resp.id},
         )
 
 
 # ---------------------------------------------------------------------------
-# Claude CLI backend (--dev)
+# Claude CLI backend (dev / test fallback)
 # ---------------------------------------------------------------------------
 
 
 class ClaudeCLILLM(LLMClient):
-    """Dev backend — shells out to the host machine's `claude` CLI.
+    """Dev fallback — shells out to a locally-installed `claude` CLI.
 
-    Lets developers run MonkeyClaw without an Anthropic API key, using their
-    own Claude Code login session. Slow (process spawn per call) and lacks
-    fine-grained token accounting, but production-equivalent in output quality.
+    Used only when no NVIDIA key is configured, so the pipeline stays
+    runnable for local development and testing. Not the production path:
+    MonkeyClaw ships on Nemotron.
     """
 
     name = "claude_cli"
@@ -145,7 +192,7 @@ class ClaudeCLILLM(LLMClient):
         if not (shutil.which(binary) or os.path.exists(binary)):
             raise RuntimeError(
                 f"claude CLI not found on PATH (looked for {binary!r}). "
-                f"Install Claude Code or pick a different backend."
+                f"Set NVIDIA_API_KEY to use the Nemotron backend instead."
             )
         self.binary = path
         self.timeout_s = timeout_s
@@ -157,9 +204,6 @@ class ClaudeCLILLM(LLMClient):
         max_tokens: int = 2000,
         temperature: float = 0.7,
     ) -> LLMResponse:
-        # `claude --print` doesn't support temperature/max_tokens flags; we
-        # encode the chat transcript as plain text and let the CLI do its
-        # default thing. This is the dev backend — quality > knob-twiddling.
         prompt = self._render_prompt(system, messages)
         cmd = [self.binary, "--print", prompt]
         LOG.debug("invoking claude cli: %d chars prompt", len(prompt))
@@ -280,6 +324,10 @@ class MockLLM(LLMClient):
 # ---------------------------------------------------------------------------
 
 
+def _have_nvidia_key() -> bool:
+    return bool(os.environ.get("NVIDIA_API_KEY") or os.environ.get("NIM_API_KEY"))
+
+
 def make_llm(backend: str | None = None, *, model: str | None = None) -> LLMClient:
     """Resolve and construct an LLM client.
 
@@ -289,16 +337,16 @@ def make_llm(backend: str | None = None, *, model: str | None = None) -> LLMClie
     model = model or os.environ.get("MC_LLM_MODEL", DEFAULT_MODEL)
 
     if backend is None:
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            backend = "anthropic"
+        if _have_nvidia_key() or os.environ.get("MC_NEMOTRON_BASE_URL"):
+            backend = "nemotron"
         elif shutil.which(DEFAULT_CLI_BINARY):
             backend = "claude_cli"
         else:
             backend = "mock"
         LOG.info("auto-selected llm backend=%s", backend)
 
-    if backend == "anthropic":
-        return AnthropicLLM(model=model)
+    if backend == "nemotron":
+        return NemotronLLM(model=model)
     if backend == "claude_cli":
         return ClaudeCLILLM()
     if backend == "mock":
@@ -373,12 +421,13 @@ def extract_json(text: str) -> Any:
 
 
 __all__ = [
-    "AnthropicLLM",
     "ClaudeCLILLM",
+    "JSON_ONLY_INSTRUCTION",
     "LLMClient",
     "LLMMessage",
     "LLMResponse",
     "MockLLM",
+    "NemotronLLM",
     "extract_json",
     "make_llm",
 ]

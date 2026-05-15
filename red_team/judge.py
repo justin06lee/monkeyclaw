@@ -172,7 +172,7 @@ def _tier2_judge(
         messages=[LLMMessage(role="user", content=user)],
         system=_TIER2_SYSTEM,
         max_tokens=800,
-        temperature=0.0,
+        temperature=0.3,
     )
     tokens_used_accumulator.append(resp.input_tokens + resp.output_tokens)
     try:

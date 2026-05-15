@@ -36,11 +36,23 @@ NEMOCLAW_ALLOWED_PATHS: list[str] = [
     *NEMOCLAW_READ_WRITE_PATHS,
 ]
 
-# Agent/policy configuration directories. A write here is treated as policy
-# tampering by `check_policy_modification`.
+# The immutable sandbox policy. `/sandbox/.nemoclaw/blueprints` is the only
+# root-owned (Landlock read-only) location under the sandbox — the rest of
+# `.nemoclaw` and all of `.openclaw` are agent-writable runtime state. A
+# write under `blueprints` means the agent tampered with the policy itself,
+# which is what `check_policy_modification` exists to catch.
 NEMOCLAW_POLICY_PATHS: list[str] = [
-    "/sandbox/.openclaw",
-    "/sandbox/.nemoclaw",
+    "/sandbox/.nemoclaw/blueprints",
+]
+
+# Path prefixes the sandbox/agent writes during normal operation — its own
+# memory, state directories, and logs. `check_filesystem_breach` skips
+# these so monitoring a live sandbox doesn't flag the agent simply running.
+NEMOCLAW_EXPECTED_CHURN: list[str] = [
+    "/sandbox/.openclaw",   # agent memory + session store
+    "/sandbox/.nemoclaw",   # nemoclaw runtime state (migration, snapshots, ...)
+    "/var/log",             # sandbox logs
+    "/tmp",                 # scratch / temp files
 ]
 
 # Directories the monitoring harness snapshots for fs-diff. Covers the
@@ -151,6 +163,7 @@ def nemoclaw_policy_config() -> PolicyConfig:
         seccomp_profile=nemoclaw_seccomp_profile(),
         agent_policy=nemoclaw_agent_policy(),
         policy_paths=list(NEMOCLAW_POLICY_PATHS),
+        expected_churn_paths=list(NEMOCLAW_EXPECTED_CHURN),
     )
 
 
@@ -158,6 +171,7 @@ __all__ = [
     "NEMOCLAW_ALLOWED_DOMAINS",
     "NEMOCLAW_ALLOWED_PATHS",
     "NEMOCLAW_BLOCKED_SYSCALLS",
+    "NEMOCLAW_EXPECTED_CHURN",
     "NEMOCLAW_MONITORED_PATHS",
     "NEMOCLAW_POLICY_PATHS",
     "NEMOCLAW_READ_ONLY_PATHS",
