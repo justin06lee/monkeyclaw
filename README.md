@@ -1,114 +1,94 @@
-# MonkeyClaw
+# MonkeyClaw 🐒🦞
 
-Continuous red-team + repro + blue-team loop targeting NemoClaw / OpenClaw
-deployments.
+**Autonomous red-team / blue-team security agent for NVIDIA NemoClaw.**
 
-The codebase is split into three vertical slices that develop in parallel
-with zero merge conflicts. See `.agents/overview.md` for the full split.
+MonkeyClaw is an OpenClaw agent that continuously probes NemoClaw's security
+controls — sandbox isolation, privacy routing, permission enforcement, and
+skill-pipeline integrity. It generates attack ideas using NVIDIA Nemotron,
+executes them against live NemoClaw sandboxes, judges the results with tiered
+programmatic + semantic analysis, and produces reproducible vulnerability
+reports.
 
-## Layout
-
-```
-monkeyclaw/
-├── interfaces/          ← Person 1 owns. Read-only for P2 & P3.
-│   ├── schema.sql       database schema (frozen after Day-1 signoff)
-│   ├── types.py         shared dataclasses
-│   ├── mcp_tools.py     MCP tool Protocol — both servers conform
-│   ├── provisioning.py  Victim provisioning Protocol
-│   └── config_schema.py Pydantic models for runtime config
-├── infra/               ← Person 1 ONLY
-│   ├── database.py             SQLite + sqlite-vec wrapper, embedding model
-│   ├── mock_mcp.py             dummy MCP for Day 2 development
-│   ├── mcp_server.py           real MCP backed by the DB
-│   ├── monitoring_harness.py   fs/net/proc/mem/inference capture per lane
-│   ├── codebase_indexer.py     vector-index the NemoClaw source tree
-│   ├── lane_scheduler.py       pool of N concurrent execution lanes
-│   ├── orchestrator.py         cycle loop, plug-in red/blue pipelines
-│   ├── provisioning_nemoclaw.py  shells to `nemoclaw` CLI; MockProvisioner too
-│   ├── notifications.py        Telegram + webhooks
-│   ├── config.py               YAML + env override loader
-│   └── bootstrap.py            wires it all together
-├── red_team/            ← Person 2 ONLY (created when P2 starts)
-├── blue_team/           ← Person 3 ONLY (created when P3 starts)
-├── configs/             ← YAML defaults
-├── test/                ← pytest suite
-└── data/                ← SQLite + backups (gitignored)
-```
-
-## Quickstart
+## Quick Start
 
 ```bash
-# One-time setup
-uv sync                                       # installs deps into .venv
-uv run python -m infra.codebase_indexer       # index ~/NemoClaw into the vector store
+uv sync
 
-# Run the mock MCP for Day 2 development (Persons 2 & 3 hit this)
-uv run python -m infra.mock_mcp --host 127.0.0.1 --port 7321
+# Nemotron credentials (host run); inside a sandbox use the managed route:
+#   export MC_NEMOTRON_BASE_URL=https://inference.local/v1
+export NVIDIA_API_KEY=<your nvidia api key>
 
-# Run the real MCP against the SQLite DB
-uv run python -m infra.mcp_server --host 127.0.0.1 --port 7322
+# run 3 red-team cycles against the live victim sandbox
+uv run monkeyclaw run --cycles 3 --target monkey-victim
 
-# Run two stub orchestrator cycles end-to-end with the mock provisioner
-uv run python -m infra.orchestrator --use-mock-provisioner --max-cycles 2
+# inspect results
+uv run monkeyclaw status
+uv run monkeyclaw findings
 
-# Plug in Persons 2 and 3 (when they're ready)
-uv run python -m infra.orchestrator \
-    --red red_team.pipeline:Pipeline \
-    --blue blue_team.pipeline:Pipeline
-
-# Tests
-uv run pytest test/ -q
+# live demo dashboard — http://127.0.0.1:8787
+uv run monkeyclaw dashboard
 ```
 
-## Configuration
+Optional live Telegram feed of confirmed vulns + cycle summaries:
 
-Defaults live in `configs/monkeyclaw.yaml`. Two ways to override:
-
-1. Layer a project-specific YAML: `--config path/to/override.yaml`
-2. Environment variables with prefix `MC_` and `__` for nesting:
-   - `MC_LANES__POOL_SIZE=8`
-   - `MC_IDEATION__DEDUP_THRESHOLD=0.95`
-   - `MC_STORAGE__DB_PATH=/var/lib/monkeyclaw.db`
-
-## For Persons 2 and 3
-
-### Calling MCP tools
-
-Both the mock and real MCP servers expose the same surface (`MonkeyClawMCP`
-Protocol in `interfaces/mcp_tools.py`). Two transports:
-
-- **In-process:** import `MockMCP` or `MCPServer` and call methods directly.
-- **HTTP:** `POST http://host:port/tool/<tool_name>` with a JSON body matching
-  the kwarg names of the tool method. Returns the result as JSON.
-
-### Wiring your pipeline into the orchestrator
-
-Your pipeline class must duck-type the appropriate Protocol:
-
-```python
-# red_team/pipeline.py
-class Pipeline:
-    def generate_ideas(self, cycle_id: int, n_lanes: int) -> list[IdeaObject]: ...
-    def execute_lane(self, idea, victim, harness, lane_cfg) -> None: ...
-    def judge(self, lane_result: LaneResult) -> None: ...
-
-# blue_team/pipeline.py
-class Pipeline:
-    def process_repro_queue(self) -> int: ...
-    def process_blue_queue(self) -> int: ...
-    def run_regression(self) -> None: ...
+```bash
+export MC_NOTIFICATIONS__TELEGRAM_BOT_TOKEN=<token>
+export MC_NOTIFICATIONS__TELEGRAM_CHAT_ID=<chat id>
 ```
 
-The orchestrator instantiates each via `module.path:ClassName` and feeds it
-the lane scheduler, MCP server, and provisioner.
+## Architecture
 
-### Tier 1 checks (P3 imports from P2)
+MonkeyClaw runs a continuous **red → judge → blue** loop over a registry of
+NemoClaw attack-surface *zones* (sandbox filesystem/network/process, privacy
+routing, permission model, skill pipeline, prompt injection, memory).
 
-Person 3 imports `red_team.checks.run_all_tier1_checks` for replay
-verification. The function signatures are documented in `.agents/interfaces.md`
-Contract 4. Person 2 publishes stub implementations by Day 3.
+**Red team** — `red_team/`
 
-## Day-by-Day
+1. **Ideation** — three Nemotron prompt modes (creative, code-grounded,
+   history-informed) generate attack ideas for the lowest-coverage zone.
+2. **Dedup + priority** — embedding similarity drops repeats; ideas are scored
+   by novelty × impact × coverage gap.
+3. **Execution** — an attacker agent drives a multi-turn attack against a live
+   victim over the OpenClaw gateway WebSocket.
+4. **Judgment** — Tier 1 runs six programmatic checks (filesystem, network,
+   process, permission, PII routing, policy modification); Tier 2 is a Nemotron
+   semantic judge for prompt-injection / social-engineering / memory zones.
+5. **Routing** — confirmed/suspicious findings are logged and queued for repro.
 
-See `.agents/timeline.md`. Day 1 deliverables (interface contracts + mock MCP)
-are complete and shipped — Persons 2 and 3 can begin Day 2 work now.
+**Blue team** — `blue_team/`
+
+Replay-minimizer → root-cause locator → repro writer → cold verifier → triage →
+patch generator → test generator → patch verifier → regression runner.
+
+**Infrastructure** — `infra/`
+
+MCP server + SQLite knowledge base, the snapshot-based NemoClaw victim
+provisioner, the serial lane scheduler, the monitoring harness (sandbox fs-diff
+via the gateway), Telegram/webhook notifications, and the live web dashboard.
+
+**Persistent memory** — a SQLite knowledge base holds every zone's coverage
+score, the full findings history, and a growing regression suite. Ideation
+Mode C queries past findings, so each cycle is informed by everything tried
+before.
+
+The full design lives in `.agents/` (workload split, interface contracts,
+component specs).
+
+## Packaged as an OpenClaw skill
+
+`skill/SKILL.md` makes MonkeyClaw installable into any OpenClaw sandbox via
+`nemoclaw <sandbox> skill install skill/`. The host agent then drives the
+autonomous loop through the `monkeyclaw` CLI.
+
+## Built With
+
+- **OpenClaw** agent framework
+- **NVIDIA Nemotron** (`nemotron-3-super-120b-a12b`)
+- **NVIDIA NemoClaw** sandbox runtime
+- **MCP** (Model Context Protocol) for agent–tool communication
+
+## Team
+
+Justin Lee, Ezzy Rappeport, George Gong
+
+## Hack-a-Claw × NVIDIA @ UCSC — May 2026
