@@ -19,9 +19,14 @@ from interfaces.types import (
     ArchiveCell,
     ArchiveUpdateInput,
     CodeChunk,
+    ControlValidationRun,
     CoverageGap,
     CycleSummary,
     CycleSummaryInput,
+    DetectionCoverage,
+    DetectionRule,
+    DetectionRuleInput,
+    DetectionVerdict,
     DupResult,
     FindingInput,
     FindingRecord,
@@ -35,6 +40,7 @@ from interfaces.types import (
     PolicyCorpusResultInput,
     RegressionTest,
     RegressionTestInput,
+    ReportCard,
     ReproPackage,
     ReproPackageInput,
     TelemetryEvent,
@@ -215,6 +221,55 @@ class MonkeyClawMCP(Protocol):
 
     def get_policy_corpus_results(self, run_id: str) -> list[PolicyCorpusResult]:
         """All corpus results for a given evaluation run."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Purple team — detection-as-pass scoring (purple-team spec §8)
+    # ------------------------------------------------------------------
+    def log_detection_result(self, verdict: DetectionVerdict) -> str:
+        """Persist one DetectionVerdict into detection_results; return result_id."""
+        ...
+
+    def get_detection_results(
+        self, zone_id: str | None = None
+    ) -> list[DetectionVerdict]:
+        """All detection results, optionally filtered to one zone."""
+        ...
+
+    def log_detection_rule(self, rule: DetectionRuleInput) -> str:
+        """Persist one detection rule; return rule_id."""
+        ...
+
+    def get_detection_rules(
+        self, zone_id: str | None = None
+    ) -> list[DetectionRule]:
+        """Active + candidate detection rules, optionally filtered to a zone."""
+        ...
+
+    def upsert_detection_coverage(self, coverage: DetectionCoverage) -> None:
+        """Insert or replace the detection-coverage row for a zone."""
+        ...
+
+    def get_detection_coverage(self, zone_id: str) -> DetectionCoverage | None:
+        """The current detection-coverage row for a zone, or None."""
+        ...
+
+    def log_control_validation_run(self, run: ControlValidationRun) -> str:
+        """Persist a control-validation run; return run_id."""
+        ...
+
+    def get_control_validation_runs(
+        self, kind: str | None = None
+    ) -> list[ControlValidationRun]:
+        """Validation runs newest-first, optionally filtered by kind."""
+        ...
+
+    def log_report_card(self, card: ReportCard) -> str:
+        """Persist a report card; return card_id."""
+        ...
+
+    def get_latest_report_card(self) -> ReportCard | None:
+        """The most recently generated report card, or None."""
         ...
 
     # ------------------------------------------------------------------

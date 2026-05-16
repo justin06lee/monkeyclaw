@@ -26,9 +26,14 @@ from interfaces.types import (
     ArchiveCell,
     ArchiveUpdateInput,
     CodeChunk,
+    ControlValidationRun,
     CoverageGap,
     CycleSummary,
     CycleSummaryInput,
+    DetectionCoverage,
+    DetectionRule,
+    DetectionRuleInput,
+    DetectionVerdict,
     DupResult,
     FindingInput,
     FindingRecord,
@@ -42,6 +47,7 @@ from interfaces.types import (
     PolicyCorpusResultInput,
     RegressionTest,
     RegressionTestInput,
+    ReportCard,
     ReproPackage,
     ReproPackageInput,
     TelemetryEvent,
@@ -641,6 +647,145 @@ class MCPServer(MonkeyClawMCP):
             passed=bool(r["passed"]), evidence=r["evidence"],
             notes=r["notes"], created_at=r["created_at"],
         ) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Purple team — detection-as-pass scoring (purple-team spec §8)
+    # ------------------------------------------------------------------
+    def log_detection_result(self, verdict: DetectionVerdict) -> str:
+        rid = _new_id("DET")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO detection_results(result_id, session_id, "
+                "execution_id, zone_id, quadrant, prevention, observability, "
+                "rule_id, evidence, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (rid, verdict.session_id, verdict.execution_id, verdict.zone_id,
+                 verdict.quadrant, verdict.prevention, verdict.observability,
+                 verdict.rule_id, verdict.evidence, _now()),
+            )
+        return rid
+
+    def get_detection_results(
+        self, zone_id: str | None = None
+    ) -> list[DetectionVerdict]:
+        if zone_id is None:
+            rows = self.db.fetchall(
+                "SELECT * FROM detection_results ORDER BY created_at")
+        else:
+            rows = self.db.fetchall(
+                "SELECT * FROM detection_results WHERE zone_id=? "
+                "ORDER BY created_at", (zone_id,))
+        return [DetectionVerdict(
+            execution_id=r["execution_id"], session_id=r["session_id"],
+            zone_id=r["zone_id"], quadrant=r["quadrant"],
+            prevention=r["prevention"], observability=r["observability"],
+            rule_id=r["rule_id"], evidence=r["evidence"]) for r in rows]
+
+    def log_detection_rule(self, rule: DetectionRuleInput) -> str:
+        rid = _new_id("RULE")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO detection_rules(rule_id, zone_id, "
+                "source_finding_id, logic, expected_telemetry_signature, "
+                "response_action, status, created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (rid, rule.zone_id, rule.source_finding_id, rule.logic,
+                 rule.expected_telemetry_signature, rule.response_action,
+                 rule.status, _now()),
+            )
+        return rid
+
+    def get_detection_rules(
+        self, zone_id: str | None = None
+    ) -> list[DetectionRule]:
+        if zone_id is None:
+            rows = self.db.fetchall(
+                "SELECT * FROM detection_rules ORDER BY created_at")
+        else:
+            rows = self.db.fetchall(
+                "SELECT * FROM detection_rules WHERE zone_id=? "
+                "ORDER BY created_at", (zone_id,))
+        return [DetectionRule(
+            rule_id=r["rule_id"], zone_id=r["zone_id"],
+            source_finding_id=r["source_finding_id"], logic=r["logic"],
+            expected_telemetry_signature=r["expected_telemetry_signature"],
+            response_action=r["response_action"], status=r["status"],
+            created_at=r["created_at"]) for r in rows]
+
+    def upsert_detection_coverage(self, coverage: DetectionCoverage) -> None:
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO detection_coverage(zone_id, coverage_score, "
+                "sample_count, updated_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(zone_id) DO UPDATE SET "
+                "coverage_score=excluded.coverage_score, "
+                "sample_count=excluded.sample_count, "
+                "updated_at=excluded.updated_at",
+                (coverage.zone_id, coverage.coverage_score,
+                 coverage.sample_count, coverage.updated_at or _now()),
+            )
+
+    def get_detection_coverage(self, zone_id: str) -> DetectionCoverage | None:
+        row = self.db.fetchone(
+            "SELECT * FROM detection_coverage WHERE zone_id=?", (zone_id,))
+        if row is None:
+            return None
+        return DetectionCoverage(
+            zone_id=row["zone_id"], coverage_score=row["coverage_score"],
+            sample_count=row["sample_count"], updated_at=row["updated_at"])
+
+    def log_control_validation_run(self, run: ControlValidationRun) -> str:
+        rid = run.run_id or _new_id("CVR")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO control_validation_runs(run_id, kind, "
+                "cases_total, cases_passed, regressions, victim_build_id, "
+                "status, created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (rid, run.kind, run.cases_total, run.cases_passed,
+                 json.dumps(run.regressions), run.victim_build_id,
+                 run.status, run.created_at or _now()),
+            )
+        return rid
+
+    def get_control_validation_runs(
+        self, kind: str | None = None
+    ) -> list[ControlValidationRun]:
+        if kind is None:
+            rows = self.db.fetchall(
+                "SELECT * FROM control_validation_runs ORDER BY created_at DESC")
+        else:
+            rows = self.db.fetchall(
+                "SELECT * FROM control_validation_runs WHERE kind=? "
+                "ORDER BY created_at DESC", (kind,))
+        return [ControlValidationRun(
+            run_id=r["run_id"], kind=r["kind"], cases_total=r["cases_total"],
+            cases_passed=r["cases_passed"],
+            regressions=json.loads(r["regressions"]),
+            victim_build_id=r["victim_build_id"], status=r["status"],
+            created_at=r["created_at"]) for r in rows]
+
+    def log_report_card(self, card: ReportCard) -> str:
+        from dataclasses import asdict
+        cid = card.card_id or _new_id("CARD")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO report_cards(card_id, generated_at, "
+                "dimensions, summary) VALUES(?,?,?,?)",
+                (cid, card.generated_at or _now(),
+                 json.dumps([asdict(d) for d in card.dimensions]),
+                 card.summary),
+            )
+        return cid
+
+    def get_latest_report_card(self) -> ReportCard | None:
+        from interfaces.types import ReportCardDimension
+        row = self.db.fetchone(
+            "SELECT * FROM report_cards ORDER BY generated_at DESC LIMIT 1")
+        if row is None:
+            return None
+        dims = [ReportCardDimension(**d)
+                for d in json.loads(row["dimensions"])]
+        return ReportCard(
+            card_id=row["card_id"], generated_at=row["generated_at"],
+            dimensions=dims, summary=row["summary"])
 
     # ------------------------------------------------------------------
     # Queue / package / patch status transitions

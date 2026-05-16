@@ -21,3 +21,10 @@ def test_defaults_load():
     assert cfg.lanes.lane_timeout_seconds == 1200
     assert cfg.nemoclaw.repo_path
     assert "PROMPT-INJ" in cfg.judgment.tier2_zones
+
+
+def test_purple_config_defaults():
+    cfg = load_config()
+    assert cfg.purple.enabled is True
+    assert cfg.purple.full_sweep_every == 10
+    assert cfg.purple.self_governance_enabled is True

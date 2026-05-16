@@ -56,3 +56,29 @@ def test_individual_endpoints_respond(tmp_path: Path):
     for path in ("/api/status", "/api/zones", "/api/findings", "/api/telemetry",
                  "/api/judges", "/api/patches", "/api/packages"):
         assert client.get(path).status_code == 200, path
+
+
+def test_dashboard_snapshot_includes_purple_heatmap(tmp_path):
+    from infra.dashboard import _all
+    from infra.database import Database
+
+    db = Database(tmp_path / "d.db")
+    db.close()
+    snap = _all(str(tmp_path / "d.db"))
+    assert "purple_heatmap" in snap
+    assert "purple_report_card" in snap
+    assert "purple_timeline" in snap
+
+
+def test_purple_heatmap_has_one_cell_per_zone(tmp_path):
+    from infra.dashboard import _all
+    from infra.database import Database
+
+    db = Database(tmp_path / "d.db")
+    db.close()
+    snap = _all(str(tmp_path / "d.db"))
+    # 18 registered zones.
+    assert len(snap["purple_heatmap"]) == 18
+    for cell in snap["purple_heatmap"]:
+        assert {"zone_id", "attack_coverage", "detection_coverage"} \
+            <= set(cell)

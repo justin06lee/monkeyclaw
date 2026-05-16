@@ -236,6 +236,15 @@ class CodeContextConfig(BaseModel):
     argyph_binary: str | None = None  # explicit path; None = autodetect
 
 
+class PurpleConfig(BaseModel):
+    """Purple-team cadence + toggles (purple-team spec §10, §7.8)."""
+
+    enabled: bool = True
+    # Run validate_full() + self_governance every N cycles (spec §10).
+    full_sweep_every: int = 10
+    self_governance_enabled: bool = True
+
+
 class MonkeyClawConfig(BaseModel):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     ideation: IdeationConfig = Field(default_factory=IdeationConfig)
@@ -251,3 +260,4 @@ class MonkeyClawConfig(BaseModel):
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
     code_context: CodeContextConfig = Field(default_factory=CodeContextConfig)
+    purple: PurpleConfig = Field(default_factory=PurpleConfig)

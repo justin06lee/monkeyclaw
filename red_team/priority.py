@@ -105,11 +105,18 @@ def coverage_gap_for(zone: CoverageGap) -> float:
 def score_ideas(
     outcomes: list[DedupOutcome],
     zones_by_id: dict[str, CoverageGap],
+    detection_coverage_gap: dict[str, float] | None = None,
 ) -> list[PrioritizedIdea]:
     """Compute the priority score for every KEPT idea, sort descending.
 
     Discarded duplicates are not scored — they're already logged with
     `deduplicated=true` and would only pollute the prioritized list.
+
+    `detection_coverage_gap` is an optional purple-team signal: a per-zone
+    0..1 value where 1.0 means the defense is fully blind in that zone.
+    When supplied, a blind zone gets a multiplicative priority boost so
+    red attacks where the defense cannot see (purple-team spec §7.7).
+    Absent signal -> current behaviour, exactly.
     """
     out: list[PrioritizedIdea] = []
     for oc in outcomes:
@@ -125,6 +132,13 @@ def score_ideas(
         cg = coverage_gap_for(zone)
         sw = severity_weight_for(zone)
         score = novelty * impact * cg * sw
+        det_gap = 0.0
+        if detection_coverage_gap:
+            det_gap = max(0.0, min(1.0,
+                          detection_coverage_gap.get(oc.idea.zone_id, 0.0)))
+        # A fully-blind zone (det_gap=1.0) multiplies priority by 1.5.
+        boost = 1.0 + 0.5 * det_gap
+        score *= boost
         oc.idea.priority_score = score
         out.append(PrioritizedIdea(
             idea=oc.idea,
@@ -134,6 +148,7 @@ def score_ideas(
                 "impact": impact,
                 "coverage_gap": cg,
                 "severity_weight": sw,
+                "detection_coverage_gap": det_gap,
             },
         ))
     out.sort(key=lambda p: p.priority, reverse=True)
@@ -144,9 +159,10 @@ def select_top_n(
     outcomes: list[DedupOutcome],
     zones_by_id: dict[str, CoverageGap],
     n: int,
+    detection_coverage_gap: dict[str, float] | None = None,
 ) -> list[PrioritizedIdea]:
     """Score and pick the top-n. Convenience wrapper."""
-    return score_ideas(outcomes, zones_by_id)[:max(0, n)]
+    return score_ideas(outcomes, zones_by_id, detection_coverage_gap)[:max(0, n)]
 
 
 __all__ = [
