@@ -185,11 +185,29 @@ def _archive(db_path: str) -> list[dict[str, Any]]:
 
 
 def _operators(db_path: str) -> list[dict[str, Any]]:
-    return _query(
+    rows = _query(
         db_path,
-        "SELECT operator, uses, successes, avg_score FROM mutation_operator_stats "
-        "ORDER BY successes DESC, uses DESC",
+        "SELECT operator, uses, successes, avg_score, last_lift "
+        "FROM mutation_operator_stats ORDER BY successes DESC, uses DESC",
     )
+    for r in rows:
+        uses = r.get("uses") or 0
+        r["success_rate"] = (r.get("successes") or 0) / uses if uses else 0.0
+    return rows
+
+
+def _operators_by_zone(db_path: str) -> list[dict[str, Any]]:
+    """Per-zone mutation-operator breakdown — the global rollup's companion."""
+    rows = _query(
+        db_path,
+        "SELECT zone_id, operator, uses, successes, avg_score, last_lift "
+        "FROM mutation_operator_stats_by_zone "
+        "ORDER BY zone_id, successes DESC, uses DESC",
+    )
+    for r in rows:
+        uses = r.get("uses") or 0
+        r["success_rate"] = (r.get("successes") or 0) / uses if uses else 0.0
+    return rows
 
 
 def _status(db_path: str) -> dict[str, Any]:
@@ -967,6 +985,15 @@ def build_dashboard_app(db_path: str):
     @app.get("/api/operators")
     def api_operators() -> list[dict[str, Any]]:
         return _operators(db_path)
+
+    @app.get("/api/mutation-operators")
+    def api_mutation_operators() -> dict[str, Any]:
+        """Mutation-operator success signal: per-operator uses /
+        success-rate / avg-lift, global rollup plus the per-zone breakdown."""
+        return {
+            "global": _operators(db_path),
+            "by_zone": _operators_by_zone(db_path),
+        }
 
     @app.get("/api/judges")
     def api_judges() -> list[dict[str, Any]]:

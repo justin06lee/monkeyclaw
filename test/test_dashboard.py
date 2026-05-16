@@ -56,3 +56,36 @@ def test_individual_endpoints_respond(tmp_path: Path):
     for path in ("/api/status", "/api/zones", "/api/findings", "/api/telemetry",
                  "/api/judges", "/api/patches", "/api/packages"):
         assert client.get(path).status_code == 200, path
+
+
+def test_dashboard_exposes_mutation_operator_panel(tmp_path: Path):
+    """The dashboard surfaces per-operator uses / success_rate / avg_lift,
+    global rollup plus the per-zone breakdown."""
+    from infra.database import Database
+    from infra.mcp_server import MCPServer
+    from interfaces.types import MutationOperatorStat
+
+    db_path = tmp_path / "mut.db"
+    db = Database(db_path)
+    server = MCPServer(db)
+    server.update_mutation_operator_stats(MutationOperatorStat(
+        operator="paraphrase", zone_id="", uses=10, successes=7,
+        avg_score=0.8, squared_score=6.4, last_lift=0.3))
+    server.update_mutation_operator_stats(MutationOperatorStat(
+        operator="paraphrase", zone_id="PROMPT-INJ", uses=4, successes=3,
+        avg_score=0.9, squared_score=3.2, last_lift=0.5))
+    db.close()
+
+    client = TestClient(build_dashboard_app(str(db_path)))
+    resp = client.get("/api/mutation-operators")
+    assert resp.status_code == 200
+    body = resp.json()
+    glob = {r["operator"]: r for r in body["global"]}
+    assert glob["paraphrase"]["uses"] == 10
+    # success_rate 7/10 is computed and surfaced.
+    assert glob["paraphrase"]["success_rate"] == 0.7
+    assert glob["paraphrase"]["last_lift"] == 0.3
+    # The per-zone breakdown carries its zone_id.
+    by_zone = body["by_zone"]
+    assert any(r["zone_id"] == "PROMPT-INJ" and r["operator"] == "paraphrase"
+               for r in by_zone)
