@@ -91,8 +91,9 @@ class StubRedTeam:
                       harness: MonitoringHarness, lane_cfg: LaneConfig) -> None:
         # Pretend to do something useful — record one message so the harness
         # has data to return.
-        from interfaces.types import Message
         from datetime import UTC, datetime
+
+        from interfaces.types import Message
         harness.record_message(Message(
             role="attacker",
             content=f"[stub] would attack {idea.zone_id} with: {idea.approach}",
@@ -247,7 +248,7 @@ class Orchestrator:
 # ---------------------------------------------------------------------------
 
 
-def _load_pipeline(dotted: str | None, fallback, rt: "Runtime | None" = None):
+def _load_pipeline(dotted: str | None, fallback, rt: Runtime | None = None):
     """Instantiate a pipeline class loaded from a dotted path.
 
     Tries calling `cls(rt)` first so pipelines that want a Runtime get one

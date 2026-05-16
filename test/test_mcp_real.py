@@ -19,7 +19,7 @@ def test_coverage_gaps_seeded(real_mcp):
     gaps = real_mcp.get_coverage_gaps(top_n=18)
     assert len(gaps) == 18
     # priority sorted descending
-    for a, b in zip(gaps, gaps[1:]):
+    for a, b in zip(gaps, gaps[1:], strict=False):
         assert a.priority_score >= b.priority_score
 
 

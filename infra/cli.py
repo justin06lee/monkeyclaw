@@ -19,7 +19,6 @@ import time
 
 from infra.config import load_config
 
-
 # ---------------------------------------------------------------------------
 # run — red/blue cycles via the orchestrator
 # ---------------------------------------------------------------------------

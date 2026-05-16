@@ -14,7 +14,6 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # DB access — read-only, one connection per request
 # ---------------------------------------------------------------------------

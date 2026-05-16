@@ -15,7 +15,6 @@ import argparse
 import hashlib
 import logging
 import os
-import sys
 import time
 import uuid
 from dataclasses import dataclass
@@ -284,7 +283,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.limit_files > 0:
         global _iter_files  # noqa: PLW0603
         _original_iter = _iter_files
-        _iter_files = lambda r, _o=_original_iter, _n=args.limit_files: _o(r)[:_n]  # type: ignore[assignment]
+        _limit = args.limit_files
+
+        def _iter_files(r: str, _o=_original_iter, _n=_limit) -> list:  # type: ignore[assignment]
+            return _o(r)[:_n]
 
     summary = index_codebase(db, root)
     print(summary)

@@ -26,11 +26,10 @@ import shlex
 import subprocess
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable
 
 from interfaces.types import (
     FsDiff,
@@ -322,7 +321,7 @@ class MonitoringHarness:
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
-    def __enter__(self) -> "MonitoringHarness":
+    def __enter__(self) -> MonitoringHarness:
         self.start()
         return self
 
