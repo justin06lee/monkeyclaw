@@ -86,6 +86,14 @@ _GOOD_DIFF = (
 )
 
 
+def _patch_block(n: int, label: str, invasiveness: str, diff: str) -> str:
+    """One `### PATCH n` fenced-block patch in the model output format."""
+    return (
+        f"### PATCH {n}\nlabel: {label}\ninvasiveness: {invasiveness}\n"
+        f"explanation: x\nside_effects: y\n```diff\n{diff}\n```\n"
+    )
+
+
 def _clean_mock(seed: int = 0) -> MockMCP:
     """A MockMCP with the auto-seeded history cleared — tests own their state."""
     mcp = MockMCP(seed=seed, verbose=False)
@@ -253,18 +261,14 @@ def test_process_blue_queue_approves_patch_and_adds_regression_test(tmp_path: Pa
         judge_fn=default_judge,
     )
 
-    # Queue patch generator's response: one valid diff
-    llm.queue(json.dumps([
-        {"label": "Canonicalize", "invasiveness": "low", "diff": _GOOD_DIFF,
-          "explanation": "resolve symlinks before policy check",
-          "side_effects": "none"},
-        {"label": "Reject symlinks", "invasiveness": "medium",
-          "diff": _GOOD_DIFF.replace("create.ts", "policy.ts"),
-          "explanation": "deny symlinks", "side_effects": "shortcuts break"},
-        {"label": "Rewrite engine", "invasiveness": "high",
-          "diff": _GOOD_DIFF.replace("create.ts", "engine.ts"),
-          "explanation": "redesign", "side_effects": "deep"},
-    ]))
+    # Queue patch generator's response: valid diffs in fenced-block format
+    llm.queue(
+        _patch_block(1, "Canonicalize", "low", _GOOD_DIFF)
+        + _patch_block(2, "Reject symlinks", "medium",
+                       _GOOD_DIFF.replace("create.ts", "policy.ts"))
+        + _patch_block(3, "Rewrite engine", "high",
+                       _GOOD_DIFF.replace("create.ts", "engine.ts"))
+    )
 
     approved = pipeline.process_blue_queue()
     assert approved == 1
@@ -308,16 +312,13 @@ def test_process_blue_queue_escalates_when_all_candidates_fail(tmp_path: Path):
 
     # Use the DEFAULT patch verifier (mock replay), which means the vuln
     # still triggers under replay and every patch fails gate 1.
-    llm.queue(json.dumps([
-        {"label": "Try A", "invasiveness": "low", "diff": _GOOD_DIFF,
-          "explanation": "x", "side_effects": "y"},
-        {"label": "Try B", "invasiveness": "medium",
-          "diff": _GOOD_DIFF.replace("create.ts", "policy.ts"),
-          "explanation": "x", "side_effects": "y"},
-        {"label": "Try C", "invasiveness": "high",
-          "diff": _GOOD_DIFF.replace("create.ts", "engine.ts"),
-          "explanation": "x", "side_effects": "y"},
-    ]))
+    llm.queue(
+        _patch_block(1, "Try A", "low", _GOOD_DIFF)
+        + _patch_block(2, "Try B", "medium",
+                       _GOOD_DIFF.replace("create.ts", "policy.ts"))
+        + _patch_block(3, "Try C", "high",
+                       _GOOD_DIFF.replace("create.ts", "engine.ts"))
+    )
 
     approved = pipeline.process_blue_queue()
     assert approved == 0
@@ -363,14 +364,11 @@ def test_run_regression_after_patch_approval(tmp_path: Path):
                        side_effects="", status="proposed"),
     )
 
-    llm.queue(json.dumps([
-        {"label": "ok", "invasiveness": "low", "diff": _GOOD_DIFF,
-          "explanation": "x", "side_effects": "y"},
-        {"label": "med", "invasiveness": "medium", "diff": _GOOD_DIFF,
-          "explanation": "x", "side_effects": "y"},
-        {"label": "high", "invasiveness": "high", "diff": _GOOD_DIFF,
-          "explanation": "x", "side_effects": "y"},
-    ]))
+    llm.queue(
+        _patch_block(1, "ok", "low", _GOOD_DIFF)
+        + _patch_block(2, "med", "medium", _GOOD_DIFF)
+        + _patch_block(3, "high", "high", _GOOD_DIFF)
+    )
     assert pipeline.process_blue_queue() == 1
     assert len(mcp.get_regression_suite()) == 1
 

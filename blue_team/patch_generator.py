@@ -25,7 +25,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-from interfaces.llm import LLMClient, LLMMessage, extract_json
+from interfaces.llm import LLMClient, LLMMessage
 from interfaces.mcp_tools import MonkeyClawMCP
 from interfaces.types import CodeChunk, PatchCandidate
 
@@ -42,42 +42,33 @@ LOG = logging.getLogger("monkeyclaw.blue.patch_gen")
 
 _PATCH_SYSTEM_TEMPLATE = """\
 You are a senior security engineer writing defensive patches for the
-NemoClaw codebase. You will be given:
+NemoClaw codebase. You will be given a vulnerability description, candidate
+fix sites with source snippets, and a recommended approach.
 
-- A vulnerability description (zone, severity, transcript excerpt,
-  triggered checks, suggested mitigations).
-- One or more candidate fix sites with file paths and source snippets.
-- (Optional) recommended approach copy from the triage agent.
+Produce 1 to __N_ALT__ concrete patches in unified-diff format, ordered
+LEAST to MOST invasive. For severity >= high, produce at least 2.
 
-Your task:
-1. Propose 1-__N_ALT__ concrete patches in **unified diff format**.
-2. Each patch must be self-contained — produce a complete `diff` block
-   that could be fed into `git apply`.
-3. Order patches from LEAST to MOST invasive.
-4. For severity >= high, you MUST produce at least 2 alternatives.
+Output format — emit EACH patch as exactly this block, and emit NOTHING
+else (no preamble, no JSON, no commentary outside the blocks):
 
-Each alternative must include:
-- `label`: short approach name (≤ 8 words).
-- `invasiveness`: one of "low", "medium", "high".
-- `diff`: unified diff string with `--- a/...`, `+++ b/...`, and `@@` hunks.
-- `explanation`: one paragraph — why this patch eliminates the
-   vulnerability.
-- `side_effects`: one paragraph — what legitimate behavior changes, what
-   downstream systems might be affected, performance impact if any.
+### PATCH 1
+label: <short approach name, 8 words or fewer>
+invasiveness: <low | medium | high>
+explanation: <one paragraph: why this patch eliminates the vulnerability>
+side_effects: <one paragraph: legitimate behavior changes, downstream
+impact, performance>
+```diff
+--- a/path/to/file.py
++++ b/path/to/file.py
+@@ -L,N +L,N @@
+ unchanged context line
+-removed line
++added line
+```
 
-Output JSON only, no prose, no fences:
-
-[
-  {
-    "label": "...",
-    "invasiveness": "low",
-    "diff": "--- a/path ...",
-    "explanation": "...",
-    "side_effects": "..."
-  }
-]
-
-Do not auto-apply patches. Do not include any text outside the JSON array.
+Put the unified diff INSIDE the ```diff fenced block — never inline it
+elsewhere. The diff must have `--- a/`, `+++ b/`, and `@@` hunk headers and
+be applyable with `git apply`. Number subsequent patches `### PATCH 2`, etc.
 """
 
 
@@ -89,6 +80,12 @@ def _render_system(n_alt: int) -> str:
 # correctness; the verifier executes the regression test, not `git apply`).
 _DIFF_HUNK_RE = re.compile(r"^@@\s+-\d+", re.MULTILINE)
 _DIFF_FILE_RE = re.compile(r"^(?:diff --git|---|\+\+\+)\s+\S", re.MULTILINE)
+
+# One `### PATCH n` section, up to the next one (or end of text).
+_PATCH_BLOCK_RE = re.compile(
+    r"###\s*PATCH\b(.*?)(?=###\s*PATCH\b|\Z)", re.DOTALL | re.IGNORECASE)
+# The unified diff inside a ```diff fenced block.
+_DIFF_FENCE_RE = re.compile(r"```(?:diff|patch)?\s*\n?(.*?)```", re.DOTALL)
 
 
 def _looks_like_diff(text: str) -> bool:
@@ -107,7 +104,9 @@ class PatchGeneratorConfig:
     high_severity_alt_count: int = 3
     low_severity_alt_count: int = 1
     top_k_extra_code: int = 4
-    max_tokens: int = 3000
+    # Generous — a few patches each with a full unified diff plus the
+    # model's reasoning preamble runs long; truncation breaks the last block.
+    max_tokens: int = 8000
     temperature: float = 0.2
 
     @classmethod
@@ -244,38 +243,45 @@ class PatchGenerator:
 
     # ------------------------------------------------------------------
     def _parse_response(self, raw: str, task: FixTask) -> list[PatchCandidate]:
-        try:
-            data = extract_json(raw)
-        except ValueError:
-            LOG.warning("patch_gen: unparseable JSON for task %s", task.task_id)
+        """Parse the fenced-block patch format.
+
+        Each patch is a `### PATCH n` section carrying label / invasiveness /
+        explanation / side_effects fields and a ```diff fenced block. A
+        multi-line unified diff lives cleanly inside a code fence — far more
+        robust than embedding it in a JSON string, which LLMs routinely
+        break with unescaped newlines.
+        """
+        def _field(block: str, name: str) -> str:
+            m = re.search(rf"^[ \t]*{name}[ \t]*:[ \t]*(.+)$", block,
+                          re.MULTILINE | re.IGNORECASE)
+            return m.group(1).strip() if m else ""
+
+        blocks = _PATCH_BLOCK_RE.findall(raw)
+        if not blocks:
+            LOG.warning("patch_gen: no PATCH blocks in response for task %s",
+                        task.task_id)
             return []
-        if not isinstance(data, list):
-            if isinstance(data, dict) and isinstance(data.get("patches"), list):
-                data = data["patches"]
-            else:
-                return []
 
         candidates: list[PatchCandidate] = []
-        for entry in data:
-            if not isinstance(entry, dict):
-                continue
-            diff = str(entry.get("diff", "")).strip()
+        for block in blocks:
+            fence = _DIFF_FENCE_RE.search(block)
+            diff = fence.group(1).strip() if fence else ""
             if not _looks_like_diff(diff):
                 LOG.info("patch_gen: dropping candidate without a real diff "
-                          "(task=%s label=%r)", task.task_id, entry.get("label"))
+                          "(task=%s label=%r)", task.task_id, _field(block, "label"))
                 continue
-            invasiveness = str(entry.get("invasiveness", "medium")).lower()
+            invasiveness = _field(block, "invasiveness").lower()
             if invasiveness not in {"low", "medium", "high"}:
                 invasiveness = "medium"
             candidates.append(PatchCandidate(
                 patch_id=random_id("PCH"),
                 vuln_ids=list(task.vuln_ids),
                 zone_id=task.primary_package.affected_zone,
-                approach=str(entry.get("label", ""))[:200] or "(unlabeled)",
+                approach=_field(block, "label")[:200] or "(unlabeled)",
                 invasiveness=invasiveness,
                 diff=diff,
-                explanation=str(entry.get("explanation", ""))[:4000],
-                side_effects=str(entry.get("side_effects", ""))[:2000],
+                explanation=_field(block, "explanation")[:4000],
+                side_effects=_field(block, "side_effects")[:2000],
                 status="proposed",
             ))
 
