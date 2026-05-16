@@ -13,9 +13,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from interfaces.types import (BypassResult, GeneralizationResult,
-                              GeneralizationRound, GeneralizationRoundInput)
-from purple_team.bounce_builder import build as build_bounce
+from interfaces.types import (
+    BypassResult,
+    GeneralizationResult,
+    GeneralizationRound,
+    GeneralizationRoundInput,
+)
 from purple_team.bypass_detector import BypassDetector
 from purple_team.mutation_replayer import MutationReplayer
 from purple_team.operator_budget import budget_for
