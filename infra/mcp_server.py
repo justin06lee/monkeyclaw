@@ -15,7 +15,6 @@ import sys
 import uuid
 from dataclasses import asdict
 from datetime import UTC, datetime
-from pathlib import Path
 
 from infra.database import Database, EmbeddingModel
 from interfaces.mcp_tools import MonkeyClawMCP
@@ -493,7 +492,7 @@ def build_app(server: MCPServer):
         try:
             result = tool(**payload)
         except TypeError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=400, detail=str(e)) from e
         return _serialize(result)
 
     return app

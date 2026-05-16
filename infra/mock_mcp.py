@@ -461,7 +461,7 @@ def build_app(mcp: MockMCP):
         try:
             result = tool(**payload)
         except TypeError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=400, detail=str(e)) from e
         return _serialize(result)
 
     return app

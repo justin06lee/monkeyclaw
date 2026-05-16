@@ -51,9 +51,9 @@ class _Job:
     """Priority queue item — highest priority popped first."""
     neg_priority: float  # priority queue is a min-heap → negate
     seq: int  # tiebreaker for FIFO order at equal priority
-    idea: "IdeaObject"
+    idea: IdeaObject
 
-    def __lt__(self, other: "_Job") -> bool:
+    def __lt__(self, other: _Job) -> bool:
         return (self.neg_priority, self.seq) < (other.neg_priority, other.seq)
 
 
