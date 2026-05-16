@@ -25,6 +25,7 @@ from dataclasses import asdict
 from interfaces.mcp_tools import MonkeyClawMCP
 from interfaces.types import (
     ArchiveUpdateInput,
+    ChainAttribution,
     FindingInput,
     IdeaComponentInput,
     IdeaObject,
@@ -293,4 +294,79 @@ def route_judgment(
     return finding_id
 
 
-__all__ = ["COVERAGE_INCREMENT", "NEAR_MISS_THRESHOLD", "route_judgment"]
+def route_chain_judgment(
+    attribution: ChainAttribution,
+    chain,
+    mcp: MonkeyClawMCP,
+    *,
+    archive: EliteArchive | None = None,
+    alert_severity_floor: str = "high",
+) -> str:
+    """Route a ChainAttribution: log the ChainFinding and each per-zone
+    finding, push the chain to the repro queue once, apply per-zone coverage
+    deltas, and feed every landed step into the MAP-Elites archive.
+
+    Returns the chain_finding_id. Single-zone routing (route_judgment) is
+    unchanged.
+    """
+    cf = attribution.chain_finding
+    chain_finding_id = mcp.log_chain_finding(cf)
+    mcp.log_chain_step_results(attribution.step_results)
+
+    # Per-zone findings, each back-referencing the chain.
+    for fi in attribution.per_zone_findings:
+        mcp.log_finding(fi)
+
+    # Per-zone coverage credit — every traversed zone, exactly once.
+    for zone_id, delta in attribution.coverage_deltas.items():
+        try:
+            mcp.update_zone_coverage(zone_id, delta)
+        except KeyError:
+            LOG.warning("chain coverage skipped — unknown zone %r", zone_id)
+
+    # One repro push, keyed on the ChainFinding, priority from chain severity.
+    priority = ("high" if SEVERITY_ORDER.get(cf.severity, 0) >= 2 else "low")
+    mcp.push_to_repro_queue(chain_finding_id, priority=priority)
+
+    # Feed each landed step into the MAP-Elites archive as its own entry, so
+    # a successful chain enriches every traversed zone's elite cells.
+    if archive is not None:
+        for r in attribution.step_results:
+            if not r.landed:
+                continue
+            try:
+                step = chain.steps[r.step_index]
+                archive.consider(ArchiveEntry(
+                    zone=r.zone_id,
+                    interaction_style="multi_turn",
+                    response_movement="programmatic_violation",
+                    score=r.progress_score,
+                    idea_id=f"{chain.chain_id}#s{r.step_index}",
+                    idea_title=f"chain step: {step.objective}",
+                    approach=step.approach[:200],
+                    turn_bucket=turn_bucket(max(0, r.turn_span[1]
+                                                - r.turn_span[0])),
+                    tactic_tags=["chain"],
+                    severity=cf.severity,
+                ))
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("chain archive update failed for %s step %d: %s",
+                            chain.chain_id, r.step_index, e)
+
+    floor_met = SEVERITY_ORDER.get(cf.severity, 0) >= SEVERITY_ORDER.get(
+        alert_severity_floor, 0)
+    if cf.verdict == "confirmed" and floor_met:
+        mcp.send_alert(
+            f"[CHAIN {cf.severity}] {len(cf.zones_traversed)}-zone kill "
+            f"chain — terminal {cf.terminal_zone}",
+            severity=cf.severity)
+    LOG.info("routed chain finding %s — %d zone(s), terminal=%s, repro(%s)",
+             chain_finding_id, len(cf.zones_traversed), cf.terminal_zone,
+             priority)
+    return chain_finding_id
+
+
+__all__ = [
+    "COVERAGE_INCREMENT", "NEAR_MISS_THRESHOLD", "route_chain_judgment",
+    "route_judgment",
+]

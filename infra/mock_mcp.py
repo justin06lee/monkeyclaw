@@ -332,7 +332,10 @@ class MockMCP(MonkeyClawMCP):
     # Repro queue
     # ------------------------------------------------------------------
     def push_to_repro_queue(self, finding_id: str, priority: str) -> None:
-        if finding_id not in self._findings:
+        # A chain kill-chain is pushed by its chain_finding_id (route_chain_
+        # judgment); a single-zone finding by its finding_id.
+        if (finding_id not in self._findings
+                and finding_id not in self._chain_findings):
             raise KeyError(f"unknown finding_id {finding_id}")
         self._repro_queue.append((finding_id, priority))
         # high priority floats to the front
