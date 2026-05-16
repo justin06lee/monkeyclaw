@@ -480,6 +480,7 @@ class PatchVerifier:
         gates.append(g1b)
         if not g1b.passed:
             leaking = ", ".join(g1b.detail.get("leaking_operators", []))
+            self._persist_hardening_results(patch, package, gates)
             return self._reject(
                 "gate1b_mutation_robustness", patch, gates,
                 f"patch over-fits the recorded payload — mutated variants "
@@ -550,12 +551,14 @@ class PatchVerifier:
         gates.append(g7)
         if not g7.passed:
             surfaces = ", ".join(g7.detail.get("blinded_surfaces", []))
+            self._persist_hardening_results(patch, package, gates)
             return self._reject(
                 "gate_detection", patch, gates,
                 f"patch blinds detection on {surfaces}",
                 variant_results=_collect_variant_results(gates),
                 detection_verdicts=_collect_detection_verdicts(gates))
 
+        self._persist_hardening_results(patch, package, gates)
         return VerifyOutcome(
             approved=True,
             failed_gate=None,
@@ -718,6 +721,30 @@ class PatchVerifier:
                 self.provisioner.teardown_victim(victim.instance_id)
             except Exception as e:  # noqa: BLE001
                 LOG.warning("detection-gate victim teardown failed: %s", e)
+
+    def _persist_hardening_results(
+        self, patch: PatchCandidate, package: ReproPackage,
+        gates: list[GateResult],
+    ) -> None:
+        """Persist gate1b variant results + gate_detection verdicts to the
+        hardening tables. Best-effort: a persistence failure must not change
+        the verdict."""
+        try:
+            variants = _collect_variant_results(gates)
+            if variants:
+                self.mcp.log_patch_variant_results(
+                    patch.patch_id, package.vuln_id, variants)
+            for v in _collect_detection_verdicts(gates):
+                self.mcp.log_patch_detection_result(
+                    patch_id=patch.patch_id, vuln_id=package.vuln_id,
+                    zone_id=v.zone_id, quadrant=v.quadrant,
+                    observability=v.observability,
+                    prevention=v.prevention,
+                    passed=(v.observability == "observed"),
+                    evidence=v.evidence)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("hardening-result persistence failed for %s: %s",
+                        patch.patch_id, e)
 
     def _run_full_suite(self, replay_fn: ReplayFn) -> GateResult:
         try:
