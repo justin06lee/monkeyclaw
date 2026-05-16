@@ -677,6 +677,54 @@ def _cmd_dashboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_approvals(args: argparse.Namespace) -> int:
+    from datetime import UTC, datetime, timedelta
+
+    from infra.approval_service import ApprovalService
+    from infra.mcp_server import MCPServer
+    from infra.notifications import AlertDispatcher
+
+    db, cfg = _open_db()
+    mcp = MCPServer(db)
+    svc = ApprovalService(
+        mcp=mcp, dispatcher=AlertDispatcher(cfg.notifications),
+        cfg=cfg.approvals)
+
+    try:
+        if getattr(args, "approvals_command", None) == "resolve":
+            decision = "allow" if args.allow else "deny"
+            approver = args.approver or cfg.approvals.operator_id
+            expiry = None
+            if args.expiry_hours:
+                expiry = (datetime.now(UTC)
+                          + timedelta(hours=args.expiry_hours)).strftime(
+                              "%Y-%m-%dT%H:%M:%SZ")
+            try:
+                event = svc.resolve(args.request_id, decision=decision,
+                                    approver=approver, reason=args.reason,
+                                    expiry=expiry)
+            except ValueError as e:
+                print(f"error: {e}")
+                return 1
+            print(f"resolved {args.request_id}: {event.decision} "
+                  f"by {event.approver}")
+            return 0
+
+        # No subcommand -> list pending requests.
+        pending = svc.list_pending()
+        if not pending:
+            print("no pending approval requests")
+            return 0
+        print(f"{len(pending)} pending approval request(s):")
+        for r in pending:
+            print(f"  {r.request_id}  patch={r.patch_id}  zone={r.zone_id}  "
+                  f"severity={r.severity}  status={r.status}  "
+                  f"vulns={','.join(r.vuln_ids)}  ask_expiry={r.ask_expiry}")
+        return 0
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # arg parsing
 # ---------------------------------------------------------------------------
@@ -765,6 +813,25 @@ def build_parser() -> argparse.ArgumentParser:
     db = sub.add_parser("dashboard", help="start the live web dashboard")
     db.add_argument("--port", type=int, default=8787, help="HTTP port (default 8787)")
     db.set_defaults(func=_cmd_dashboard)
+
+    ap = sub.add_parser("approvals",
+                        help="list and resolve pending patch approvals")
+    ap_sub = ap.add_subparsers(dest="approvals_command", required=False)
+    apr = ap_sub.add_parser("resolve", help="resolve a pending request")
+    apr.add_argument("request_id")
+    grp = apr.add_mutually_exclusive_group(required=True)
+    grp.add_argument("--allow", action="store_true",
+                     help="approve the patch")
+    grp.add_argument("--deny", action="store_true",
+                     help="reject the patch")
+    apr.add_argument("--reason", required=True,
+                     help="recorded approval/denial reason")
+    apr.add_argument("--approver", default=None,
+                     help="operator id (defaults to config "
+                          "approvals.operator_id)")
+    apr.add_argument("--expiry-hours", type=int, default=None,
+                     help="hours until a granted approval lapses")
+    ap.set_defaults(func=_cmd_approvals)
 
     return p
 
