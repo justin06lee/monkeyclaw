@@ -271,6 +271,11 @@ approvals:
   pr_base_branch: master
 
 red:
+  # Demo mode — seed each cycle from the deterministic planted-victim
+  # playbooks (demo/attacks/*.yaml) instead of LLM ideation. Off in
+  # production (every cycle ideates); the zero-credential demo turns it on
+  # via MC_RED__DEMO_PLAYBOOKS=true so a cycle is reproducible.
+  demo_playbooks: false
   archive:
     # B5 MAP-Elites — niche_gap exploration multiplier band and seed breadth.
     niche_gap_low: 0.5

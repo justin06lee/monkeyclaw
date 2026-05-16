@@ -397,9 +397,39 @@ class Pipeline:
     # ------------------------------------------------------------------
     # generate_ideas
     # ------------------------------------------------------------------
+    def _playbook_lanes(self, cycle_id: int, n_lanes: int) -> list[IdeaObject]:
+        """Deterministic demo lanes — the planted-victim playbooks, logged to
+        the KB and returned as executable ideas. Each returned idea carries
+        the `.playbook` attribute, so `ExecutionAgent` replays its scripted
+        turns verbatim instead of calling the LLM attacker."""
+        from red_team.playbooks import load_playbook_ideas
+
+        ideas = load_playbook_ideas(cycle_id)
+        if not ideas:
+            LOG.warning("demo_playbooks enabled but no playbooks were loaded")
+            return []
+        # Log every playbook idea to the KB (so findings can reference it),
+        # but keep the original objects — `deduplicate_and_log` returns the
+        # same instances, so the `.playbook` attribute survives.
+        outcomes = deduplicate_and_log(
+            ideas, self.mcp,
+            dedup_threshold=self.cfg.ideation.dedup_threshold,
+            near_dup_threshold=self.cfg.ideation.near_dup_threshold,
+        )
+        lanes = [o.idea for o in outcomes if o.keep]
+        LOG.info("demo_playbooks: %d deterministic playbook lane(s) for cycle %d",
+                 len(lanes), cycle_id)
+        return lanes[:n_lanes]
+
     def generate_ideas(self, cycle_id: int, n_lanes: int) -> list[IdeaObject]:
         """Run all 3 modes on the top-priority zone(s), dedup, score, then have
-        the strategist synthesize the batch into `n_lanes` deep-dive chains."""
+        the strategist synthesize the batch into `n_lanes` deep-dive chains.
+
+        Demo mode (`red.demo_playbooks`): bypass LLM ideation entirely and
+        seed the cycle from the deterministic planted-victim playbooks, so a
+        zero-credential demo cycle produces real, reproducible findings."""
+        if self.cfg.red.demo_playbooks:
+            return self._playbook_lanes(cycle_id, n_lanes)
         gaps = self.mcp.get_coverage_gaps(top_n=max(3, n_lanes))
         if not gaps:
             LOG.warning("no coverage gaps returned; cannot generate ideas")
@@ -724,6 +754,7 @@ class Pipeline:
             archive=self._archive,
             technique_coverage=self._technique_coverage,
             alert_severity_floor=self.alert_severity_floor,
+            transcript=lane_result.transcript,
         )
         # Best-effort trace collection (learned-ranking-model spec §6.2).
         # A trace-write failure is logged and swallowed — the ranking

@@ -320,6 +320,11 @@ class RedConfig(BaseModel):
     archive: ArchiveConfig = Field(default_factory=ArchiveConfig)
     chains: ChainConfig = Field(default_factory=ChainConfig)
     ranker: RankerConfig = Field(default_factory=RankerConfig)
+    # Demo mode: seed each cycle from the deterministic planted-victim
+    # playbooks (demo/attacks/*.yaml) instead of LLM ideation. Off by
+    # default — production runs always ideate. Enabled for the
+    # zero-credential demo so a cycle is deterministic and reproducible.
+    demo_playbooks: bool = False
 
 
 class ApprovalPostureConfig(BaseModel):

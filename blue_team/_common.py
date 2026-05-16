@@ -163,12 +163,30 @@ def lane_result_from_finding(finding: FindingRecord) -> LaneResult:
 def _transcript_from_evidence(evidence: Any, summary: str) -> list[Message]:
     """Pull attacker messages out of the evidence blob.
 
-    When the finding evidence lists a tier2_semantic_judge entry that
-    references `evidence_turns`, we don't have the original transcript here.
-    We seed with one synthetic attacker turn carrying the idea_summary so
-    the replay still does something useful — the production version will
-    fetch the real transcript via a yet-to-be-built MCP tool.
+    The red-team router persists the real attacker turns in an
+    `attack_transcript` evidence entry (see `red_team.routing._evidence_json`)
+    so the repro pipeline can replay the genuine attack — not a paraphrase.
+    When that entry is present we return those turns; otherwise we fall back
+    to a single synthetic turn carrying the idea summary.
     """
+    if isinstance(evidence, list):
+        for item in evidence:
+            if not isinstance(item, dict):
+                continue
+            if item.get("check_name") != "attack_transcript":
+                continue
+            turns = (item.get("evidence") or {}).get("turns") or []
+            messages = [
+                Message(
+                    role=str(t.get("role", "attacker")),
+                    content=str(t.get("content", "")),
+                    timestamp=now_iso(),
+                )
+                for t in turns
+                if isinstance(t, dict) and str(t.get("content", "")).strip()
+            ]
+            if messages:
+                return messages
     return [
         Message(
             role="attacker",

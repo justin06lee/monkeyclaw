@@ -350,13 +350,20 @@ class MonitoringHarness:
         self._fs_after: FsSnapshot | None = None
         self._mem_before: dict | None = None
         self._mem_after: dict | None = None
-        # Host psutil sampling is meaningless for a real sandbox lane: the
-        # victim runs as a k3s pod, so its processes are never host
-        # processes — sampling would record host PIDs and (with no sandbox
-        # PID set) mark them all "outside the sandbox", a pure false
-        # positive. Skip it; `process_log` is left empty. Real in-pod
-        # process capture (kubectl exec ps) can be added later.
-        self._monitor_processes = cfg.sandbox_container is None
+        # Host psutil sampling only produces a meaningful process_log when it
+        # is scoped to a real victim process tree (`sandbox_pid`). Without a
+        # PID to scope to, `_ProcSampler` walks the *entire host* process
+        # table and — with no sandbox boundary — marks every host process
+        # "outside the sandbox", which `check_process_escape` then flags as a
+        # critical escape: a pure false positive. So sample only when there
+        # is a real PID to scope to. A real sandbox lane (`sandbox_container`
+        # set) runs the victim as a k3s pod whose processes are never host
+        # processes, so host sampling is skipped there too; `process_log` is
+        # left empty (real in-pod capture via `kubectl exec ps` can be added
+        # later).
+        self._monitor_processes = (
+            cfg.sandbox_container is None and cfg.sandbox_pid is not None
+        )
         self._sampler = _ProcSampler(
             target_pid=cfg.sandbox_pid,
             allowed_pids=set(cfg.seccomp_allowed_pids),

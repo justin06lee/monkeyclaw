@@ -247,8 +247,18 @@ class LaneScheduler:
                 watched_paths = list(NEMOCLAW_MONITORED_PATHS)
                 allowed_paths = list(NEMOCLAW_ALLOWED_PATHS)
             else:
-                watched_paths = self.nemoclaw_cfg.monitored_paths
-                allowed_paths = self.nemoclaw_cfg.allowed_paths
+                watched_paths = list(self.nemoclaw_cfg.monitored_paths)
+                allowed_paths = list(self.nemoclaw_cfg.allowed_paths)
+                # Planted mock victim: also watch its per-instance sandbox
+                # dirs so a filesystem-escape write actually lands in the
+                # harness snapshot. `escape_root` is deliberately left out
+                # of `allowed_paths` so a write there reads as a breach.
+                base_dir = instance.metadata.get("base_dir")
+                allowed_root = instance.metadata.get("allowed_root")
+                if base_dir:
+                    watched_paths.append(base_dir)
+                if allowed_root:
+                    allowed_paths.append(allowed_root)
             harness = MonitoringHarness(
                 cfg=HarnessConfig(
                     watched_paths=watched_paths,

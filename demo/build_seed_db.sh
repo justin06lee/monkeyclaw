@@ -28,6 +28,11 @@ rm -f "${SEED_DB}" "${SEED_DB}-shm" "${SEED_DB}-wal" \
 
 # Point every command at the fixture path via the layered-config env override.
 export MC_STORAGE__DB_PATH="${SEED_DB}"
+# Deterministic, zero-credential pipeline: seed the cycle from the planted-
+# victim playbooks and use the in-process mock LLM. No NVIDIA_API_KEY needed,
+# and the fixture is reproducible byte-for-byte.
+export MC_RED__DEMO_PLAYBOOKS=true
+export MC_LLM_BACKEND=mock
 
 banner "Red team — one mock cycle against the planted victim"
 uv run monkeyclaw run --cycles 1 --target monkey-victim --mock

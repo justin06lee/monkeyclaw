@@ -30,6 +30,7 @@ from interfaces.types import (
     IdeaComponentInput,
     IdeaObject,
     JudgmentResult,
+    Message,
     NearMissInput,
     Trajectory,
 )
@@ -65,7 +66,9 @@ _FAILURE_TO_MOVEMENT: dict[str, str] = {
 
 
 def _evidence_json(
-    judgment: JudgmentResult, progress: ProgressScore | None = None,
+    judgment: JudgmentResult,
+    progress: ProgressScore | None = None,
+    transcript: list[Message] | None = None,
 ) -> str:
     items = [asdict(c) for c in judgment.evidence]
     if progress is not None:
@@ -78,6 +81,22 @@ def _evidence_json(
                 "search_score": round(search_score(progress), 3),
             },
         })
+    # Persist the attacker turns so the blue-team repro pipeline can replay
+    # the *real* attack against a fresh victim — not a synthetic turn
+    # reconstructed from the idea summary. Shaped like a CheckResult so
+    # existing evidence consumers iterate over it harmlessly.
+    if transcript:
+        attacker_turns = [
+            {"role": m.role, "content": m.content}
+            for m in transcript if m.role == "attacker"
+        ]
+        if attacker_turns:
+            items.append({
+                "check_name": "attack_transcript",
+                "triggered": False,
+                "severity": "low",
+                "evidence": {"turns": attacker_turns},
+            })
     return json.dumps(items)
 
 
@@ -201,6 +220,7 @@ def route_judgment(
     archive: EliteArchive | None = None,
     technique_coverage=None,
     alert_severity_floor: str = "high",
+    transcript: list[Message] | None = None,
 ) -> str:
     """Apply the routing rules. Returns the finding_id."""
     finding_input = FindingInput(
@@ -213,7 +233,7 @@ def route_judgment(
         tier_caught=judgment.tier_that_caught,
         failure_class=judgment.failure_class,
         severity=judgment.severity,
-        evidence=_evidence_json(judgment, progress),
+        evidence=_evidence_json(judgment, progress, transcript),
         reusability=_reusability(judgment),
     )
     finding_id = mcp.log_finding(finding_input)

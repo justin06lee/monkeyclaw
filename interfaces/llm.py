@@ -624,6 +624,26 @@ class OpenCodeLLM(_SubprocessHarnessLLM):
 # ---------------------------------------------------------------------------
 
 
+_REPRO_STEP_RE = re.compile(
+    r"Send the following to the victim agent:\*\*\s*\n\s*```[^\n]*\n(.*?)\n\s*```",
+    re.DOTALL,
+)
+
+
+def _extract_repro_steps(prompt: str) -> list[str]:
+    """Pull the scripted attacker messages out of a reproduction document.
+
+    `blue_team.repro_writer` renders each step as a numbered fenced code
+    block; the cold-verifier mock agent replays those blocks verbatim."""
+    steps: list[str] = []
+    for block in _REPRO_STEP_RE.findall(prompt):
+        lines = [ln[3:] if ln.startswith("   ") else ln for ln in block.splitlines()]
+        msg = "\n".join(lines).strip()
+        if msg:
+            steps.append(msg)
+    return steps
+
+
 class MockLLM(LLMClient):
     """Deterministic LLM for unit tests.
 
@@ -664,6 +684,16 @@ class MockLLM(LLMClient):
     @staticmethod
     def _fallback(system: str, prompt: str) -> str:
         # Crude pattern matcher for end-to-end tests without manually queuing.
+        # Cold-verifier agent: follow the handed reproduction document by
+        # replaying its scripted attacker steps verbatim, one per call. This
+        # makes the zero-credential demo's cold-verification stage actually
+        # reproduce instead of stalling on a non-following mock agent.
+        if "reproducing a documented vulnerability" in system.lower():
+            steps = _extract_repro_steps(prompt)
+            idx = prompt.count("[victim replied]")
+            if steps and idx < len(steps):
+                return steps[idx]
+            return "<<STEPS_COMPLETE>>"
         # Ideation: emit 3 plausible structured ideas as JSON.
         if "Propose attack approaches" in prompt or "identify specific weaknesses" in prompt \
                 or "propose variations" in prompt:

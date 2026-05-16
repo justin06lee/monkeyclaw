@@ -65,11 +65,35 @@ if [[ "${SEEDED}" -eq 1 ]]; then
   banner "Coverage + findings summary"
   uv run monkeyclaw status || true
 else
-  banner "Red team — running one cycle (mock provisioner, planted victim)"
+  # Live mode — deterministic, zero-credential pipeline.
+  #   * MC_RED__DEMO_PLAYBOOKS seeds the cycle from the planted-victim
+  #     playbooks, so a cycle is reproducible and needs no LLM ideation.
+  #   * MC_LLM_BACKEND=mock uses the in-process mock LLM — no NVIDIA_API_KEY,
+  #     no network, ~seconds per cycle (a live Nemotron cycle takes minutes).
+  #   * The run writes to LIVE_DB; `run --mock` appends a `-mock` suffix, so
+  #     the pipeline actually writes LIVE_MOCK_DB. status/dashboard read the
+  #     un-suffixed path, so we fold the mock DB across at the end.
+  export MC_RED__DEMO_PLAYBOOKS=true
+  export MC_LLM_BACKEND="${MC_LLM_BACKEND:-mock}"
+  LIVE_DB="demo/fixtures/demo-run.db"
+  LIVE_MOCK_DB="demo/fixtures/demo-run-mock.db"
+  export MC_STORAGE__DB_PATH="${LIVE_DB}"
+  rm -f "${LIVE_DB}" "${LIVE_DB}-shm" "${LIVE_DB}-wal" \
+        "${LIVE_MOCK_DB}" "${LIVE_MOCK_DB}-shm" "${LIVE_MOCK_DB}-wal"
+
+  banner "Red team -> repro -> blue -> purple — one deterministic cycle"
   uv run monkeyclaw run --cycles 1 --target monkey-victim --mock
 
-  banner "Blue team — triage -> patch -> test -> verify"
-  uv run monkeyclaw blue-team
+  banner "Folding the mock DB into the path status/dashboard read"
+  cp "${LIVE_MOCK_DB}" "${LIVE_DB}"
+  uv run python - <<PY
+import sqlite3
+conn = sqlite3.connect("${LIVE_DB}")
+conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+conn.execute("PRAGMA journal_mode = DELETE")
+conn.close()
+PY
+  rm -f "${LIVE_DB}-shm" "${LIVE_DB}-wal"
 
   banner "Coverage + findings summary"
   uv run monkeyclaw status || true
