@@ -228,6 +228,86 @@ def _archive(db_path: str) -> list[dict[str, Any]]:
     )
 
 
+def _kill_chains(db_path: str) -> list[dict[str, Any]]:
+    """Cross-zone kill chains with their ordered, per-step execution trace.
+
+    Each chain's steps are joined to the chain_step_results rows so the
+    timeline shows which steps landed and what tokens they produced.
+    """
+    import json as _json
+
+    chains = _query(
+        db_path,
+        "SELECT chain_id, cycle_id, title, zones, primary_zone, steps "
+        "FROM attack_chains ORDER BY created_at DESC LIMIT 24",
+    )
+    step_rows = _query(
+        db_path,
+        "SELECT chain_id, step_index, zone_id, landed, produced_tokens "
+        "FROM chain_step_results",
+    )
+    results: dict[tuple[str, int], dict[str, Any]] = {
+        (r["chain_id"], r["step_index"]): r for r in step_rows
+    }
+    out: list[dict[str, Any]] = []
+    for c in chains:
+        try:
+            steps = _json.loads(c.get("steps") or "[]")
+        except (ValueError, TypeError):
+            steps = []
+        timeline: list[dict[str, Any]] = []
+        for s in steps:
+            idx = s.get("step_index", 0)
+            res = results.get((c["chain_id"], idx))
+            landed = bool(res["landed"]) if res else False
+            try:
+                produced = (_json.loads(res["produced_tokens"])
+                            if res else [])
+            except (ValueError, TypeError):
+                produced = []
+            timeline.append({
+                "step_index": idx,
+                "zone_id": s.get("zone_id", ""),
+                "objective": s.get("objective", ""),
+                "landed": landed,
+                "produced_tokens": produced,
+            })
+        out.append({
+            "chain_id": c["chain_id"],
+            "cycle_id": c["cycle_id"],
+            "title": c["title"],
+            "primary_zone": c["primary_zone"],
+            "timeline": timeline,
+        })
+    return out
+
+
+def _render_kill_chains_html(chains: list[dict[str, Any]]) -> str:
+    """Render the kill-chain timeline view — one ordered row per chain."""
+    if not chains:
+        return ("<div class='kill-chains empty'>"
+                "No cross-zone kill chains composed yet.</div>")
+    parts = ["<div class='kill-chains'><h3>Kill-chain timeline</h3>"]
+    for c in chains:
+        parts.append(
+            f"<div class='kill-chain' data-chain='{c['chain_id']}'>"
+            f"<h4>{c['chain_id']} — {c['title']}</h4>"
+            f"<p>cycle {c['cycle_id']} · terminal zone "
+            f"{c['primary_zone']}</p><ol class='chain-steps'>")
+        for step in c["timeline"]:
+            state = "landed" if step["landed"] else "missed"
+            tokens = ", ".join(step["produced_tokens"]) or "(none)"
+            parts.append(
+                f"<li class='chain-step {state}'>"
+                f"<span class='zone'>{step['zone_id']}</span> "
+                f"<span class='objective'>{step['objective']}</span> "
+                f"<span class='state'>{state}</span> "
+                f"<span class='tokens'>{tokens}</span></li>")
+        parts.append("</ol></div>")
+    parts.append("</div>")
+    return "".join(parts)
+
+
 def _niche_heatmap(db_path: str) -> dict[str, Any]:
     """B5 MAP-Elites niche heatmap — a zone × interaction_style occupancy grid.
 
@@ -1387,6 +1467,12 @@ def build_dashboard_app(db_path: str):
         """Two additive views: the trajectory ribbon + near-miss queue."""
         views = _trajectory_views(db_path)
         return views["trajectory_ribbon"] + views["near_miss_queue"]
+
+    @app.get("/kill-chains", response_class=HTMLResponse)
+    def kill_chains() -> str:
+        """Cross-zone kill-chain timeline — one ordered, landed/missed row
+        per composed AttackChain."""
+        return _render_kill_chains_html(_kill_chains(db_path))
 
     @app.get("/api/mutation-operators")
     def api_mutation_operators() -> dict[str, Any]:

@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS findings (
     repro_rate     REAL,
     patch_status   TEXT NOT NULL DEFAULT 'open',           -- open|in_progress|patched|verified
     reusability    REAL NOT NULL DEFAULT 0.5,
+    chain_id       TEXT,                                   -- parent kill-chain, NULL for single-zone findings
     created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -696,6 +697,50 @@ CREATE TABLE IF NOT EXISTS technique_coverage (
 );
 
 --------------------------------------------------------------------------------
+-- cross-zone attack chaining (cross-zone-attack-chaining spec §8)
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS attack_chains (
+    chain_id        TEXT PRIMARY KEY,
+    cycle_id        INTEGER NOT NULL,
+    title           TEXT NOT NULL,
+    zones           TEXT NOT NULL DEFAULT '[]',   -- JSON list, in order
+    primary_zone    TEXT NOT NULL,
+    steps           TEXT NOT NULL DEFAULT '[]',   -- JSON list of ChainStep
+    builds_on       TEXT NOT NULL DEFAULT '[]',   -- JSON list
+    estimated_turns INTEGER NOT NULL DEFAULT 15,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_attack_chains_cycle
+    ON attack_chains(cycle_id);
+
+CREATE TABLE IF NOT EXISTS chain_findings (
+    chain_finding_id TEXT PRIMARY KEY,
+    chain_id         TEXT NOT NULL,
+    cycle_id         INTEGER NOT NULL,
+    zones_traversed  TEXT NOT NULL DEFAULT '[]',  -- JSON list
+    terminal_zone    TEXT NOT NULL,
+    severity         TEXT NOT NULL,
+    verdict          TEXT NOT NULL,
+    landed_steps     TEXT NOT NULL DEFAULT '[]',  -- JSON list of int
+    evidence         TEXT NOT NULL DEFAULT '{}',
+    repro_status     TEXT NOT NULL DEFAULT 'pending',
+    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_chain_findings_chain
+    ON chain_findings(chain_id);
+
+CREATE TABLE IF NOT EXISTS chain_step_results (
+    chain_id       TEXT NOT NULL,
+    step_index     INTEGER NOT NULL,
+    zone_id        TEXT NOT NULL,
+    landed         INTEGER NOT NULL DEFAULT 0,
+    produced_tokens TEXT NOT NULL DEFAULT '[]',
+    turn_span      TEXT NOT NULL DEFAULT '[0,0]',
+    progress_score REAL NOT NULL DEFAULT 0.0,
+    PRIMARY KEY (chain_id, step_index)
+);
+
+--------------------------------------------------------------------------------
 -- schema_meta — track schema version for migrations
 --------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -704,7 +749,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 
 INSERT OR IGNORE INTO schema_meta(key, value) VALUES
-    ('schema_version', '13'),
+    ('schema_version', '14'),
     ('taxonomy_corpus_version', 'atlas-5.4.0+owasp-2025'),
     ('embedding_model', 'sentence-transformers/all-MiniLM-L6-v2'),
     ('embedding_dim',   '384');

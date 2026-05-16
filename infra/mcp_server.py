@@ -26,7 +26,11 @@ from interfaces.types import (
     AppealVerdict,
     ArchiveCell,
     ArchiveUpdateInput,
+    AttackChain,
     AttackElo,
+    ChainFinding,
+    ChainStep,
+    ChainStepResult,
     CodeChunk,
     ControlValidationRun,
     CoverageGap,
@@ -183,12 +187,12 @@ class MCPServer(MonkeyClawMCP):
             self.db.execute(
                 "INSERT INTO findings(finding_id, cycle_id, idea_id, zone_id, source_mode, "
                 "idea_summary, verdict, tier_caught, failure_class, severity, evidence, "
-                "reusability, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "reusability, chain_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (fid, finding.cycle_id, finding.idea_id, finding.zone_id,
                  finding.source_mode, finding.idea_summary, finding.verdict,
                  finding.tier_caught, finding.failure_class, finding.severity,
-                 finding.evidence, finding.reusability, _now()),
+                 finding.evidence, finding.reusability, finding.chain_id, _now()),
             )
             if finding.verdict == "confirmed":
                 self.db.execute(
@@ -1068,6 +1072,133 @@ class MCPServer(MonkeyClawMCP):
             )
             for r in rows
         ]
+
+    # ------------------------------------------------------------------
+    # Cross-zone attack chaining
+    # ------------------------------------------------------------------
+    def log_attack_chain(self, chain: AttackChain) -> str:
+        self._emit_invoked("log_attack_chain")
+        steps_json = json.dumps([
+            {
+                "step_index": s.step_index, "zone_id": s.zone_id,
+                "objective": s.objective, "primitive_ref": s.primitive_ref,
+                "approach": s.approach, "requires": s.requires,
+                "produces": s.produces, "success_signal": s.success_signal,
+            }
+            for s in chain.steps
+        ])
+        with self.db.lock():
+            self.db.execute(
+                "INSERT OR REPLACE INTO attack_chains(chain_id, cycle_id, "
+                "title, zones, primary_zone, steps, builds_on, "
+                "estimated_turns, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (chain.chain_id, chain.cycle_id, chain.title,
+                 json.dumps(chain.zones), chain.primary_zone, steps_json,
+                 json.dumps(chain.builds_on), chain.estimated_turns, _now()),
+            )
+        return chain.chain_id
+
+    def get_attack_chains(self, cycle_id: int | None) -> list[AttackChain]:
+        self._emit_invoked("get_attack_chains")
+        if cycle_id is None:
+            rows = self.db.fetchall(
+                "SELECT * FROM attack_chains ORDER BY created_at")
+        else:
+            rows = self.db.fetchall(
+                "SELECT * FROM attack_chains WHERE cycle_id = ? "
+                "ORDER BY created_at", (cycle_id,))
+        chains: list[AttackChain] = []
+        for r in rows:
+            steps = [
+                ChainStep(
+                    step_index=s["step_index"], zone_id=s["zone_id"],
+                    objective=s["objective"], primitive_ref=s["primitive_ref"],
+                    approach=s["approach"], requires=list(s.get("requires", [])),
+                    produces=list(s.get("produces", [])),
+                    success_signal=s.get("success_signal", ""),
+                )
+                for s in json.loads(r["steps"] or "[]")
+            ]
+            chains.append(AttackChain(
+                chain_id=r["chain_id"], cycle_id=r["cycle_id"],
+                title=r["title"], zones=list(json.loads(r["zones"] or "[]")),
+                primary_zone=r["primary_zone"], steps=steps,
+                builds_on=list(json.loads(r["builds_on"] or "[]")),
+                estimated_turns=r["estimated_turns"],
+            ))
+        return chains
+
+    def log_chain_finding(self, finding: ChainFinding) -> str:
+        self._emit_invoked("log_chain_finding")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT OR REPLACE INTO chain_findings(chain_finding_id, "
+                "chain_id, cycle_id, zones_traversed, terminal_zone, severity, "
+                "verdict, landed_steps, evidence, repro_status, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (finding.chain_finding_id, finding.chain_id, finding.cycle_id,
+                 json.dumps(finding.zones_traversed), finding.terminal_zone,
+                 finding.severity, finding.verdict,
+                 json.dumps(finding.landed_steps), finding.evidence,
+                 finding.repro_status, _now()),
+            )
+        return finding.chain_finding_id
+
+    def get_chain_findings(self) -> list[ChainFinding]:
+        self._emit_invoked("get_chain_findings")
+        rows = self.db.fetchall(
+            "SELECT * FROM chain_findings ORDER BY created_at")
+        return [
+            ChainFinding(
+                chain_finding_id=r["chain_finding_id"], chain_id=r["chain_id"],
+                cycle_id=r["cycle_id"],
+                zones_traversed=list(json.loads(r["zones_traversed"] or "[]")),
+                terminal_zone=r["terminal_zone"], severity=r["severity"],
+                verdict=r["verdict"],
+                landed_steps=list(json.loads(r["landed_steps"] or "[]")),
+                evidence=r["evidence"], repro_status=r["repro_status"],
+            )
+            for r in rows
+        ]
+
+    def log_chain_step_results(
+        self, results: list[ChainStepResult]
+    ) -> None:
+        self._emit_invoked("log_chain_step_results")
+        with self.db.lock():
+            for r in results:
+                self.db.execute(
+                    "INSERT OR REPLACE INTO chain_step_results(chain_id, "
+                    "step_index, zone_id, landed, produced_tokens, turn_span, "
+                    "progress_score) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (r.chain_id, r.step_index, r.zone_id, int(bool(r.landed)),
+                     json.dumps(r.produced_tokens),
+                     json.dumps(list(r.turn_span)), r.progress_score),
+                )
+
+    def get_chain_step_results(
+        self, chain_id: str | None = None
+    ) -> list[ChainStepResult]:
+        self._emit_invoked("get_chain_step_results")
+        if chain_id is None:
+            rows = self.db.fetchall(
+                "SELECT * FROM chain_step_results "
+                "ORDER BY chain_id, step_index")
+        else:
+            rows = self.db.fetchall(
+                "SELECT * FROM chain_step_results WHERE chain_id = ? "
+                "ORDER BY step_index", (chain_id,))
+        out: list[ChainStepResult] = []
+        for r in rows:
+            span = json.loads(r["turn_span"] or "[0,0]")
+            out.append(ChainStepResult(
+                chain_id=r["chain_id"], step_index=r["step_index"],
+                zone_id=r["zone_id"], landed=bool(r["landed"]),
+                produced_tokens=list(json.loads(r["produced_tokens"] or "[]")),
+                turn_span=(span[0], span[1]) if len(span) == 2 else (0, 0),
+                progress_score=r["progress_score"],
+            ))
+        return out
 
     # ------------------------------------------------------------------
     # Trajectory & near-miss scoring (trajectory spec §8)

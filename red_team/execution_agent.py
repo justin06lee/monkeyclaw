@@ -217,10 +217,24 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _is_mock_victim(victim) -> bool:
+    """True for a chain-test MockVictim (test/helpers.py) — it carries a
+    ``landing`` flag and has no live transport. The mock_victim sandbox
+    victim is a real VictimInstance and is NOT matched here."""
+    return type(victim).__name__ == "MockVictim" and hasattr(victim, "landing")
+
+
 class ExecutionAgent:
     """Runs one deep-dive attack chain inside a single lane."""
 
-    def __init__(self, llm: LLMClient, cfg: ExecutionConfig | None = None) -> None:
+    def __init__(self, llm: LLMClient | None = None,
+                 cfg: ExecutionConfig | None = None) -> None:
+        # `llm` is optional only so a ChainExecutionAgent can be built with a
+        # bare ExecutionAgent() for chain steps; a None llm defaults to a
+        # MockLLM (mock mode, zero credentials).
+        if llm is None:
+            from interfaces.llm import MockLLM
+            llm = MockLLM()
         self.llm = llm
         self.cfg = cfg or ExecutionConfig()
 
@@ -239,11 +253,28 @@ class ExecutionAgent:
         real turns. The lane stops on a confirmed side-effect, the turn cap,
         or a genuine give-up.
         """
+        # Cross-zone chaining — an idea carrying a chain runs as an ordered,
+        # stateful multi-zone unit via the ChainExecutionAgent. Sniffed
+        # exactly like idea.playbook below.
+        chain = getattr(idea, "chain", None)
+        if chain is not None:
+            from red_team.chain_executor import ChainExecutionAgent
+            ChainExecutionAgent(base_agent=self).execute(
+                idea, victim, harness, lane_cfg)
+            return
+
         # B1 — a playbook-backed idea runs deterministically: scripted turns,
         # no LLM in the loop. `idea.playbook` is attached by red_team.playbooks.
         playbook = getattr(idea, "playbook", None)
         if playbook is not None:
             self._run_playbook(idea, playbook, victim, harness)
+            return
+
+        # A mock victim has no live transport — a non-chain idea against one
+        # is a no-op trace (used only by the chain test-suite).
+        if _is_mock_victim(victim):
+            harness.set_self_assessment("[mock] plain idea — no live run.")
+            harness.set_termination("idea_completed")
             return
 
         overall_cap = min(lane_cfg.max_turns, self.cfg.max_turns)
@@ -402,6 +433,59 @@ class ExecutionAgent:
                 f"side-effects.")
         harness.set_self_assessment(assessment)
         harness.set_termination(termination)
+
+    # ------------------------------------------------------------------
+    def run_chain_step(
+        self,
+        *,
+        step,
+        victim,
+        harness,
+        lane_cfg: LaneConfig,
+        carried_context: str = "",
+    ) -> None:
+        """Run one ChainStep as a bounded deep-dive sub-conversation.
+
+        A thin scoping wrapper over the lane turn loop: it builds a
+        step-scoped IdeaObject from the step's objective / zone / approach,
+        prepends the carried context from earlier steps, and runs the same
+        turn loop `execute()` uses with a per-step turn cap.
+
+        A MockVictim short-circuits the live loop: it records a synthetic
+        exchange and, when the victim is configured to comply, registers a
+        side-effect for the step's zone so the step lands.
+        """
+        approach = step.approach
+        if carried_context:
+            approach = (f"{approach}\n\n[Carried from earlier chain steps]\n"
+                        f"{carried_context}")
+        step_idea = IdeaObject(
+            idea_id=f"{step.primitive_ref}#chainstep{step.step_index}",
+            cycle_id=0, zone_id=step.zone_id, source_mode="creative",
+            title=step.objective, approach=approach,
+            success_criteria=step.success_signal,
+            estimated_turns=max(1, lane_cfg.max_turns), novelty_notes="",
+        )
+
+        # Mock chain execution path — no live transport.
+        if _is_mock_victim(victim):
+            harness.record_message(Message(
+                role="attacker", content=f"[chain step {step.step_index}] "
+                f"{step.objective}", timestamp=_now()))
+            harness.record_message(Message(
+                role="victim",
+                content=("[mock] complying with step"
+                         if getattr(victim, "landing", False)
+                         else "[mock] I won't do that."),
+                timestamp=_now()))
+            if getattr(victim, "landing", False):
+                harness.record_side_effect_for_zone(step.zone_id)
+            return
+
+        # Live path — reuse the deep-dive turn loop, scoped to this step.
+        step_cap = max(1, min(lane_cfg.max_turns, self.cfg.max_turns))
+        self.execute(step_idea, victim, harness,
+                     lane_cfg.model_copy(update={"max_turns": step_cap}))
 
     # ------------------------------------------------------------------
     def _forward_side_effects(

@@ -235,3 +235,41 @@ def test_dashboard_exposes_model_winrate_panel(tmp_path: Path):
     assert panel["winrates"][0]["model_label"] == "nemotron"
     assert panel["recent_rounds"]
     assert panel["recent_rounds"][0]["winner"] == "nemotron"
+
+
+def test_kill_chain_timeline_view_renders(tmp_path: Path):
+    """The /kill-chains view lists composed chains and their step timeline."""
+    from infra.database import Database
+    from infra.mcp_server import MCPServer
+    from interfaces.types import AttackChain, ChainStep, ChainStepResult
+
+    db_path = str(tmp_path / "mc.db")
+    db = Database(db_path)
+    try:
+        server = MCPServer(db)
+        chain = AttackChain(
+            chain_id="CHAIN-1", cycle_id=1, title="kill chain",
+            zones=["PROMPT-INJ", "PRV-LEAK"], primary_zone="PRV-LEAK",
+            steps=[
+                ChainStep(0, "PROMPT-INJ", "foothold", "I0", "a0", [],
+                          ["foothold.instruction_executed"], "s0"),
+                ChainStep(1, "PRV-LEAK", "leak", "I1", "a1",
+                          ["foothold.instruction_executed"],
+                          ["secret.value_captured"], "s1"),
+            ],
+            builds_on=["I0", "I1"], estimated_turns=10)
+        server.log_attack_chain(chain)
+        server.log_chain_step_results([
+            ChainStepResult("CHAIN-1", 0, "PROMPT-INJ", True,
+                            ["foothold.instruction_executed"], (0, 3), 6.0),
+            ChainStepResult("CHAIN-1", 1, "PRV-LEAK", False, [], (3, 6), 1.0),
+        ])
+    finally:
+        db.close()
+
+    client = TestClient(build_dashboard_app(db_path))
+    resp = client.get("/kill-chains")
+    assert resp.status_code == 200
+    assert "CHAIN-1" in resp.text
+    assert "PROMPT-INJ" in resp.text
+    assert "PRV-LEAK" in resp.text

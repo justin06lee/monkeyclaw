@@ -19,7 +19,10 @@ from interfaces.types import (
     AppealVerdict,
     ArchiveCell,
     ArchiveUpdateInput,
+    AttackChain,
     AttackElo,
+    ChainFinding,
+    ChainStepResult,
     CodeChunk,
     ControlValidationRun,
     CoverageGap,
@@ -377,6 +380,27 @@ class MonkeyClawMCP(Protocol):
 
     def get_idea_components(self, idea_id: str) -> list[IdeaComponent]:
         """All component rows for an idea, oldest first."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Cross-zone attack chaining
+    # ------------------------------------------------------------------
+    def log_attack_chain(self, chain: AttackChain) -> str:
+        """Persist a composed AttackChain. Returns the chain_id."""
+        ...
+
+    def get_attack_chains(self, cycle_id: int | None) -> list[AttackChain]:
+        """All attack chains, optionally filtered to a single cycle."""
+        ...
+
+    def log_chain_finding(self, finding: ChainFinding) -> str:
+        """Persist a ChainFinding. Returns the chain_finding_id."""
+        ...
+
+    def log_chain_step_results(
+        self, results: list[ChainStepResult]
+    ) -> None:
+        """Persist the per-step execution trace for a chain."""
         ...
 
     # ------------------------------------------------------------------

@@ -27,7 +27,10 @@ from interfaces.types import (
     AppealVerdict,
     ArchiveCell,
     ArchiveUpdateInput,
+    AttackChain,
     AttackElo,
+    ChainFinding,
+    ChainStepResult,
     CheckResult,
     CodeChunk,
     ControlValidationRun,
@@ -152,6 +155,9 @@ class MockMCP(MonkeyClawMCP):
             tuple[str, str], MutationOperatorStat] = {}
         self._mutation_attempts: list[MutationAttempt] = []
         # Corpus-driven ideation stores (corpus-driven-ideation spec §8)
+        self._attack_chains: dict[str, AttackChain] = {}
+        self._chain_findings: dict[str, ChainFinding] = {}
+        self._chain_step_results: dict[tuple[str, int], ChainStepResult] = {}
         self._idea_techniques: dict[str, list] = {}
         self._finding_techniques: dict[str, list] = {}
         self._technique_coverage: dict[tuple[str, str, str], dict] = {}
@@ -331,7 +337,10 @@ class MockMCP(MonkeyClawMCP):
     # Repro queue
     # ------------------------------------------------------------------
     def push_to_repro_queue(self, finding_id: str, priority: str) -> None:
-        if finding_id not in self._findings:
+        # A chain kill-chain is pushed by its chain_finding_id (route_chain_
+        # judgment); a single-zone finding by its finding_id.
+        if (finding_id not in self._findings
+                and finding_id not in self._chain_findings):
             raise KeyError(f"unknown finding_id {finding_id}")
         self._repro_queue.append((finding_id, priority))
         # high priority floats to the front
@@ -861,6 +870,48 @@ class MockMCP(MonkeyClawMCP):
 
     def get_idea_components(self, idea_id: str) -> list[IdeaComponent]:
         return list(self._idea_components.get(idea_id, []))
+
+    # --- cross-zone attack chaining ------------------------------------
+    def log_attack_chain(self, chain: AttackChain) -> str:
+        self._attack_chains[chain.chain_id] = chain
+        self._log("log_attack_chain", {"chain_id": chain.chain_id})
+        return chain.chain_id
+
+    def get_attack_chains(self, cycle_id: int | None) -> list[AttackChain]:
+        chains = list(self._attack_chains.values())
+        if cycle_id is not None:
+            chains = [c for c in chains if c.cycle_id == cycle_id]
+        # Deep-copy steps too so callers cannot mutate stored state.
+        return [replace(c, steps=[replace(s) for s in c.steps])
+                for c in chains]
+
+    def log_chain_finding(self, finding: ChainFinding) -> str:
+        self._chain_findings[finding.chain_finding_id] = finding
+        self._log("log_chain_finding",
+                  {"chain_finding_id": finding.chain_finding_id})
+        return finding.chain_finding_id
+
+    def get_chain_findings(self) -> list[ChainFinding]:
+        return [replace(f) for f in self._chain_findings.values()]
+
+    def log_chain_step_results(self, results: list[ChainStepResult]) -> None:
+        for r in results:
+            self._chain_step_results[(r.chain_id, r.step_index)] = r
+        self._log("log_chain_step_results", {"count": len(results)})
+
+    def get_chain_step_results(
+        self, chain_id: str | None = None
+    ) -> list[ChainStepResult]:
+        rows = list(self._chain_step_results.values())
+        if chain_id is not None:
+            rows = [r for r in rows if r.chain_id == chain_id]
+        return [replace(r) for r in sorted(
+            rows, key=lambda r: (r.chain_id, r.step_index))]
+
+    def coverage_for(self, zone_id: str) -> float:
+        """Current coverage score for a zone (test/inspection convenience)."""
+        z = self._zones.get(zone_id)
+        return float(z["coverage_score"]) if z is not None else 0.0
 
     # --- mutation operator learning ------------------------------------
     def get_mutation_operator_stats(

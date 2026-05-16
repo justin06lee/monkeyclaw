@@ -271,10 +271,19 @@ class ArchiveConfig(BaseModel):
     seed_cross_zone_count: int = 2
 
 
+class ChainConfig(BaseModel):
+    """Cross-zone attack chaining. See cross-zone-attack-chaining spec §15."""
+
+    enabled: bool = True
+    n_chains: int = 2
+    max_turns: int = 30
+
+
 class RedConfig(BaseModel):
     """Red-team subsystem tuning."""
 
     archive: ArchiveConfig = Field(default_factory=ArchiveConfig)
+    chains: ChainConfig = Field(default_factory=ChainConfig)
 
 
 class MonkeyClawConfig(BaseModel):

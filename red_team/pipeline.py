@@ -63,7 +63,9 @@ from red_team.mutations import MutationStats
 from red_team.priority import score_ideas
 from red_team.progress import score_progress, search_score
 from red_team.near_miss import extract_near_misses
-from red_team.routing import route_judgment
+from red_team import chain_composer
+from red_team.chain_attribution import attribute as attribute_chain
+from red_team.routing import route_chain_judgment, route_judgment
 from red_team.trajectory import score_trajectory
 from red_team.strategist import Strategist
 from red_team.tournament import ModelTournament, load_tournament_config
@@ -436,13 +438,48 @@ class Pipeline:
         if not kept_ideas:
             return []
 
-        chains = self.strategist.synthesize(
-            kept_ideas, zones_by_id, cycle_id, n_lanes)
+        # Cross-zone chaining — compose multi-zone kill-chain lanes from the
+        # cycle's primitives + archive elites. An empty composer output falls
+        # back entirely to the legacy single-zone strategist path (spec §5).
+        chain_lanes: list[IdeaObject] = []
+        if self.cfg.red.chains.enabled and kept_ideas:
+            try:
+                skeletons = self.strategist.synthesize_chains(
+                    kept_ideas, self._archive, zones_by_id, cycle_id,
+                    self.cfg.red.chains.n_chains)
+                ideas_by_id = {i.idea_id: i for i in kept_ideas}
+                composed = chain_composer.compose(
+                    skeletons, ideas_by_id, self._archive, cycle_id)
+                for ch in composed[:self.cfg.red.chains.n_chains]:
+                    self.mcp.log_attack_chain(ch)
+                    lane_idea = IdeaObject(
+                        idea_id=ch.chain_id, cycle_id=cycle_id,
+                        zone_id=ch.primary_zone, source_mode="creative",
+                        title=f"Chain: {ch.title}",
+                        approach=ch.rationale,
+                        success_criteria="Cross-zone kill chain breach.",
+                        estimated_turns=ch.estimated_turns,
+                        novelty_notes="", priority_score=1.0,
+                        builds_on=ch.builds_on or None)
+                    lane_idea.chain = ch
+                    chain_lanes.append(lane_idea)
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("chain composition failed (%s) — legacy path", e)
+                chain_lanes = []
 
-        # Fallback — if the strategist under-delivered, pad with the
-        # highest-priority raw ideas so every lane still gets a target.
+        # Chain lanes first, then legacy single-zone chains/ideas fill the
+        # remaining lanes (spec §5: a cycle may mix chain and idea lanes;
+        # an empty composer output falls back to the legacy path entirely).
+        chains: list[IdeaObject] = list(chain_lanes[:n_lanes])
         if len(chains) < n_lanes:
-            have = {id(c) for c in chains}
+            legacy = self.strategist.synthesize(
+                kept_ideas, zones_by_id, cycle_id, n_lanes - len(chains))
+            for ch in legacy:
+                if len(chains) >= n_lanes:
+                    break
+                chains.append(ch)
+            # Fallback padding with raw ideas, as today.
+            have = {id(x) for x in chains}
             for idea in kept_ideas:
                 if len(chains) >= n_lanes:
                     break
@@ -523,6 +560,33 @@ class Pipeline:
                 estimated_turns=0,
                 novelty_notes="",
             )
+
+        chain = getattr(idea, "chain", None)
+        if chain is not None:
+            # Cross-zone chain lane — attribute the chain across its zones.
+            try:
+                judgment = self.judger.judge(
+                    lane_result,
+                    idea_summary=f"{idea.title}: {idea.approach}",
+                    success_criteria=idea.success_criteria)
+                attribution = attribute_chain(chain, lane_result, judgment)
+                chain_finding_id = route_chain_judgment(
+                    attribution, chain, self.mcp,
+                    archive=self._archive,
+                    alert_severity_floor=self.alert_severity_floor)
+                LOG.info(
+                    "judge: chain lane=%s chain=%s verdict=%s zones=%d "
+                    "finding=%s",
+                    lane_result.lane_id, chain.chain_id, judgment.verdict,
+                    len(attribution.chain_finding.zones_traversed),
+                    chain_finding_id)
+                return judgment
+            except Exception as e:  # noqa: BLE001
+                # Per-lane isolation — a chain attribution failure must not
+                # abort the cycle (spec §12).
+                LOG.exception("chain attribution failed for lane %s: %s",
+                              lane_result.lane_id, e)
+                return None  # type: ignore[return-value]
 
         judgment = self.judger.judge(
             lane_result,

@@ -247,6 +247,8 @@ def test_generate_ideas_produces_prioritized_top_n():
     llm = MockLLM()  # fallback canned ideas (3 per mode call)
     mcp = MockMCP(seed=0, verbose=False)
     pipeline = Pipeline(mcp=mcp, llm=llm)
+    # Exercise the legacy single-zone path explicitly.
+    pipeline.cfg.red.chains.enabled = False
     ideas = pipeline.generate_ideas(cycle_id=42, n_lanes=2)
     assert len(ideas) <= 2
     # Each idea must have been assigned a real idea_id from log_idea

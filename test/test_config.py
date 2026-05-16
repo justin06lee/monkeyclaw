@@ -78,3 +78,11 @@ def test_load_tournament_config_reads_routing_keys():
     assert cfg.tournament_zones_per_cycle == 1
     assert cfg.h2h_weight == 0.6
     assert cfg.exploration_floor == 0.1
+
+
+def test_red_chains_config_defaults():
+    cfg = load_config()
+    chains = cfg.red.chains
+    assert chains.enabled is True
+    assert chains.n_chains == 2
+    assert chains.max_turns == 30
