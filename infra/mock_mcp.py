@@ -134,6 +134,8 @@ class MockMCP(MonkeyClawMCP):
         self._corpus_results: list[PolicyCorpusResult] = []
         self._patch_candidates: dict[str, PatchCandidateInput] = {}
         self._patch_statuses: dict[str, dict] = {}
+        self._patch_variant_results: list[dict] = []
+        self._patch_detection_results: list[dict] = []
         self._archive_cells: dict[str, ArchiveCell] = {}
         self._idea_components: dict[str, list[IdeaComponent]] = {}
         # Purple-team stores (purple-team spec §8)
@@ -773,6 +775,42 @@ class MockMCP(MonkeyClawMCP):
         Mock mode never enforces the FSM — it records the call.
         """
         self._log("mark_finding_patched", {"finding_id": finding_id})
+
+    # ------------------------------------------------------------------
+    # Verifier gate hardening — variant + detection results (spec §7)
+    # ------------------------------------------------------------------
+    def log_patch_variant_results(self, patch_id, vuln_id, results):
+        for r in results:
+            self._patch_variant_results.append({
+                "result_id": _new_id("PVR"), "patch_id": patch_id,
+                "vuln_id": vuln_id, "operator": r.operator,
+                "variant_hash": r.variant_hash, "blocked": int(r.blocked),
+                "judge_verdict": r.judge_verdict,
+            })
+        self._log("log_patch_variant_results",
+                  {"patch_id": patch_id, "count": len(results)})
+
+    def get_patch_variant_results(self, patch_id):
+        return [r for r in self._patch_variant_results
+                if r["patch_id"] == patch_id]
+
+    def log_patch_detection_result(self, *, patch_id, vuln_id, zone_id,
+                                   quadrant, observability, prevention,
+                                   passed, evidence="{}"):
+        result_id = _new_id("PDR")
+        self._patch_detection_results.append({
+            "result_id": result_id, "patch_id": patch_id,
+            "vuln_id": vuln_id, "zone_id": zone_id, "quadrant": quadrant,
+            "observability": observability, "prevention": prevention,
+            "passed": int(passed), "evidence": evidence,
+        })
+        self._log("log_patch_detection_result",
+                  {"patch_id": patch_id, "zone_id": zone_id})
+        return result_id
+
+    def get_patch_detection_results(self, patch_id):
+        return [r for r in self._patch_detection_results
+                if r["patch_id"] == patch_id]
 
     # ------------------------------------------------------------------
     # MAP-Elites archive

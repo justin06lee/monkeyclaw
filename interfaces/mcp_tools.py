@@ -53,6 +53,7 @@ from interfaces.types import (
     TelemetryEvent,
     TelemetryEventInput,
     Trajectory,
+    VariantResult,
 )
 
 
@@ -335,6 +336,29 @@ class MonkeyClawMCP(Protocol):
 
     def mark_finding_patched(self, finding_id: str) -> None:
         """Advance a finding in_progress->patched->verified after approval."""
+        ...
+
+    def log_patch_variant_results(
+        self, patch_id: str, vuln_id: str,
+        results: list[VariantResult],
+    ) -> None:
+        """Persist gate1b mutation-variant results into patch_variant_results."""
+        ...
+
+    def get_patch_variant_results(self, patch_id: str) -> list[dict]:
+        """All mutation-variant results for one patch."""
+        ...
+
+    def log_patch_detection_result(
+        self, *, patch_id: str, vuln_id: str, zone_id: str,
+        quadrant: str, observability: str, prevention: str,
+        passed: bool, evidence: str = "{}",
+    ) -> str:
+        """Persist one gate_detection result; return result_id."""
+        ...
+
+    def get_patch_detection_results(self, patch_id: str) -> list[dict]:
+        """All detection-gate results for one patch."""
         ...
 
     # ------------------------------------------------------------------

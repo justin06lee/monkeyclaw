@@ -31,3 +31,28 @@ def test_patch_detection_results_columns(db: Database):
         "PRAGMA table_info(patch_detection_results)")}
     assert {"result_id", "patch_id", "vuln_id", "zone_id", "quadrant",
             "observability", "prevention", "passed", "evidence"} <= cols
+
+
+def test_mcp_logs_and_reads_variant_results(server):
+    from interfaces.types import VariantResult
+
+    server.log_patch_variant_results("P1", "MC-2026-0001", [
+        VariantResult(operator="paraphrase", variant_hash="h1",
+                      blocked=True, judge_verdict="blocked"),
+        VariantResult(operator="add_benign_framing", variant_hash="h2",
+                      blocked=False, judge_verdict="confirmed"),
+    ])
+    rows = server.get_patch_variant_results("P1")
+    assert len(rows) == 2
+    assert {r["operator"] for r in rows} == {
+        "paraphrase", "add_benign_framing"}
+
+
+def test_mcp_logs_and_reads_detection_result(server):
+    server.log_patch_detection_result(
+        patch_id="P1", vuln_id="MC-2026-0001", zone_id="SBX-FS",
+        quadrant="WEAK", observability="silent", prevention="blocked",
+        passed=False, evidence='{"surface": "fs"}')
+    rows = server.get_patch_detection_results("P1")
+    assert len(rows) == 1
+    assert rows[0]["quadrant"] == "WEAK" and rows[0]["passed"] == 0

@@ -932,6 +932,45 @@ class MCPServer(MonkeyClawMCP):
         )
 
     # ------------------------------------------------------------------
+    # Verifier gate hardening — variant + detection results (spec §7)
+    # ------------------------------------------------------------------
+    def log_patch_variant_results(self, patch_id, vuln_id, results):
+        with self.db.lock():
+            for r in results:
+                self.db.execute(
+                    "INSERT INTO patch_variant_results (result_id, patch_id, "
+                    "vuln_id, operator, variant_hash, blocked, judge_verdict) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (_new_id("PVR"), patch_id, vuln_id,
+                     r.operator, r.variant_hash, int(r.blocked),
+                     r.judge_verdict),
+                )
+
+    def get_patch_variant_results(self, patch_id):
+        return self.db.fetchall(
+            "SELECT * FROM patch_variant_results WHERE patch_id = ?",
+            (patch_id,))
+
+    def log_patch_detection_result(self, *, patch_id, vuln_id, zone_id,
+                                   quadrant, observability, prevention,
+                                   passed, evidence="{}"):
+        result_id = _new_id("PDR")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO patch_detection_results (result_id, patch_id, "
+                "vuln_id, zone_id, quadrant, observability, prevention, "
+                "passed, evidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (result_id, patch_id, vuln_id, zone_id, quadrant,
+                 observability, prevention, int(passed), evidence),
+            )
+        return result_id
+
+    def get_patch_detection_results(self, patch_id):
+        return self.db.fetchall(
+            "SELECT * FROM patch_detection_results WHERE patch_id = ?",
+            (patch_id,))
+
+    # ------------------------------------------------------------------
     # MAP-Elites archive
     # ------------------------------------------------------------------
     def update_archive_cell(self, update: ArchiveUpdateInput) -> ArchiveCell:
