@@ -43,6 +43,7 @@ from interfaces.types import (
     PolicyConfig,
 )
 
+from red_team import archive_seed
 from red_team.archive import EliteArchive
 from red_team.dedup import deduplicate_and_log
 from red_team.execution_agent import ExecutionAgent, ExecutionConfig
@@ -206,7 +207,16 @@ class Pipeline:
 
         for gap in gaps:
             zones_targeted.append(gap.zone_id)
-            new_ideas = self.ideation.generate_for_zone(gap, cycle_id)
+            try:
+                seed = archive_seed.render_seed(
+                    archive_seed.build_seed(
+                        self._archive, gap.zone_id, cfg=self.cfg.red.archive))
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("archive seed build failed for %s (%s) — "
+                            "ideation runs unseeded", gap.zone_id, e)
+                seed = ""
+            new_ideas = self.ideation.generate_for_zone(
+                gap, cycle_id, seed=seed)
             ideas_generated += len(new_ideas)
             candidates.extend(new_ideas)
             # B9 — when the model tournament is enabled, extra entrant models
@@ -242,7 +252,17 @@ class Pipeline:
         ):
             attempts += 1
             unlike_zone = gaps[0]
-            extra = self.ideation.generate_for_zone(unlike_zone, cycle_id)
+            try:
+                seed = archive_seed.render_seed(
+                    archive_seed.build_seed(
+                        self._archive, unlike_zone.zone_id,
+                        cfg=self.cfg.red.archive))
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("archive seed build failed for %s (%s) — "
+                            "ideation runs unseeded", unlike_zone.zone_id, e)
+                seed = ""
+            extra = self.ideation.generate_for_zone(
+                unlike_zone, cycle_id, seed=seed)
             ideas_generated += len(extra)
             if not extra:
                 break

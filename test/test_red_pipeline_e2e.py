@@ -276,3 +276,27 @@ def test_pipeline_rehydration_failure_is_cold_not_crash(monkeypatch):
         lambda zone: (_ for _ in ()).throw(RuntimeError("db down")))
     pipe = Pipeline(mcp=mcp, llm=MockLLM())
     assert pipe._archive.cell_count() == 0
+
+
+def test_pipeline_passes_archive_seed_into_ideation():
+    """Cycle 2's ideation prompt must contain the archive seed block."""
+    from interfaces.types import ArchiveUpdateInput
+
+    mcp = MockMCP(seed=0, verbose=False)
+    # Pre-seed a cell so build_seed has an elite to surface.
+    mcp.update_archive_cell(ArchiveUpdateInput(
+        zone_id="SBX-FS", interaction_style="roleplay",
+        response_movement="partial_compliance", idea_id="ELITE-1",
+        score=8.0, niche_descriptors={"turn_bucket": "3-7"},
+    ))
+    pipe = Pipeline(mcp=mcp, llm=MockLLM())
+    captured: list[str] = []
+    real = pipe.ideation.generate_for_zone
+
+    def _spy(zone, cycle_id, **kw):
+        captured.append(kw.get("seed", ""))
+        return real(zone, cycle_id, **kw)
+
+    pipe.ideation.generate_for_zone = _spy
+    pipe.generate_ideas(cycle_id=2, n_lanes=2)
+    assert any("# Archive — Diverse Elites" in s for s in captured)
