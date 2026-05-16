@@ -254,3 +254,25 @@ def test_generate_ideas_produces_prioritized_top_n():
     # Priority sort descending
     if len(ideas) >= 2:
         assert ideas[0].priority_score >= ideas[1].priority_score
+
+
+def test_pipeline_rehydrates_archive_from_db():
+    from interfaces.types import ArchiveUpdateInput
+
+    mcp = MockMCP(seed=0, verbose=False)
+    mcp.update_archive_cell(ArchiveUpdateInput(
+        zone_id="SBX-FS", interaction_style="direct",
+        response_movement="refusal", idea_id="I1", score=5.0,
+    ))
+    pipe = Pipeline(mcp=mcp, llm=MockLLM())
+    assert pipe._archive.cell_count() == 1
+    assert pipe._archive.get_elite("SBX-FS", "direct", "refusal") is not None
+
+
+def test_pipeline_rehydration_failure_is_cold_not_crash(monkeypatch):
+    mcp = MockMCP(seed=0, verbose=False)
+    monkeypatch.setattr(
+        mcp, "get_archive_cells",
+        lambda zone: (_ for _ in ()).throw(RuntimeError("db down")))
+    pipe = Pipeline(mcp=mcp, llm=MockLLM())
+    assert pipe._archive.cell_count() == 0

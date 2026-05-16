@@ -157,7 +157,17 @@ class Pipeline:
         self._book_lock = threading.Lock()
         # MAP-Elites archive of diverse high-performing attempts (spec B5/B8);
         # routing maps every judged attempt into a niche cell.
-        self._archive = EliteArchive()
+        # B5 — rehydrate the MAP-Elites grid from the persistent store so the
+        # niche archive survives process restarts. A failure here is a cold
+        # archive for this run, never a crash (spec §10).
+        try:
+            cells = self.mcp.get_archive_cells(zone=None)
+            self._archive = EliteArchive.load_from_cells(cells)
+            LOG.info("rehydrated MAP-Elites archive: %d cell(s)",
+                     self._archive.cell_count())
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("archive rehydration failed (%s) — starting cold", e)
+            self._archive = EliteArchive()
 
         # Cycle accounting for log_cycle_summary on the next generate_ideas
         # call (orchestrator updates the summary itself, but Person 2 owns
