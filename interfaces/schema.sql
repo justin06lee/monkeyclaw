@@ -1,7 +1,12 @@
 -- MonkeyClaw database schema — Contract owned by Person 1.
 --
--- After Day-1 sign-off this file is frozen. Changes go through migration scripts
--- in infra/migrations/ — never edit a column in-place.
+-- This file is the readable canonical reference AND the bootstrap-from-empty
+-- path. To add a table or column after Day-1 sign-off:
+--   1. Write a new infra/migrations/NNNN_*.sql or .py migration.
+--   2. Also update this file to the post-migration state so a fresh bootstrap
+--      and a fully-migrated DB are identical (test_migrations_schema_parity).
+--   3. Bump the schema_version seed below to NNNN.
+-- Never edit a released DB by hand — migrations are the only mechanism.
 --
 -- All embeddings are 384-dim float32 (sentence-transformers all-MiniLM-L6-v2).
 -- Vector tables use sqlite-vec's vec0 virtual table extension.
@@ -349,6 +354,22 @@ CREATE TABLE IF NOT EXISTS mutation_operator_stats (
 );
 
 --------------------------------------------------------------------------------
+-- queue_transitions — audit trail of every status transition (data-integrity spec §8.1)
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS queue_transitions (
+    transition_id  TEXT PRIMARY KEY,
+    entity         TEXT NOT NULL,
+    entity_id      TEXT NOT NULL,
+    from_state     TEXT,
+    to_state       TEXT NOT NULL,
+    actor          TEXT NOT NULL,
+    reason         TEXT NOT NULL DEFAULT '',
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_queue_transitions_entity
+    ON queue_transitions(entity, entity_id, created_at);
+
+--------------------------------------------------------------------------------
 -- schema_meta — track schema version for migrations
 --------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -357,7 +378,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 
 INSERT OR IGNORE INTO schema_meta(key, value) VALUES
-    ('schema_version', '2'),
+    ('schema_version', '4'),
     ('embedding_model', 'sentence-transformers/all-MiniLM-L6-v2'),
     ('embedding_dim',   '384');
 
