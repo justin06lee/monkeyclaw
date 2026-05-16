@@ -15,7 +15,6 @@ import sys
 import uuid
 from dataclasses import asdict
 from datetime import UTC, datetime
-
 from typing import TYPE_CHECKING
 
 from infra.database import Database, EmbeddingModel
@@ -77,7 +76,7 @@ class MCPServer(MonkeyClawMCP):
         self._repo_path = "."
 
     @property
-    def transitions(self) -> "TransitionEngine":
+    def transitions(self) -> TransitionEngine:
         """The shared transition engine for this server's DB."""
         eng = getattr(self, "_transition_engine", None)
         if eng is None:
