@@ -150,16 +150,24 @@ class ModelTournament:
     def generate(
         self, generate_fn: Callable[[Entrant], list[IdeaObject]],
     ) -> list[IdeaObject]:
-        """Run `generate_fn` for every entrant, tag each idea with its source
-        model on `idea.model_label`, and return the merged pool.
+        """Run `generate_fn` for every configured entrant. See `generate_for`."""
+        if not self.enabled:
+            return []
+        return self.generate_for(self.cfg.entrants, generate_fn)
+
+    def generate_for(
+        self, entrants: list[Entrant],
+        generate_fn: Callable[[Entrant], list[IdeaObject]],
+    ) -> list[IdeaObject]:
+        """Run `generate_fn` for every entrant in `entrants`, tag each idea
+        with its source model on `idea.model_label`, and return the merged
+        pool.
 
         The caller then dedups the merged list together (the existing
         `deduplicate_and_log` is model-agnostic) and runs the normal
         priority / strategist stages."""
-        if not self.enabled:
-            return []
         merged: list[IdeaObject] = []
-        for entrant in self.cfg.entrants:
+        for entrant in entrants:
             try:
                 ideas = generate_fn(entrant)
             except Exception as e:  # noqa: BLE001
