@@ -13,19 +13,23 @@ OpenAI-compatible NVIDIA inference API by default. Backends:
      NemoClaw gateway injects the credential — set `MC_NEMOTRON_BASE_URL` and
      no key is needed.
 
-2. `ClaudeCodeLLM` — shells out to Claude Code's `claude --print` harness.
+2. `BrevLLM` — an LLM hosted on an NVIDIA Brev instance, reached over the
+   same OpenAI-compatible protocol. Auth via `MC_BREV_BASE_URL` +
+   `MC_BREV_API_KEY` (model id from `MC_BREV_MODEL`).
+
+3. `ClaudeCodeLLM` — shells out to Claude Code's `claude --print` harness.
    Default model is Sonnet with adaptive thinking.
 
-3. `CodexExecLLM` — shells out to `codex exec`.
+4. `CodexExecLLM` — shells out to `codex exec`.
 
-4. `OpenCodeLLM` — shells out to `opencode run`.
+5. `OpenCodeLLM` — shells out to `opencode run`.
 
-5. `MockLLM` — tests. Deterministic, pattern-matched responses.
+6. `MockLLM` — tests. Deterministic, pattern-matched responses.
 
 Backend selection (priority order):
 - explicit `make_llm(backend=...)` argument
 - `MC_LLM_BACKEND` env var:
-  `nemotron` | `claude_code` | `claude_cli` | `codex` | `opencode` | `mock`
+  `nemotron` | `brev` | `claude_code` | `claude_cli` | `codex` | `opencode` | `mock`
 - default: `nemotron`
 """
 
@@ -333,6 +337,75 @@ class NemotronLLM(LLMClient):
             input_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
             output_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
             raw={"finish_reason": choice.finish_reason, "id": resp.id},
+        )
+
+
+# ---------------------------------------------------------------------------
+# Brev backend (OpenAI-compatible API on an NVIDIA Brev instance)
+# ---------------------------------------------------------------------------
+
+
+class BrevLLM(NemotronLLM):
+    """LLM hosted on an NVIDIA Brev instance via an OpenAI-compatible API.
+
+    Brev launches a model behind the OpenAI chat-completions protocol, so this
+    reuses `NemotronLLM`'s request path and only swaps the endpoint/credential
+    source. Point MonkeyClaw at the instance with:
+      - `MC_BREV_BASE_URL` — the instance's OpenAI-compatible URL (`.../v1`)
+      - `MC_BREV_API_KEY`  — the instance's API key
+      - `MC_BREV_MODEL`    — model id served by the instance (falls back to
+                             `MC_LLM_MODEL`, then `DEFAULT_MODEL`)
+
+    Unlike `NemotronLLM` there is no managed-route fallback: both the base URL
+    and the key are required.
+    """
+
+    name = "brev"
+
+    def __init__(
+        self,
+        model: str | None = None,
+        *,
+        base_url: str | None = None,
+        api_key: str | None = None,
+    ) -> None:
+        try:
+            from openai import OpenAI  # noqa: PLC0415
+        except ImportError as e:  # pragma: no cover - hard import
+            raise RuntimeError(
+                "openai SDK not installed. `uv add openai` or pick a different backend."
+            ) from e
+        self.model = (
+            model
+            or os.environ.get("MC_BREV_MODEL")
+            or os.environ.get("MC_LLM_MODEL")
+            or DEFAULT_MODEL
+        )
+        self.base_url = base_url or os.environ.get("MC_BREV_BASE_URL") or ""
+        key = api_key or os.environ.get("MC_BREV_API_KEY")
+        self._missing_base_url = not self.base_url
+        self._missing_brev_key = not key
+        # NemotronLLM.complete() gates on `_missing_key`; Brev does its own
+        # validation in complete() below, so disarm the inherited gate.
+        self._missing_key = False
+        self._client = OpenAI(base_url=self.base_url or None, api_key=key or "missing")
+
+    def complete(
+        self,
+        messages: list[LLMMessage],
+        system: str = "",
+        max_tokens: int = 2000,
+        temperature: float = 0.7,
+    ) -> LLMResponse:
+        if self._missing_base_url:
+            raise RuntimeError(
+                "No Brev endpoint configured. Set MC_BREV_BASE_URL to your "
+                "Brev instance's OpenAI-compatible URL (e.g. https://<host>/v1)."
+            )
+        if self._missing_brev_key:
+            raise RuntimeError("No Brev API key found. Set MC_BREV_API_KEY.")
+        return super().complete(
+            messages, system=system, max_tokens=max_tokens, temperature=temperature
         )
 
 
@@ -725,6 +798,8 @@ def make_llm(backend: str | None = None, *, model: str | None = None) -> LLMClie
 
     if backend == "nemotron":
         return NemotronLLM(model=model)
+    if backend == "brev":
+        return BrevLLM(model=_harness_model(model))
     if backend == "claude_code":
         return ClaudeCodeLLM(model=_harness_model(model))
     if backend == "codex":

@@ -36,6 +36,12 @@ def test_cli_run_accepts_llm_provider_flags():
     args = build_parser().parse_args(["blue-team", "--opencode"])
     assert args.opencode is True
 
+    args = build_parser().parse_args(["run", "--cycles", "1", "--target", "x", "--brev"])
+    assert args.brev is True
+
+    args = build_parser().parse_args(["run", "--llm-backend", "brev"])
+    assert args.llm_backend == "brev"
+
 
 def test_cli_demo_runs_planted_profile(tmp_path):
     r = _cli("demo", "--profile", "planted-filesystem",

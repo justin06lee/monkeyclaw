@@ -24,11 +24,15 @@ from infra.config import load_config
 # ---------------------------------------------------------------------------
 
 
-_LLM_BACKENDS = ("nemotron", "claude_code", "claude_cli", "codex", "opencode", "mock")
+_LLM_BACKENDS = ("nemotron", "brev", "claude_code", "claude_cli",
+                 "codex", "opencode", "mock")
 
 
 def _add_llm_flags(parser: argparse.ArgumentParser) -> None:
     group = parser.add_mutually_exclusive_group()
+    group.add_argument("--brev", action="store_true",
+                       help="use an LLM on an NVIDIA Brev instance as the LLM "
+                            "provider (set MC_BREV_BASE_URL + MC_BREV_API_KEY)")
     group.add_argument("--claude", action="store_true",
                        help="use Claude Code (`claude --print`) as the LLM provider")
     group.add_argument("--codex", action="store_true",
@@ -41,7 +45,9 @@ def _add_llm_flags(parser: argparse.ArgumentParser) -> None:
 
 def _apply_llm_flags(args: argparse.Namespace) -> None:
     backend = getattr(args, "llm_backend", None)
-    if getattr(args, "claude", False):
+    if getattr(args, "brev", False):
+        backend = "brev"
+    elif getattr(args, "claude", False):
         backend = "claude_code"
     elif getattr(args, "codex", False):
         backend = "codex"
@@ -354,6 +360,7 @@ def _cmd_demo_profile(args: argparse.Namespace) -> int:
         run_args = argparse.Namespace(
             cycles=1, perpetual=False, target=args.profile, mock=True,
             llm_backend=getattr(args, "llm_backend", None),
+            brev=getattr(args, "brev", False),
             claude=getattr(args, "claude", False),
             codex=getattr(args, "codex", False),
             opencode=getattr(args, "opencode", False),
