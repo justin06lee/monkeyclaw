@@ -42,3 +42,14 @@ def test_path_node_scores_are_floats():
 def test_executed_path_is_ranked_with_anchors_and_sinks():
     fnames = {f.name for f in fields(ExecutedPath)}
     assert {"nodes", "anchors", "sinks", "backend", "degraded"} <= fnames
+
+
+def test_code_graph_config_defaults():
+    from interfaces.config_schema import MonkeyClawConfig
+
+    cfg = MonkeyClawConfig()
+    cg = cfg.repro.code_graph
+    assert cg.enabled is True
+    assert cg.max_hops == 6
+    assert abs(cg.path_rank_weight - 0.5) < 1e-9
+    assert abs(cg.llm_conf_weight - 0.5) < 1e-9

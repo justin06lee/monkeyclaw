@@ -44,12 +44,20 @@ class JudgmentConfig(BaseModel):
     tier2_confidence_threshold: float = 0.5
 
 
+class CodeGraphConfig(BaseModel):
+    enabled: bool = True
+    max_hops: int = 6
+    path_rank_weight: float = 0.5
+    llm_conf_weight: float = 0.5
+
+
 class ReproConfig(BaseModel):
     replay_count: int = 5
     repro_rate_threshold: float = 0.5
     delta_debug_max_iterations: int = 30
     root_cause_severity_threshold: str = "high"
     cold_verify_max_attempts: int = 3
+    code_graph: CodeGraphConfig = Field(default_factory=CodeGraphConfig)
 
 
 class BlueTeamConfig(BaseModel):
