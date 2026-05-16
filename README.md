@@ -27,7 +27,20 @@ programmatic + semantic analysis, reproduces confirmed findings, patches them,
 and — the part most security tooling skips — checks that the *defense was
 visible*: that NemoClaw's own telemetry fired when the control did its job.
 
-## Why continuous red / purple / blue testing
+> **Highlights**
+> - **Detection-as-pass** — a control passes only when the attack is blocked *and* NemoClaw's telemetry fired. Blocked-but-silent is a latent regression, not a win.
+> - **Five-stage autonomous loop** — red → judge → repro → blue → purple, end to end, no human in the inner loop.
+> - **Eight-gate patch verifier** — including mutation-variant robustness and a purple-team detection gate.
+> - **18 attack-surface zones** with dual-axis coverage and MITRE ATLAS / OWASP-LLM-grounded ideation.
+> - **Zero-credential demo** — one command runs a real cycle and feeds an eleven-panel live dashboard.
+
+<div align="center">
+
+[Quick Start](#-quick-start) · [Demo](#-demo) · [CLI](#-cli) · [Architecture](#-architecture) · [How it got here](#-how-monkeyclaw-got-here) · [Configuration](#-configuration) · [Project status](#-project-status) · [Documentation](#-documentation)
+
+</div>
+
+## 🛡️ Why continuous testing
 
 Coding agents are privileged developer runtimes: they read source, run shell
 commands, call MCP tools, and reach the network. An injected or mistaken
@@ -55,7 +68,7 @@ so* — and only counts a control as passing when both are true. This is
 
 </div>
 
-## Quick Start
+## 🚀 Quick Start
 
 Full setup instructions are in [docs/dev_setup.md](docs/dev_setup.md).
 The verified sequence is:
@@ -101,7 +114,7 @@ in-memory mock provisioner and planted-vulnerability victim instead. The
 bootstrap also falls back to the mock provisioner automatically when the
 `nemoclaw` CLI is not on `PATH`.
 
-## Demo
+## 🎬 Demo
 
 The demo runs with **zero model credentials** — one real pipeline cycle
 against a planted victim (via the in-memory mock provisioner) feeds every
@@ -132,7 +145,7 @@ export MC_NOTIFICATIONS__TELEGRAM_CHAT_ID=<your chat id>
 uv run monkeyclaw test notification
 ```
 
-## CLI
+## ⌨️ CLI
 
 The `monkeyclaw` command is the single entrypoint for the whole loop.
 
@@ -151,7 +164,7 @@ The `monkeyclaw` command is the single entrypoint for the whole loop.
 | `test notification` | Self-check: send a test message through the Telegram alert path |
 | `dashboard [--port 8787]` | Start the live web dashboard |
 
-## Architecture
+## 🏗️ Architecture
 
 <div align="center">
 
@@ -171,7 +184,10 @@ inference routing & local model, agent comms, prompt injection, social
 engineering). The orchestrator steers each cycle at the lowest-coverage zone —
 weighted by purple's detection-coverage gaps.
 
-**Red team** — `red_team/`
+The component reference below is collapsed — expand the part you need.
+
+<details>
+<summary><b>Red team</b> — <code>red_team/</code></summary>
 
 1. **Ideation** — five prompt modes generate attack ideas for the
    lowest-coverage zone: creative, code-grounded, history-informed, **Mode D**
@@ -195,7 +211,10 @@ weighted by purple's detection-coverage gaps.
    near-miss extraction, the mutation-operator bandit, and a labelled
    attempt-trace dataset for the learned ranker.
 
-**Repro pipeline** — `blue_team/`
+</details>
+
+<details>
+<summary><b>Repro pipeline</b> — <code>blue_team/</code></summary>
 
 Confirmed/suspicious findings are replayed on N fresh victims and
 delta-minimized. High-severity findings get a real **executed-path root
@@ -203,7 +222,10 @@ cause**: an anchor→sink BFS over a SQLite code graph, ranked by proximity,
 centrality, and evidence touch. A structured repro document is written and
 **cold-verified** by a fresh, context-free agent before it reaches blue team.
 
-**Blue team** — `blue_team/`
+</details>
+
+<details>
+<summary><b>Blue team</b> — <code>blue_team/</code></summary>
 
 Triage groups packages by zone/root cause; a patch generator produces
 candidate diffs; a test generator writes positive, negative, and policy tests.
@@ -214,7 +236,10 @@ plane (deleted tests, loosened paths, suppressed telemetry, MCP/CI edits), the
 patched run still emits security telemetry, and — gate 8 — purple's detection
 oracle confirms the defense is still **observed**, not silent.
 
-**Purple team** — `purple_team/`
+</details>
+
+<details>
+<summary><b>Purple team</b> — <code>purple_team/</code></summary>
 
 Purple is neither attacker nor patcher. It scores defense behavior. A derived-
 evidence adapter turns monitoring side-effects into telemetry/decision
@@ -234,22 +259,24 @@ attack and re-tests the patched victim against every variant; a surviving
 bypass becomes a constraint that bounces the patch back for a re-patch round
 (bounded, default 3 rounds).
 
-**Infrastructure** — `infra/`
+</details>
 
-MCP server + SQLite knowledge base with a forward-only, ordinal-validated
-migration runner (**19 migrations**), five queue state machines with atomic
-transitions, per-role model routing with fallback chains and token/cost
-accounting, the snapshot-based NemoClaw victim provisioner, the serial lane
-scheduler, the monitoring harness, a severity-gated approval service with an
-append-only audit log and optional `gh`-CLI auto-PR, Telegram/webhook
-notifications, and the live web dashboard.
+<details>
+<summary><b>Infrastructure &amp; interfaces</b> — <code>infra/</code>, <code>interfaces/</code></summary>
 
-**Interfaces** — `interfaces/`
+`infra/` holds the MCP server + SQLite knowledge base with a forward-only,
+ordinal-validated migration runner (**20 migrations**), five queue state
+machines with atomic transitions, per-role model routing with fallback chains
+and token/cost accounting, the snapshot-based NemoClaw victim provisioner, the
+serial lane scheduler, the monitoring harness, a severity-gated approval
+service with an append-only audit log and optional `gh`-CLI auto-PR,
+Telegram/webhook notifications, and the live web dashboard.
 
-The merge-conflict firewall: the database schema (`schema.sql`), MCP tool
-signatures (`mcp_tools.py`), shared dataclasses (`types.py`), the model router,
-the victim provisioning API, and the transport-agnostic victim chat client.
-Everything else imports from here read-only.
+`interfaces/` is the merge-conflict firewall: the database schema
+(`schema.sql`), MCP tool signatures (`mcp_tools.py`), shared dataclasses
+(`types.py`), the model router, the victim provisioning API, and the
+transport-agnostic victim chat client. Everything else imports from here
+read-only.
 
 **Persistent memory** — a SQLite knowledge base holds every zone's coverage
 score (attack *and* detection axes), the full findings history, the MAP-Elites
@@ -257,10 +284,12 @@ archive, mutation-operator stats, judge votes, model-run costs, and a growing
 regression suite. Ideation Mode C queries past findings, so each cycle is
 informed by everything tried before.
 
+</details>
+
 The full design lives in `.agents/` (workload split, interface contracts) and
 `docs/superpowers/` (the 17 upgrade specs and their implementation plans).
 
-## How MonkeyClaw got here
+## 📈 How MonkeyClaw got here
 
 The system shipped as a working red→judge→repro→blue scaffold, then took
 **17 design specs** through a plan-and-execute process, sequenced into four
@@ -276,7 +305,7 @@ dependency-ordered waves (see `docs/superpowers/specs/`):
 - **Wave 3:** patch-generalization loop, learned ranking model, approval & PR
   service.
 
-## Configuration
+## ⚙️ Configuration
 
 Runtime config layers `defaults → configs/monkeyclaw.yaml → MC_CONFIG file →
 MC_* env vars`. Nested fields use double-underscore env overrides, e.g.
@@ -291,21 +320,21 @@ zero-credential demo path stays deterministic: the model-ideation tournament
 heuristic by default), real patch isolation (`blue_team.patch_isolation.enabled`),
 and auto-PR (`approvals.auto_pr`).
 
-## Tests
+## ✅ Tests
 
 ```bash
 uv run pytest          # 1000+ tests across red, purple, blue, infra, migrations, dashboard
 uv run ruff check .
 ```
 
-## Project status
+## 📊 Project status
 
 **What works now**
 
 - The full red → judge → repro → blue → purple loop, end to end, in mock mode.
 - All 18 attack zones registered with dual-axis (attack + detection) coverage
   tracking and decay.
-- Red team: four-mode ideation, MAP-Elites archive, embedding dedup,
+- Red team: five-mode ideation, MAP-Elites archive, embedding dedup,
   cross-zone chaining, multi-turn execution, Tier 1 (six programmatic checks)
   + Tier 2 (five-role ensemble) judgment, trajectory/near-miss scoring, the
   mutation-operator bandit, and attempt-trace collection.
@@ -316,12 +345,13 @@ uv run ruff check .
   verification, triage, multi-approach patch generation, three-test
   generation, the eight-gate patch verifier, the severity-gated approval
   service, and the regression runner.
-- Versioned migration runner (19 migrations), five atomic queue state
+- Versioned migration runner (20 migrations), five atomic queue state
   machines, per-role model routing with cost accounting.
 - The eleven-panel live dashboard and the one-command demo.
 - Full automated test suite, all passing.
 
-**What is mocked for the hackathon**
+<details>
+<summary><b>What is mocked for the hackathon</b></summary>
 
 - The default demo victim is an in-memory mock provisioner with a
   planted-vulnerability agent; the real NemoClaw provisioner is fully
@@ -331,7 +361,10 @@ uv run ruff check .
   disposable git worktree + rebuilt victim.
 - The dashboard cost panel uses the configured per-Mtok token-price table.
 
-**What a production version adds**
+</details>
+
+<details>
+<summary><b>What a production version adds</b></summary>
 
 - A PostgreSQL + pgvector backend for cross-lane concurrency.
 - Object storage for transcripts/artifacts and signed, immutable audit logs.
@@ -339,13 +372,15 @@ uv run ruff check .
   collection feeds an offline trainer behind a dataset-readiness gate).
 - SIEM/telemetry export and a hardened approval service for high-risk patches.
 
-## Packaged as an OpenClaw skill
+</details>
+
+## 🧩 Packaged as an OpenClaw skill
 
 `skill/SKILL.md` makes MonkeyClaw installable into any OpenClaw sandbox via
 `nemoclaw <sandbox> skill install skill/`. The host agent then drives the
 autonomous loop through the `monkeyclaw` CLI.
 
-## Documentation
+## 📚 Documentation
 
 | Doc | What it covers |
 |-----|----------------|
@@ -358,7 +393,7 @@ autonomous loop through the `monkeyclaw` CLI.
 | `docs/superpowers/specs/` | The 17 upgrade specs + the wave roadmap |
 | `.agents/` | Workload split, interface contracts, component specs |
 
-## Built With
+## 🔧 Built With
 
 - **OpenClaw** agent framework
 - **NVIDIA Nemotron** (`nemotron-3-super-120b-a12b` workhorse; `-nano` cheap
@@ -366,6 +401,18 @@ autonomous loop through the `monkeyclaw` CLI.
 - **NVIDIA NemoClaw** sandbox runtime
 - **MCP** (Model Context Protocol) for agent–tool communication
 
-## Team
+## 👥 Team
 
 Justin Lee, Ezzy Rappeport, George Gong
+
+<div align="center">
+
+<sub>
+
+![license](https://img.shields.io/badge/license-Apache--2.0-blue)
+·
+[Quick Start](#-quick-start) · [Architecture](#-architecture) · [Demo script](docs/demo_script.md) · [Pitch](docs/pitch_script.md) · [Architecture report](docs/monkeyclaw_full_architecture_report.md)
+
+</sub>
+
+</div>
