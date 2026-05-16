@@ -121,6 +121,9 @@ class MockMCP(MonkeyClawMCP):
         self._patch_statuses: dict[str, dict] = {}
         self._archive_cells: dict[str, ArchiveCell] = {}
         self._idea_components: dict[str, list[IdeaComponent]] = {}
+        self._idea_techniques: dict[str, list] = {}
+        self._finding_techniques: dict[str, list] = {}
+        self._technique_coverage: dict[tuple[str, str, str], dict] = {}
         self._seed_history()
 
     def _seed_history(self) -> None:
@@ -672,6 +675,50 @@ class MockMCP(MonkeyClawMCP):
 
     def get_idea_components(self, idea_id: str) -> list[IdeaComponent]:
         return list(self._idea_components.get(idea_id, []))
+
+    # ------------------------------------------------------------------
+    # Corpus-driven ideation — technique tags + coverage axis
+    # ------------------------------------------------------------------
+    def log_idea_techniques(self, idea_id, refs):
+        self._idea_techniques.setdefault(idea_id, []).extend(refs)
+        self._log("log_idea_techniques",
+                  {"idea_id": idea_id, "count": len(refs)})
+
+    def get_idea_techniques(self, idea_id):
+        from interfaces.types import TechniqueRef
+        return [TechniqueRef(
+            kind=r.kind, technique_id=r.technique_id, name="",
+            corpus_version=r.corpus_version, resolved_by=r.resolved_by)
+            for r in self._idea_techniques.get(idea_id, [])]
+
+    def log_finding_techniques(self, finding_id, refs):
+        self._finding_techniques.setdefault(finding_id, []).extend(refs)
+        self._log("log_finding_techniques",
+                  {"finding_id": finding_id, "count": len(refs)})
+
+    def get_finding_techniques(self, finding_id):
+        from interfaces.types import TechniqueRef
+        return [TechniqueRef(
+            kind=r.kind, technique_id=r.technique_id, name="",
+            corpus_version=r.corpus_version, resolved_by=r.resolved_by)
+            for r in self._finding_techniques.get(finding_id, [])]
+
+    def bump_technique_coverage(self, zone_id, technique_kind, technique_id,
+                                *, attempts=0, confirmations=0):
+        key = (zone_id, technique_kind, technique_id)
+        row = self._technique_coverage.setdefault(key, {
+            "zone_id": zone_id, "technique_kind": technique_kind,
+            "technique_id": technique_id, "attempts": 0, "confirmations": 0,
+            "last_seen_at": _now()})
+        row["attempts"] += attempts
+        row["confirmations"] += confirmations
+        row["last_seen_at"] = _now()
+
+    def get_technique_coverage_rows(self, zone_id=None):
+        rows = list(self._technique_coverage.values())
+        if zone_id is None:
+            return [dict(r) for r in rows]
+        return [dict(r) for r in rows if r["zone_id"] == zone_id]
 
     # ------------------------------------------------------------------
     # Inspection helpers (mock-only — not part of the Protocol)

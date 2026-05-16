@@ -37,6 +37,7 @@ from interfaces.types import (
     RegressionTestInput,
     ReproPackage,
     ReproPackageInput,
+    TechniqueRef,
     TelemetryEvent,
     TelemetryEventInput,
 )
@@ -268,6 +269,42 @@ class MonkeyClawMCP(Protocol):
 
     def get_idea_components(self, idea_id: str) -> list[IdeaComponent]:
         """All component rows for an idea, oldest first."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Corpus-driven ideation — technique tags + coverage axis
+    # ------------------------------------------------------------------
+    def log_idea_techniques(
+        self, idea_id: str, refs: list[TechniqueRef]
+    ) -> None:
+        """Persist technique tags for one idea into idea_techniques."""
+        ...
+
+    def get_idea_techniques(self, idea_id: str) -> list[TechniqueRef]:
+        """Technique tags for one idea."""
+        ...
+
+    def log_finding_techniques(
+        self, finding_id: str, refs: list[TechniqueRef]
+    ) -> None:
+        """Persist technique tags for one finding into finding_techniques."""
+        ...
+
+    def get_finding_techniques(self, finding_id: str) -> list[TechniqueRef]:
+        """Technique tags for one finding."""
+        ...
+
+    def bump_technique_coverage(
+        self, zone_id: str, technique_kind: str, technique_id: str,
+        *, attempts: int = 0, confirmations: int = 0,
+    ) -> None:
+        """Increment the technique_coverage row for one (zone, technique)."""
+        ...
+
+    def get_technique_coverage_rows(
+        self, zone_id: str | None = None
+    ) -> list[dict]:
+        """technique_coverage rows, optionally filtered to one zone."""
         ...
 
 
