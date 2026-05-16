@@ -56,6 +56,7 @@ DetectionRuleStatus = Literal["active", "candidate", "retired"]
 SandboxMode = Literal["ephemeral", "recover_only", "mock"]
 TechniqueKind = Literal["atlas", "owasp"]
 ResolvedBy = Literal["model", "keyword"]
+ChainTermination = Literal["completed", "chain_broken", "max_turns", "error"]
 
 HarmStage = Literal[
     "HARD_REFUSAL",
@@ -269,6 +270,7 @@ class LaneResult:
     inference_routing_log: list[InferenceEvent]
     attacker_self_assessment: str
     deterministic: bool = True  # False when the victim was not snapshot-isolated
+    chain_trace: list[ChainStepResult] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -340,6 +342,7 @@ class FindingInput:
     evidence: str  # JSON-serialized
     reusability: float = 0.5
     embedding: list[float] | None = None  # embedding of idea_summary
+    chain_id: str | None = None  # write-side counterpart of findings.chain_id
 
 
 # ---------------------------------------------------------------------------
@@ -1148,12 +1151,105 @@ from interfaces.code_graph import (  # noqa: E402
     SymbolKind,
 )
 
+# ---------------------------------------------------------------------------
+# Cross-zone attack chaining (cross-zone-attack-chaining spec §4, §8)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ChainStep:
+    """One single-zone primitive in an ordered kill chain."""
+
+    step_index: int
+    zone_id: str
+    objective: str
+    primitive_ref: str  # source idea_id or "ARCH:<cell key>"
+    approach: str
+    requires: list[str] = field(default_factory=list)
+    produces: list[str] = field(default_factory=list)
+    success_signal: str = ""
+
+
+@dataclass
+class AttackChain:
+    """An ordered, linear multi-zone kill chain."""
+
+    chain_id: str
+    cycle_id: int
+    title: str
+    zones: list[str]
+    primary_zone: str
+    steps: list[ChainStep]
+    builds_on: list[str] = field(default_factory=list)
+    estimated_turns: int = 15
+    rationale: str = ""
+
+
+@dataclass
+class ChainSkeleton:
+    """The strategist's pre-composition sketch of a chain. Each step_specs
+    entry is (zone_id, objective, primitive_ref)."""
+
+    title: str
+    cycle_id: int
+    step_specs: list[tuple[str, str, str]]
+    rationale: str = ""
+    estimated_turns: int = 15
+
+
+@dataclass
+class ChainStepResult:
+    """The executed outcome of one ChainStep — the per-step trace row."""
+
+    chain_id: str
+    step_index: int
+    zone_id: str
+    landed: bool
+    produced_tokens: list[str] = field(default_factory=list)
+    turn_span: tuple[int, int] = (0, 0)
+    progress_score: float = 0.0
+
+
+@dataclass
+class ChainFinding:
+    """The kill chain itself as one finding spanning every traversed zone."""
+
+    chain_finding_id: str
+    chain_id: str
+    cycle_id: int
+    zones_traversed: list[str]
+    terminal_zone: str
+    severity: str
+    verdict: str
+    landed_steps: list[int]
+    evidence: str = "{}"
+    repro_status: str = "pending"
+
+
+@dataclass
+class ChainAttribution:
+    """Cross-zone attribution output: the ChainFinding, per-zone FindingInput
+    records, and per-zone coverage deltas keyed by zone_id."""
+
+    chain_finding: ChainFinding
+    per_zone_findings: list[FindingInput]
+    coverage_deltas: dict[str, float]
+    step_results: list[ChainStepResult] = field(default_factory=list)
+
+
 __all__ = [
     "AgentPolicy",
+    "AttackChain",
     "AppealVerdict",
     "ArchiveCell",
     "ArchiveUpdateInput",
     "AttackElo",
+    "ChainAttribution",
+    "ChainFinding",
+    "ChainSkeleton",
+    "ChainStep",
+    "ChainStepResult",
+    "ChainTermination",
     "CheckResult",
     "CodeChunk",
     "CodeEdge",
