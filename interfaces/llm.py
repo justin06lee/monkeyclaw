@@ -388,7 +388,14 @@ class BrevLLM(NemotronLLM):
         # NemotronLLM.complete() gates on `_missing_key`; Brev does its own
         # validation in complete() below, so disarm the inherited gate.
         self._missing_key = False
-        self._client = OpenAI(base_url=self.base_url or None, api_key=key or "missing")
+        # `ngrok-skip-browser-warning` bypasses the ngrok free-tier interstitial
+        # — Brev instances are commonly exposed via an ngrok tunnel, and without
+        # it ngrok can intercept the request before it reaches the model server.
+        self._client = OpenAI(
+            base_url=self.base_url or None,
+            api_key=key or "missing",
+            default_headers={"ngrok-skip-browser-warning": "true"},
+        )
 
     def complete(
         self,
