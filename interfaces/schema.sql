@@ -292,10 +292,51 @@ CREATE TABLE IF NOT EXISTS judge_votes (
     confidence     REAL NOT NULL,
     reasoning      TEXT NOT NULL,
     evidence_turns TEXT NOT NULL DEFAULT '[]',
+    is_appeal      INTEGER NOT NULL DEFAULT 0,
+    weight         REAL NOT NULL DEFAULT 1.0,
+    model          TEXT NOT NULL DEFAULT '',
     created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_judge_votes_lane
     ON judge_votes(lane_id, judge_role);
+
+--------------------------------------------------------------------------------
+-- appeal_verdicts — judge-ensemble frontier-model appeal re-decisions
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS appeal_verdicts (
+    appeal_id           TEXT PRIMARY KEY,
+    lane_id             TEXT NOT NULL,
+    ensemble_verdict    TEXT NOT NULL,
+    appeal_verdict      TEXT NOT NULL,
+    disagreement        REAL NOT NULL,
+    ensemble_confidence REAL NOT NULL,
+    appeal_confidence   REAL NOT NULL,
+    failure_class       TEXT NOT NULL DEFAULT 'none',
+    severity            TEXT NOT NULL DEFAULT 'low',
+    sided_with_roles    TEXT NOT NULL DEFAULT '[]',
+    reasoning           TEXT NOT NULL DEFAULT '',
+    model               TEXT NOT NULL DEFAULT '',
+    errored             INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_appeal_verdicts_lane
+    ON appeal_verdicts(lane_id);
+
+--------------------------------------------------------------------------------
+-- attack_elo — judge-ensemble per-zone pairwise Elo ratings
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS attack_elo (
+    zone_id      TEXT NOT NULL,
+    attack_id    TEXT NOT NULL,
+    rating       REAL NOT NULL DEFAULT 1000.0,
+    comparisons  INTEGER NOT NULL DEFAULT 0,
+    wins         INTEGER NOT NULL DEFAULT 0,
+    losses       INTEGER NOT NULL DEFAULT 0,
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (zone_id, attack_id)
+);
+CREATE INDEX IF NOT EXISTS idx_attack_elo_zone
+    ON attack_elo(zone_id, rating);
 
 --------------------------------------------------------------------------------
 -- policy_corpus_results — A2 adversarial-corpus outcomes

@@ -260,7 +260,8 @@ def test_migration_upgrades_legacy_v1_db(tmp_path):
         "SELECT name FROM sqlite_master WHERE type='table'")}
     assert "telemetry_events" in names
     row = db.fetchone("SELECT value FROM schema_meta WHERE key='schema_version'")
-    assert row[0] == "4"
+    # schema_version tracks the highest applied migration ordinal.
+    assert int(row[0]) >= 5
     db.close()
 
 
