@@ -169,6 +169,71 @@ def _extract_attack_instruction(
     return best
 
 
+def _variant_test_script(
+    package: ReproPackage, turn_idx: int, variant_text: str,
+) -> str:
+    """Splice `variant_text` into a copy of the minimal transcript at
+    `turn_idx` and emit the positive-test script for that variant.
+
+    `_emit_positive_test` builds the replay transcript from the package's
+    `minimal_steps` (each step's `input` field), so the variant text must
+    land there as well as in the `transcripts['minimal']` mirror — the
+    matching step is found by the recorded attacker text at `turn_idx`."""
+    import copy
+
+    from blue_team.test_generator import _emit_positive_test
+
+    variant_pkg = copy.deepcopy(package)
+    transcript = (variant_pkg.transcripts or {}).get("minimal")
+    recorded_text: str | None = None
+    if transcript and 0 <= turn_idx < len(transcript):
+        recorded_text = getattr(transcript[turn_idx], "content", None)
+        transcript[turn_idx].content = variant_text
+    # Mirror the splice into minimal_steps so _emit_positive_test sees it.
+    steps = variant_pkg.minimal_steps or []
+    spliced = False
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        if recorded_text is not None and step.get("input") == recorded_text:
+            step["input"] = variant_text
+            if "content" in step:
+                step["content"] = variant_text
+            spliced = True
+            break
+    if not spliced:
+        # Fall back: splice the highest-signal attacker step by length.
+        attacker_steps = [s for s in steps
+                          if isinstance(s, dict) and "input" in s]
+        if attacker_steps:
+            target = max(attacker_steps, key=lambda s: len(s.get("input", "")))
+            target["input"] = variant_text
+            if "content" in target:
+                target["content"] = variant_text
+    return _emit_positive_test(variant_pkg)
+
+
+def _collect_variant_results(gates: list["GateResult"]) -> list:
+    """Flatten gate1b's `variant_results` dicts into VariantResult objects."""
+    from interfaces.types import VariantResult
+
+    out: list = []
+    for g in gates:
+        for v in g.detail.get("variant_results", []):
+            out.append(VariantResult(
+                operator=v["operator"], variant_hash=v["variant_hash"],
+                blocked=v["blocked"], judge_verdict=v["judge_verdict"]))
+    return out
+
+
+def _collect_detection_verdicts(gates: list["GateResult"]) -> list:
+    """Flatten gate_detection's verdict objects out of the gate details."""
+    out: list = []
+    for g in gates:
+        out.extend(g.detail.get("_verdict_objects", []))
+    return out
+
+
 def detect_control_plane_weakening(diff: str) -> list[str]:
     """Return a list of human-readable reasons the diff weakens the
     control plane. Empty list == clean."""
@@ -235,6 +300,8 @@ class VerifyOutcome:
     patch_id: str
     notes: str = ""
     triggered_evidence: list[CheckResult] = field(default_factory=list)
+    variant_results: list = field(default_factory=list)
+    detection_verdicts: list = field(default_factory=list)
 
 
 @dataclass
@@ -404,6 +471,17 @@ class PatchVerifier:
                                   "the patch did not block the original "
                                   "vulnerability")
 
+        # ---- Gate 1b: mutation robustness (attack family, not string) ----
+        g1b = self._run_mutation_robustness(patch, package, replay_fn)
+        gates.append(g1b)
+        if not g1b.passed:
+            leaking = ", ".join(g1b.detail.get("leaking_operators", []))
+            return self._reject(
+                "gate1b_mutation_robustness", patch, gates,
+                f"patch over-fits the recorded payload — mutated variants "
+                f"still succeed via: {leaking}",
+                variant_results=_collect_variant_results(gates))
+
         # ---- Gate 2: functionality ----
         if test_pair.negative_test_script:
             g2 = self._run_script(
@@ -468,7 +546,8 @@ class PatchVerifier:
             failed_gate=None,
             gates=gates,
             patch_id=patch.patch_id,
-            notes="all six gates passed",
+            notes="all seven gates passed",
+            variant_results=_collect_variant_results(gates),
         )
 
     # ------------------------------------------------------------------
@@ -496,6 +575,65 @@ class PatchVerifier:
             passed=bool(result.get("passed")),
             detail=result,
         )
+
+    def _run_mutation_robustness(
+        self, patch: PatchCandidate, package: ReproPackage,
+        replay_fn: ReplayFn,
+    ) -> GateResult:
+        """gate1b — replay deterministic mutated variants of the recorded
+        attack against the patched victim. Passes only if EVERY variant is
+        judged blocked (spec §6.1, §8 step 3)."""
+        import hashlib
+
+        from red_team.mutations import apply_operator
+
+        if not self.cfg.mutation_gate_enabled:
+            return GateResult(
+                name="gate1b_mutation_robustness", passed=True,
+                detail={"skipped": True, "reason": "mutation gate disabled"})
+
+        attack_text, turn_idx = _extract_attack_instruction(package)
+        if attack_text is None:
+            return GateResult(
+                name="gate1b_mutation_robustness", passed=True,
+                detail={"skipped": True,
+                        "reason": "no attacker instruction to mutate"})
+
+        operators = list(self.cfg.mutation_operators)[
+            : max(0, self.cfg.mutation_max_variants)]
+        variant_results: list[dict] = []
+        leaking: list[str] = []
+        for op in operators:
+            try:
+                variant_text = apply_operator(op, attack_text)
+            except Exception as e:  # noqa: BLE001
+                # An operator bug never fails a patch (spec §10).
+                LOG.warning("mutation operator %s raised: %s — skipping",
+                            op, e)
+                continue
+            vhash = hashlib.sha256(variant_text.encode()).hexdigest()[:16]
+            script = _variant_test_script(package, turn_idx, variant_text)
+            try:
+                result = execute_test_script(
+                    script, replay_fn=replay_fn, judge_fn=self.judge_fn,
+                    policy=self.policy, provisioner=self.provisioner)
+                blocked = bool(result.get("passed"))
+                verdict = str(result.get("judge_verdict", "")
+                              or ("blocked" if blocked else "confirmed"))
+            except Exception as e:  # noqa: BLE001
+                # A variant that cannot be shown blocked is not blocked.
+                LOG.exception("variant replay (%s) exploded: %s", op, e)
+                blocked, verdict = False, "error"
+            variant_results.append({
+                "operator": op, "variant_hash": vhash,
+                "blocked": blocked, "judge_verdict": verdict})
+            if not blocked:
+                leaking.append(op)
+        return GateResult(
+            name="gate1b_mutation_robustness",
+            passed=not leaking,
+            detail={"variant_results": variant_results,
+                    "leaking_operators": leaking})
 
     def _run_full_suite(self, replay_fn: ReplayFn) -> GateResult:
         try:
@@ -538,11 +676,15 @@ class PatchVerifier:
     @staticmethod
     def _reject(
         gate: str, patch: PatchCandidate, gates: list[GateResult],
-        notes: str,
+        notes: str, *,
+        variant_results: list | None = None,
+        detection_verdicts: list | None = None,
     ) -> VerifyOutcome:
         return VerifyOutcome(
             approved=False, failed_gate=gate, gates=gates,
             patch_id=patch.patch_id, notes=notes,
+            variant_results=variant_results or [],
+            detection_verdicts=detection_verdicts or [],
         )
 
 

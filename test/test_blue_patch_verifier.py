@@ -248,7 +248,8 @@ def test_all_gates_pass_when_replay_blocks_vuln(tmp_path: Path):
     assert outcome.approved is True
     assert outcome.failed_gate is None
     assert {g.name for g in outcome.gates} == {
-        "gate_diff_applies", "gate1_regression", "gate2_functionality",
+        "gate_diff_applies", "gate1_regression",
+        "gate1b_mutation_robustness", "gate2_functionality",
         "gate3_full_suite", "gate_control_plane", "gate_telemetry",
     }
 
