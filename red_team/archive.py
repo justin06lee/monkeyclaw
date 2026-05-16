@@ -198,6 +198,33 @@ class EliteArchive:
         elites.sort(key=lambda e: e.score, reverse=True)
         return elites
 
+    def empty_cells(
+        self,
+        zone: str,
+        styles: tuple[str, ...],
+        movements: tuple[str, ...],
+    ) -> list[tuple[str, str, str]]:
+        """Niche keys for ``zone`` that have no elite, given candidate axes.
+
+        This is the structural exploration signal: every returned key is a
+        behavioural niche the search has never reached.
+        """
+        empty: list[tuple[str, str, str]] = []
+        for style in styles:
+            for movement in movements:
+                key = (zone, style, movement)
+                if key not in self._cells:
+                    empty.append(key)
+        return empty
+
+    def weak_cells(self, zone: str, threshold: float) -> list[ArchiveEntry]:
+        """Elites of ``zone`` whose score is below ``threshold`` — niches that
+        are occupied but only by a poor attempt, worth another push."""
+        weak = [e for e in self._cells.values()
+                if e.zone == zone and e.score < threshold]
+        weak.sort(key=lambda e: e.score)
+        return weak
+
     def all_elites(self) -> list[ArchiveEntry]:
         """Every elite across every cell, highest score first."""
         return sorted(self._cells.values(), key=lambda e: e.score, reverse=True)

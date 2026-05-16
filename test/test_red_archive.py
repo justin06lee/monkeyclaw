@@ -319,3 +319,42 @@ def test_load_from_cells_round_trips_snapshot():
     e = restored.get_elite("PROMPT-INJ", "context_injection",
                            "strong_compliance")
     assert e is not None and e.idea_id == "I7" and e.score == 8.0
+
+
+def test_empty_cells_returns_unoccupied_keys():
+    from red_team.archive import ArchiveEntry, EliteArchive
+
+    arch = EliteArchive()
+    arch.consider(ArchiveEntry(
+        zone="SBX-FS", interaction_style="direct",
+        response_movement="refusal", score=4.0, idea_id="I1"))
+    styles = ("direct", "roleplay")
+    movements = ("refusal", "strong_compliance")
+    empty = arch.empty_cells("SBX-FS", styles, movements)
+    assert ("SBX-FS", "direct", "refusal") not in empty
+    assert ("SBX-FS", "direct", "strong_compliance") in empty
+    assert ("SBX-FS", "roleplay", "refusal") in empty
+    assert ("SBX-FS", "roleplay", "strong_compliance") in empty
+    assert len(empty) == 3
+
+
+def test_empty_cells_for_untouched_zone_is_full_grid():
+    from red_team.archive import EliteArchive
+
+    arch = EliteArchive()
+    empty = arch.empty_cells("PROMPT-INJ", ("direct",), ("refusal", "soft_refusal"))
+    assert len(empty) == 2
+
+
+def test_weak_cells_respects_threshold():
+    from red_team.archive import ArchiveEntry, EliteArchive
+
+    arch = EliteArchive()
+    arch.consider(ArchiveEntry(
+        zone="SBX-FS", interaction_style="direct",
+        response_movement="refusal", score=2.0, idea_id="I1"))
+    arch.consider(ArchiveEntry(
+        zone="SBX-FS", interaction_style="roleplay",
+        response_movement="refusal", score=9.0, idea_id="I2"))
+    weak = arch.weak_cells("SBX-FS", threshold=5.0)
+    assert [e.idea_id for e in weak] == ["I1"]
