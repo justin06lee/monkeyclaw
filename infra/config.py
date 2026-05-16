@@ -24,7 +24,42 @@ from interfaces.config_schema import MonkeyClawConfig
 LOG = logging.getLogger("monkeyclaw.config")
 
 DEFAULT_PATH = Path("configs/monkeyclaw.yaml")
+DEFAULT_DOTENV_PATH = Path(".env")
 ENV_PREFIX = "MC_"
+
+_dotenv_loaded = False
+
+
+def load_dotenv_file(path: str | Path | None = None) -> None:
+    """Load a `.env` file into `os.environ` for non-Docker (local) runs.
+
+    Docker runs get `.env` via docker-compose `env_file:`; a bare
+    `monkeyclaw ...` invocation does not, so this fills the gap. A real
+    environment variable always wins — keys already set are never overwritten.
+    Runs at most once per process; safe to call from every entrypoint.
+    """
+    global _dotenv_loaded
+    if _dotenv_loaded:
+        return
+    _dotenv_loaded = True
+    env_path = Path(path or os.environ.get("MC_DOTENV_PATH") or DEFAULT_DOTENV_PATH)
+    if not env_path.exists():
+        return
+    for raw in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):]
+        key, sep, val = line.partition("=")
+        if not sep:
+            continue
+        key = key.strip()
+        val = val.strip()
+        if (len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"')):
+            val = val[1:-1]
+        if key and key not in os.environ:
+            os.environ[key] = val
 
 
 def _deep_merge(base: dict, layer: dict) -> dict:
@@ -66,6 +101,7 @@ def _coerce(v: str) -> Any:
 
 def load_config(path: str | Path | None = None) -> MonkeyClawConfig:
     """Load layered config: defaults → file → env."""
+    load_dotenv_file()
     merged: dict[str, Any] = {}
     # (path, is_explicit): an auto-discovered DEFAULT_PATH is optional, but an
     # explicitly-requested config (--config / MC_CONFIG) that is missing is a

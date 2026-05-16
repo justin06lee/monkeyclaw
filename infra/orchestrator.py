@@ -511,6 +511,9 @@ def main(argv: list[str] | None = None) -> int:
                              "as the LLM (no Anthropic API key required). "
                              "Equivalent to MC_LLM_BACKEND=claude_cli.")
     llm = parser.add_mutually_exclusive_group()
+    llm.add_argument("--brev", action="store_true",
+                     help="Use an LLM on an NVIDIA Brev instance as the LLM "
+                          "provider (set MC_BREV_BASE_URL + MC_BREV_API_KEY).")
     llm.add_argument("--claude", action="store_true",
                      help="Use Claude Code (`claude --print`) as the LLM provider.")
     llm.add_argument("--codex", action="store_true",
@@ -518,7 +521,7 @@ def main(argv: list[str] | None = None) -> int:
     llm.add_argument("--opencode", action="store_true",
                      help="Use OpenCode (`opencode run`) as the LLM provider.")
     llm.add_argument("--llm-backend",
-                     choices=["nemotron", "claude_code", "claude_cli",
+                     choices=["nemotron", "brev", "claude_code", "claude_cli",
                               "codex", "opencode", "mock"],
                      default=None,
                      help="Explicit LLM backend (default: nemotron/NVIDIA).")
@@ -527,7 +530,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.llm_backend:
         import os as _os  # noqa: PLC0415
         _os.environ["MC_LLM_BACKEND"] = args.llm_backend
-    if args.claude:
+    if args.brev:
+        import os as _os  # noqa: PLC0415
+        _os.environ["MC_LLM_BACKEND"] = "brev"
+    elif args.claude:
         import os as _os  # noqa: PLC0415
         _os.environ["MC_LLM_BACKEND"] = "claude_code"
     elif args.codex:
