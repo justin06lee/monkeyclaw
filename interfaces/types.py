@@ -712,20 +712,43 @@ class PatchCandidateInput:
     side_effects: str = ""
 
 
+# ---------------------------------------------------------------------------
+# Real root-cause analysis — code graph (real-root-cause spec §7)
+# Defined in interfaces/code_graph.py; re-exported here so blue_team imports
+# from one place.
+# ---------------------------------------------------------------------------
+
+from interfaces.code_graph import (  # noqa: E402
+    CodeEdge,
+    CodeGraph,
+    CodeSymbol,
+    EdgeKind,
+    ExecutedPath,
+    GraphBackend,
+    PathNode,
+    SymbolKind,
+)
+
 __all__ = [
     "AgentPolicy",
     "ArchiveCell",
     "ArchiveUpdateInput",
     "CheckResult",
     "CodeChunk",
+    "CodeEdge",
+    "CodeGraph",
+    "CodeSymbol",
     "CoverageGap",
     "CycleSummary",
     "CycleSummaryInput",
     "DupResult",
+    "EdgeKind",
+    "ExecutedPath",
     "FindingInput",
     "FindingRecord",
     "FixSite",
     "FsDiff",
+    "GraphBackend",
     "IdeaComponent",
     "IdeaComponentInput",
     "IdeaInput",
@@ -743,6 +766,7 @@ __all__ = [
     "NetworkEvent",
     "PatchCandidate",
     "PatchCandidateInput",
+    "PathNode",
     "PolicyConfig",
     "PolicyCorpusCase",
     "PolicyCorpusResult",
@@ -760,6 +784,7 @@ __all__ = [
     "ReproPackageInput",
     "ReproQueueStatus",
     "SeccompProfile",
+    "SymbolKind",
     "TelemetryEvent",
     "TelemetryEventInput",
     "TelemetryEventType",
