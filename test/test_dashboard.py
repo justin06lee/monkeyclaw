@@ -235,3 +235,38 @@ def test_dashboard_app_empty_db_ok(tmp_path: Path):
     client = TestClient(app)
     assert client.get("/").status_code == 200
     assert client.get("/api/overview").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Demo seed (spec C10) — the fallback-demo DB feeds every dashboard view
+# ---------------------------------------------------------------------------
+
+
+def test_demo_seed_produces_dashboard_ready_db(tmp_path: Path):
+    from demo.seed_demo_db import seed
+
+    db_path = str(tmp_path / "demo.db")
+    summary = seed(db_path)
+    assert summary["findings"] > 0
+    assert summary["repro_packages"] > 0
+
+    ov = dashboard._overview(db_path)
+    assert ov["cycles"] >= 1
+    assert ov["findings_confirmed"] >= 1
+    assert ov["patches_verified"] >= 1
+    # every lifecycle view has data to render
+    assert dashboard._finding_timeline(db_path)
+    assert dashboard._repro_packages(db_path)
+    assert dashboard._blue_team(db_path)["patches"]
+    assert dashboard._evidence_timeline(db_path)
+    assert dashboard._search_intel(db_path)["cells_explored"] >= 1
+    assert dashboard._cost_stats(db_path)["total_tokens"] > 0
+
+
+def test_demo_seed_is_idempotent(tmp_path: Path):
+    from demo.seed_demo_db import seed
+
+    db_path = str(tmp_path / "demo.db")
+    first = seed(db_path)
+    second = seed(db_path)  # re-seeding wipes and rebuilds
+    assert first == second
