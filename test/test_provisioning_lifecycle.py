@@ -68,3 +68,38 @@ def test_snapshot_victim_without_support_raises(tmp_path: Path, monkeypatch):
     inst = p.connect_existing()
     with pytest.raises(ProvisioningError, match="snapshot"):
         p.snapshot_victim(inst.instance_id, "lane-snap")
+
+
+def test_sandbox_runs_store_writes_and_closes_a_run(db):
+    from infra.sandbox_runs_store import SandboxRunsStore
+    from interfaces.provisioning import SandboxCapabilities
+
+    store = SandboxRunsStore(db)
+    caps = SandboxCapabilities(
+        cli_present=True, snapshots=True, ephemeral=True,
+        container_fsdiff=True, recover=True)
+    run_id = store.open_run(
+        instance_id="VICT-1", lane_id="L1", mode="ephemeral",
+        deterministic=True, patch_applied=False, capabilities=caps)
+    rows = db.fetchall("SELECT * FROM sandbox_runs WHERE run_id = ?", (run_id,))
+    assert len(rows) == 1
+    assert rows[0]["mode"] == "ephemeral"
+    assert rows[0]["torn_down_at"] is None
+    store.close_run(run_id)
+    row = db.fetchone("SELECT * FROM sandbox_runs WHERE run_id = ?", (run_id,))
+    assert row["torn_down_at"] is not None
+
+
+def test_sandbox_runs_store_records_a_snapshot(db):
+    from infra.sandbox_runs_store import SandboxRunsStore
+    from interfaces.provisioning import VictimSnapshot
+
+    store = SandboxRunsStore(db)
+    store.record_snapshot(VictimSnapshot(
+        name="clean-baseline", sandbox_id="monkey-victim",
+        created_at="2026-05-15T00:00:00Z", deterministic=True,
+        patched=False, base_snapshot=None))
+    rows = db.fetchall("SELECT * FROM victim_snapshots")
+    assert len(rows) == 1
+    assert rows[0]["name"] == "clean-baseline"
+    assert rows[0]["deterministic"] == 1
