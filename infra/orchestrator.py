@@ -146,6 +146,9 @@ def _build_purple_pipeline(rt: Runtime):
         case_runner=_mock_case_runner,
         full_sweep_every=rt.cfg.purple.full_sweep_every,
         self_governance_enabled=rt.cfg.purple.self_governance_enabled,
+        telemetry_adapter=rt.cfg.purple.telemetry_adapter,
+        native_event_source=rt.cfg.purple.native_event_source,
+        native_offset_store=rt.cfg.purple.native_offset_store,
     )
 
 

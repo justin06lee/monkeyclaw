@@ -30,6 +30,26 @@ def test_purple_config_defaults():
     assert cfg.purple.self_governance_enabled is True
 
 
+def test_purple_telemetry_adapter_defaults_to_derived():
+    # The derived adapter stays the default so mock mode keeps working
+    # with zero credentials (native-event-adapter spec §3, §8).
+    cfg = load_config()
+    assert cfg.purple.telemetry_adapter == "derived"
+    assert cfg.purple.native_event_source.endswith("purple-telemetry.jsonl")
+    assert cfg.purple.native_offset_store.endswith(".offset")
+
+
+def test_purple_telemetry_adapter_env_override():
+    import os
+
+    os.environ["MC_PURPLE__TELEMETRY_ADAPTER"] = "native"
+    try:
+        cfg = load_config()
+        assert cfg.purple.telemetry_adapter == "native"
+    finally:
+        del os.environ["MC_PURPLE__TELEMETRY_ADAPTER"]
+
+
 def test_red_archive_config_defaults():
     from infra.config import load_config
 
