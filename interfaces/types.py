@@ -62,6 +62,7 @@ ResolvedBy = Literal["model", "keyword"]
 ChainTermination = Literal["completed", "chain_broken", "max_turns", "error"]
 IsolationMode = Literal["live", "mock"]
 PatchBuildStatus = Literal["built", "apply_failed", "build_failed", "mock"]
+ReproOutcome = Literal["reproduced", "flaky", "not_reproduced", "pending"]
 
 HarmStage = Literal[
     "HARD_REFUSAL",
@@ -1341,6 +1342,85 @@ class PatchBuild:
     build_duration_seconds: float = 0.0
 
 
+# ---------------------------------------------------------------------------
+# Learned ranking model — the structured trace dataset (spec §7)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AttemptTraceInput:
+    """Write-side of an attempt trace — server fills trace_id + created_at.
+
+    Features + labels for one judged attack attempt. The repro label lands
+    later than the judge verdict, so repro_outcome starts 'pending' and is
+    updated by attach_repro_outcome (spec §6.2)."""
+
+    idea_id: str
+    cycle_id: int
+    zone_id: str
+    feature_schema_version: int
+    idea_summary: str
+    tactic_tags: list[str]
+    mutation_operator: str | None
+    interaction_style: str
+    progress_dims: dict[str, float]   # the flattened ProgressScore dimensions
+    judge_scores: dict[str, float]    # five ensemble role scores + confidences
+    token_cost: int
+    judge_verdict: str                # confirmed | suspicious | clean
+    search_score: float
+    archive_niche: str
+    usefulness_label: float           # derived 0..1 target
+    finding_id: str | None = None
+    repro_outcome: str = "pending"    # ReproOutcome
+
+
+@dataclass
+class AttemptTrace:
+    """Read-side of an attempt trace — one row of the ranking dataset."""
+
+    trace_id: str
+    idea_id: str
+    finding_id: str | None
+    cycle_id: int
+    zone_id: str
+    feature_schema_version: int
+    idea_summary: str
+    tactic_tags: list[str]
+    mutation_operator: str | None
+    interaction_style: str
+    progress_dims: dict[str, float]
+    judge_scores: dict[str, float]
+    token_cost: int
+    repro_outcome: str
+    judge_verdict: str
+    search_score: float
+    archive_niche: str
+    usefulness_label: float
+    created_at: str
+
+
+@dataclass
+class PreferenceInput:
+    """Write-side of a pairwise preference — server fills pair_id + created_at."""
+
+    trace_a: str         # trace_id
+    trace_b: str         # trace_id
+    preferred: str       # "a" | "b" | "tie"
+    judge_confidence: float
+
+
+@dataclass
+class Preference:
+    """Read-side of a pairwise preference label (spec §7)."""
+
+    pair_id: str
+    trace_a: str
+    trace_b: str
+    preferred: str
+    judge_confidence: float
+    created_at: str
+
+
 __all__ = [
     "AgentPolicy",
     "AttackChain",
@@ -1348,6 +1428,8 @@ __all__ = [
     "ArchiveCell",
     "ArchiveUpdateInput",
     "AttackElo",
+    "AttemptTrace",
+    "AttemptTraceInput",
     "ChainAttribution",
     "ChainFinding",
     "ChainSkeleton",
@@ -1419,6 +1501,8 @@ __all__ = [
     "PolicyCorpusResultInput",
     "PolicyDecision",
     "PolicyDecisionType",
+    "Preference",
+    "PreferenceInput",
     "Prevention",
     "ProcessEvent",
     "PurpleCycleResult",
@@ -1428,6 +1512,7 @@ __all__ = [
     "RegressionTest",
     "RegressionTestInput",
     "RegressionTestStatus",
+    "ReproOutcome",
     "ReportCard",
     "ReportCardDimension",
     "ReproPackage",
