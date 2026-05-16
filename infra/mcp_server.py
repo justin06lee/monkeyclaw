@@ -436,6 +436,53 @@ class MCPServer(MonkeyClawMCP):
         )
         return tid
 
+    def record_regression_run(
+        self, test_id: str, result: str, *, flaky: bool = False,
+    ) -> str:
+        """Persist one regression test run. `result` is 'pass'|'fail'|'error'.
+        Transitions run_state via REGRESSION_FSM (pass->passing,
+        fail/error->failing) and writes last_run_at/last_run_result/
+        consecutive_passes. If `flaky`, the test is moved to 'quarantined'
+        instead. Returns the new run_state. Idempotent on the FSM: a
+        same-state run is recorded but writes no transition."""
+        row = self.db.fetchone(
+            "SELECT run_state, consecutive_passes FROM regression_tests "
+            "WHERE test_id = ?", (test_id,))
+        if row is None:
+            raise KeyError(f"unknown regression test {test_id!r}")
+        current = row["run_state"]
+        passed = result == "pass"
+        target = "quarantined" if flaky else ("passing" if passed else "failing")
+        new_passes = (row["consecutive_passes"] + 1) if passed else 0
+        with self.db.lock():
+            self.db.execute(
+                "UPDATE regression_tests SET last_run_at = ?, "
+                "last_run_result = ?, consecutive_passes = ? "
+                "WHERE test_id = ?",
+                (_now(), result, new_passes, test_id),
+            )
+        if target != current:
+            self.transitions.transition(
+                entity="regression_test", entity_id=test_id,
+                to_state=target, actor="regression_runner",
+                reason=f"run result={result} flaky={flaky}",
+            )
+        return target
+
+    def reopen_finding(self, finding_id: str, reason: str) -> None:
+        """verified -> open: a regression for this finding's vuln failed."""
+        self.transitions.transition(
+            entity="finding", entity_id=finding_id, to_state="open",
+            actor="regression_runner", reason=reason,
+        )
+
+    def findings_for_vuln(self, vuln_id: str) -> list[str]:
+        """finding_ids of every repro package minted for this vuln_id."""
+        rows = self.db.fetchall(
+            "SELECT finding_id FROM repro_packages WHERE vuln_id = ?",
+            (vuln_id,))
+        return [r["finding_id"] for r in rows]
+
     # ------------------------------------------------------------------
     # Codebase search
     # ------------------------------------------------------------------

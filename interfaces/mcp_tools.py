@@ -133,6 +133,10 @@ class MonkeyClawMCP(Protocol):
         """All repro packages with ready_for_blue=true and blue_team_status='queued'."""
         ...
 
+    def findings_for_vuln(self, vuln_id: str) -> list[str]:
+        """finding_ids of every repro package minted for this vuln_id."""
+        ...
+
     # ------------------------------------------------------------------
     # Regression suite
     # ------------------------------------------------------------------
@@ -142,6 +146,17 @@ class MonkeyClawMCP(Protocol):
 
     def add_regression_test(self, test: RegressionTestInput) -> str:
         """Append a new test to the permanent suite. Returns test_id."""
+        ...
+
+    def record_regression_run(
+        self, test_id: str, result: str, *, flaky: bool = False,
+    ) -> str:
+        """Persist a regression test run, transition run_state, return it."""
+        ...
+
+    def reopen_finding(self, finding_id: str, reason: str) -> None:
+        """Reopen a verified finding (verified->open) — a permanent
+        regression test that newly fails means the vuln is live again."""
         ...
 
     # ------------------------------------------------------------------

@@ -351,6 +351,13 @@ class MockMCP(MonkeyClawMCP):
             if pkg.ready_for_blue and pkg.blue_team_status == "queued"
         ]
 
+    def findings_for_vuln(self, vuln_id: str) -> list[str]:
+        """finding_ids of every repro package minted for this vuln_id."""
+        return [
+            pkg.finding_id for pkg in self._repro_packages.values()
+            if getattr(pkg, "vuln_id", None) == vuln_id
+        ]
+
     # ------------------------------------------------------------------
     # Regression
     # ------------------------------------------------------------------
@@ -371,6 +378,20 @@ class MockMCP(MonkeyClawMCP):
         self._regression_tests[tid] = rec
         self._log("add_regression_test", {"test_id": tid, "vuln_id": test.vuln_id})
         return tid
+
+    def record_regression_run(
+        self, test_id: str, result: str, *, flaky: bool = False,
+    ) -> str:
+        """Persist a regression test run; mock mode never enforces the FSM."""
+        target = "quarantined" if flaky else (
+            "passing" if result == "pass" else "failing")
+        self._log("record_regression_run",
+                  {"test_id": test_id, "result": result, "flaky": flaky})
+        return target
+
+    def reopen_finding(self, finding_id: str, reason: str) -> None:
+        """Reopen a verified finding (verified->open); mock mode records it."""
+        self._log("reopen_finding", {"finding_id": finding_id, "reason": reason})
 
     # ------------------------------------------------------------------
     # Codebase
