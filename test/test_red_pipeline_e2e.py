@@ -300,3 +300,18 @@ def test_pipeline_passes_archive_seed_into_ideation():
     pipe.ideation.generate_for_zone = _spy
     pipe.generate_ideas(cycle_id=2, n_lanes=2)
     assert any("# Archive — Diverse Elites" in s for s in captured)
+
+
+def test_pipeline_passes_archive_into_priority(monkeypatch):
+    captured = {}
+    import red_team.pipeline as pipeline_mod
+    real_score = pipeline_mod.score_ideas
+
+    def _spy(outcomes, zones_by_id, archive=None):
+        captured["archive"] = archive
+        return real_score(outcomes, zones_by_id, archive=archive)
+
+    monkeypatch.setattr(pipeline_mod, "score_ideas", _spy)
+    pipe = Pipeline(mcp=MockMCP(seed=0, verbose=False), llm=MockLLM())
+    pipe.generate_ideas(cycle_id=1, n_lanes=2)
+    assert captured["archive"] is pipe._archive

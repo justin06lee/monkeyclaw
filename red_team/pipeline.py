@@ -278,7 +278,7 @@ class Pipeline:
         # Score every kept idea, then hand the whole batch to the strategist.
         # It synthesizes the raw ideas into `n_lanes` distinct deep-dive
         # attack chains — one chain per lane.
-        prioritized = score_ideas(outcomes, zones_by_id)
+        prioritized = score_ideas(outcomes, zones_by_id, archive=self._archive)
         kept_ideas = [p.idea for p in prioritized]
         if not kept_ideas:
             return []
