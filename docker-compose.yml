@@ -1,0 +1,43 @@
+# MonkeyClaw dev environment.
+#
+# `env_file: .env` loads NVIDIA_API_KEY (and any other vars) into the
+# container at runtime -- the key is NOT baked into the image, so it never
+# lands in an image layer (.dockerignore also excludes .env from the build).
+#
+# Live path -- starts the inner Docker daemon, onboards NemoClaw, snapshots:
+#   docker compose run --rm monkeyclaw
+#   uv run monkeyclaw run --cycles 3 --target monkey-victim
+#
+# Offline/mock path -- no key, no privileged needed:
+#   docker compose run --rm monkeyclaw-mock
+#   uv run monkeyclaw run --mock
+
+services:
+  # Live path: NemoClaw setup runs automatically on start (entrypoint sees
+  # NVIDIA_API_KEY from .env). Needs --privileged for Docker-in-Docker,
+  # >=8 GB RAM and >=20 GB free disk.
+  monkeyclaw:
+    build:
+      context: .
+      dockerfile: DOCKERFILE
+    image: monkeyclaw:latest
+    env_file: .env
+    privileged: true        # required: nested Docker daemon for the victim
+    stdin_open: true        # -i
+    tty: true               # -t
+    ports:
+      - "8787:8787"         # dashboard  (binds 127.0.0.1 in-container)
+      - "7321:7321"         # mock MCP
+      - "7322:7322"         # MCP server
+
+  # Offline/mock path: no key, no privileged. Reuses the same image; the
+  # entrypoint skips NemoClaw setup when NVIDIA_API_KEY is absent.
+  monkeyclaw-mock:
+    build:
+      context: .
+      dockerfile: DOCKERFILE
+    image: monkeyclaw:latest
+    environment:
+      - NVIDIA_API_KEY=     # explicitly empty -> entrypoint skips live setup
+    stdin_open: true
+    tty: true
