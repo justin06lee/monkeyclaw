@@ -37,6 +37,7 @@ from interfaces.types import (
     IdeaInput,
     JudgeVoteInput,
     ModelRunInput,
+    ModelZoneWinrate,
     MutationAttempt,
     MutationOperatorStat,
     NearMiss,
@@ -52,6 +53,7 @@ from interfaces.types import (
     TechniqueRef,
     TelemetryEvent,
     TelemetryEventInput,
+    TournamentRound,
     Trajectory,
 )
 
@@ -217,6 +219,23 @@ class MonkeyClawMCP(Protocol):
 
     def get_model_cost_rollup(self) -> list[dict]:
         """Per-role token & cost rollup over model_runs. Read-only reporting."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Model ideation tournament — per-zone win-rate + rounds
+    # ------------------------------------------------------------------
+    def get_model_zone_winrate(
+        self, zone_id: str | None = None,
+    ) -> list[ModelZoneWinrate]:
+        """All win-rate rows, or one zone's, for routing decisions."""
+        ...
+
+    def update_model_zone_winrate(self, row: ModelZoneWinrate) -> None:
+        """Upsert one (zone_id, model_label) win-rate row."""
+        ...
+
+    def log_tournament_round(self, round: TournamentRound) -> str:
+        """Record one head-to-head round. Returns round_id."""
         ...
 
     # ------------------------------------------------------------------

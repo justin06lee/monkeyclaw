@@ -44,6 +44,7 @@ from interfaces.types import (
     IdeaInput,
     JudgeVoteInput,
     ModelRunInput,
+    ModelZoneWinrate,
     MutationAttempt,
     MutationOperatorStat,
     NearMiss,
@@ -58,6 +59,7 @@ from interfaces.types import (
     ReproPackageInput,
     TelemetryEvent,
     TelemetryEventInput,
+    TournamentRound,
     Trajectory,
     TurnScore,
 )
@@ -609,6 +611,59 @@ class MCPServer(MonkeyClawMCP):
             }
             for r in rows
         ]
+
+    # ------------------------------------------------------------------
+    # Model ideation tournament — per-zone win-rate + rounds
+    # ------------------------------------------------------------------
+    def get_model_zone_winrate(
+        self, zone_id: str | None = None,
+    ) -> list[ModelZoneWinrate]:
+        if zone_id is None:
+            rows = self.db.fetchall(
+                "SELECT * FROM model_zone_winrate ORDER BY winrate DESC")
+        else:
+            rows = self.db.fetchall(
+                "SELECT * FROM model_zone_winrate WHERE zone_id=? "
+                "ORDER BY winrate DESC", (zone_id,))
+        return [ModelZoneWinrate(
+            zone_id=r["zone_id"], model_label=r["model_label"],
+            role=r["role"], h2h_wins=r["h2h_wins"],
+            h2h_comparisons=r["h2h_comparisons"], confirmed=r["confirmed"],
+            suspicious=r["suspicious"], ideas_executed=r["ideas_executed"],
+            winrate=r["winrate"], updated_at=r["updated_at"],
+        ) for r in rows]
+
+    def update_model_zone_winrate(self, row: ModelZoneWinrate) -> None:
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO model_zone_winrate"
+                "(zone_id, model_label, role, h2h_wins, h2h_comparisons, "
+                "confirmed, suspicious, ideas_executed, winrate, updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(zone_id, model_label) DO UPDATE SET "
+                "role=excluded.role, h2h_wins=excluded.h2h_wins, "
+                "h2h_comparisons=excluded.h2h_comparisons, "
+                "confirmed=excluded.confirmed, "
+                "suspicious=excluded.suspicious, "
+                "ideas_executed=excluded.ideas_executed, "
+                "winrate=excluded.winrate, updated_at=excluded.updated_at",
+                (row.zone_id, row.model_label, row.role, row.h2h_wins,
+                 row.h2h_comparisons, row.confirmed, row.suspicious,
+                 row.ideas_executed, row.winrate, _now()),
+            )
+
+    def log_tournament_round(self, round: TournamentRound) -> str:
+        round_id = round.round_id or _new_id("ROUND")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO model_tournament_rounds"
+                "(round_id, cycle_id, zone_id, entrants, pairwise, "
+                "winner_label, created_at) VALUES(?,?,?,?,?,?,?)",
+                (round_id, round.cycle_id, round.zone_id,
+                 json.dumps(round.entrants), json.dumps(round.pairwise),
+                 round.winner_label, _now()),
+            )
+        return round_id
 
     # ------------------------------------------------------------------
     # Judge votes

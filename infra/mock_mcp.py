@@ -48,6 +48,7 @@ from interfaces.types import (
     JudgeVoteInput,
     ModelRunInput,
     ModelRunRecord,
+    ModelZoneWinrate,
     MutationAttempt,
     MutationOperatorStat,
     NearMiss,
@@ -62,6 +63,7 @@ from interfaces.types import (
     ReproPackageInput,
     TelemetryEvent,
     TelemetryEventInput,
+    TournamentRound,
     Trajectory,
 )
 
@@ -153,6 +155,9 @@ class MockMCP(MonkeyClawMCP):
         self._idea_techniques: dict[str, list] = {}
         self._finding_techniques: dict[str, list] = {}
         self._technique_coverage: dict[tuple[str, str, str], dict] = {}
+        # Model ideation tournament stores (model-ideation-tournament §9)
+        self._model_zone_winrate: dict[tuple[str, str], ModelZoneWinrate] = {}
+        self._tournament_rounds: list[TournamentRound] = []
         self._seed_history()
 
     def _seed_history(self) -> None:
@@ -552,6 +557,32 @@ class MockMCP(MonkeyClawMCP):
             if not r.success:
                 agg["failures"] += 1
         return sorted(by_role.values(), key=lambda a: a["cost_usd"], reverse=True)
+
+    # ------------------------------------------------------------------
+    # Model ideation tournament — per-zone win-rate + rounds
+    # ------------------------------------------------------------------
+    def get_model_zone_winrate(
+        self, zone_id: str | None = None,
+    ) -> list[ModelZoneWinrate]:
+        rows = [
+            r for r in self._model_zone_winrate.values()
+            if zone_id is None or r.zone_id == zone_id
+        ]
+        return sorted(rows, key=lambda r: r.winrate, reverse=True)
+
+    def update_model_zone_winrate(self, row: ModelZoneWinrate) -> None:
+        self._model_zone_winrate[(row.zone_id, row.model_label)] = replace(
+            row, updated_at=_now())
+        self._log("update_model_zone_winrate",
+                  {"zone_id": row.zone_id, "model_label": row.model_label})
+
+    def log_tournament_round(self, round: TournamentRound) -> str:
+        round_id = round.round_id or _new_id("ROUND")
+        self._tournament_rounds.append(replace(
+            round, round_id=round_id, created_at=_now()))
+        self._log("log_tournament_round",
+                  {"round_id": round_id, "zone_id": round.zone_id})
+        return round_id
 
     # ------------------------------------------------------------------
     # Judge votes
