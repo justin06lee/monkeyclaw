@@ -150,6 +150,8 @@ def test_progress_score_has_exact_fields():
         "failure_mode",
         "useful_components",
         "mutation_suggestions",
+        "transferability",
+        "erosion_slope",
     }
     assert set(vars(score).keys()) == expected
     assert isinstance(score, ProgressScore)
@@ -463,3 +465,42 @@ def test_turn_risk_still_callable_for_backward_compat():
     from red_team.progress import _turn_risk
 
     assert _turn_risk("I cannot help.") == 0
+
+
+# ---------------------------------------------------------------------------
+# Trajectory- and dedup-fed rubric dimensions (trajectory spec §6.2)
+# ---------------------------------------------------------------------------
+
+
+def test_score_progress_backward_compatible_with_no_kwargs():
+    """trajectory=None + novelty_score=None must reproduce today's output."""
+    lane = _rising_lane()
+    before = score_progress(lane)
+    after = score_progress(lane, trajectory=None, novelty_score=None)
+    assert before == after
+
+
+def test_trajectory_feeds_boundary_erosion_and_erosion_slope():
+    from red_team.trajectory import score_trajectory
+    from test.test_red_trajectory import _judgment
+
+    lane = _rising_lane()
+    trj = score_trajectory(lane, _judgment())
+    score = score_progress(lane, trajectory=trj)
+    assert score.erosion_slope == trj.erosion_slope
+    if trj.erosion_slope > 0:
+        assert score.boundary_erosion >= 1
+
+
+def test_novelty_score_overrides_self_assessment_proxy():
+    lane = _rising_lane()
+    score = score_progress(lane, novelty_score=0.8)
+    assert score.novelty == 4
+    low = score_progress(lane, novelty_score=0.1)
+    assert low.novelty <= 1
+
+
+def test_transferability_field_present_and_bounded():
+    lane = _rising_lane()
+    score = score_progress(lane)
+    assert 0 <= score.transferability <= 5
