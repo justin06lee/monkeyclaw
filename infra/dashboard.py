@@ -260,6 +260,41 @@ def _status(db_path: str) -> dict[str, Any]:
     }
 
 
+def build_sandbox_runs_view(db) -> dict:
+    """Operational view: per-lane victim mode and whether the run was
+    deterministic (real-nemoclaw-provisioner spec §10). Accepts a Database."""
+    rows = db.fetchall(
+        "SELECT run_id, instance_id, lane_id, mode, deterministic, "
+        "patch_applied, provisioned_at, torn_down_at "
+        "FROM sandbox_runs ORDER BY provisioned_at DESC LIMIT 100")
+    return {
+        "total": len(rows),
+        "rows": [
+            {
+                "run_id": r["run_id"],
+                "instance_id": r["instance_id"],
+                "lane_id": r["lane_id"],
+                "mode": r["mode"],
+                "deterministic": bool(r["deterministic"]),
+                "patch_applied": bool(r["patch_applied"]),
+                "provisioned_at": r["provisioned_at"],
+                "torn_down_at": r["torn_down_at"],
+            }
+            for r in rows
+        ],
+    }
+
+
+def _sandbox_runs(db_path: str) -> list[dict[str, Any]]:
+    """Sandbox-run audit rows for the dashboard snapshot, newest first."""
+    return _query(
+        db_path,
+        "SELECT run_id, instance_id, lane_id, mode, deterministic, "
+        "patch_applied, provisioned_at, torn_down_at FROM sandbox_runs "
+        "ORDER BY provisioned_at DESC LIMIT 36",
+    )
+
+
 def _all(db_path: str) -> dict[str, Any]:
     """Single atomic snapshot — the page renders from one fetch."""
     return {
@@ -278,6 +313,7 @@ def _all(db_path: str) -> dict[str, Any]:
         "telemetry": _telemetry(db_path),
         "judges": _judges(db_path),
         "activity": _activity(db_path),
+        "sandbox_runs": _sandbox_runs(db_path),
     }
 
 

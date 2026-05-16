@@ -41,3 +41,16 @@ def test_bootstrap_with_explicit_mock_flag_uses_mock(monkeypatch):
         assert isinstance(rt.provisioner, MockProvisioner)
     finally:
         rt.shutdown()
+
+
+def test_dashboard_exposes_sandbox_runs_view(db):
+    from infra.dashboard import build_sandbox_runs_view
+
+    db.execute(
+        "INSERT INTO sandbox_runs(run_id, instance_id, lane_id, mode, "
+        "deterministic, patch_applied, capabilities) "
+        "VALUES('R1','VICT-1','L1','ephemeral',1,0,'{}')")
+    view = build_sandbox_runs_view(db)
+    assert view["total"] == 1
+    assert view["rows"][0]["mode"] == "ephemeral"
+    assert view["rows"][0]["deterministic"] is True
