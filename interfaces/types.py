@@ -71,6 +71,9 @@ HarmStage = Literal[
     "STRONG_COMPLIANCE",
     "PROGRAMMATIC_VIOLATION",
 ]
+BypassStatus = Literal["bypassed", "blocked", "inconclusive"]
+GeneralizationStatus = Literal["generalized", "unconverged"]
+GeneralizationOutcome = Literal["generalized", "bounced", "unconverged"]
 
 # ---------------------------------------------------------------------------
 # Message + observability primitives
@@ -1341,6 +1344,97 @@ class PatchBuild:
     build_duration_seconds: float = 0.0
 
 
+# ---------------------------------------------------------------------------
+# Patch generalization loop (patch-generalization-loop spec §11)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class MutationVariant:
+    """One mutation operator applied to a verified patch's minimal transcript,
+    replayed against the patched victim."""
+
+    variant_id: str
+    operator: str
+    mutated_transcript: list[Message]
+    replay_result: LaneResult | None
+
+
+@dataclass
+class BypassResult:
+    """The score of one MutationVariant replay against the patched victim."""
+
+    variant_id: str
+    operator: str
+    status: str  # BypassStatus
+    triggered_evidence: list[CheckResult]
+    severity: str
+    notes: str = ""
+
+
+@dataclass
+class BypassConstraint:
+    """A bypass turned into a first-class re-patch requirement."""
+
+    constraint_id: str
+    operator: str
+    bypassing_transcript: list[Message]
+    directive: str
+    evidence: list[CheckResult]
+
+
+@dataclass
+class GeneralizationRound:
+    """One round of the loop, as persisted in generalization_rounds."""
+
+    round_id: str
+    patch_id: str
+    finding_id: str
+    vuln_id: str
+    zone_id: str
+    round_index: int
+    operators_tried: list[str]
+    variants_total: int
+    variants_bypassed: int
+    variants_inconclusive: int
+    bypass_operators: list[str]
+    outcome: str  # GeneralizationOutcome
+    repatch_patch_id: str | None
+    evidence: list[dict[str, Any]]
+    created_at: str
+
+
+@dataclass
+class GeneralizationRoundInput:
+    """Write-side of GeneralizationRound — server fills round_id + created_at."""
+
+    patch_id: str
+    finding_id: str
+    vuln_id: str
+    zone_id: str
+    round_index: int
+    operators_tried: list[str]
+    variants_total: int
+    variants_bypassed: int
+    variants_inconclusive: int
+    bypass_operators: list[str]
+    outcome: str
+    repatch_patch_id: str | None = None
+    evidence: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class GeneralizationResult:
+    """The single object GeneralizationLoop.run returns per finalized patch."""
+
+    finding_id: str
+    final_patch_id: str
+    status: str  # GeneralizationStatus
+    reason: str | None
+    rounds: list[GeneralizationRound]
+    open_bypasses: list[BypassResult]
+
+
 __all__ = [
     "AgentPolicy",
     "AttackChain",
@@ -1348,6 +1442,9 @@ __all__ = [
     "ArchiveCell",
     "ArchiveUpdateInput",
     "AttackElo",
+    "BypassConstraint",
+    "BypassResult",
+    "BypassStatus",
     "ChainAttribution",
     "ChainFinding",
     "ChainSkeleton",
@@ -1381,6 +1478,11 @@ __all__ = [
     "FindingRecord",
     "FixSite",
     "FsDiff",
+    "GeneralizationOutcome",
+    "GeneralizationResult",
+    "GeneralizationRound",
+    "GeneralizationRoundInput",
+    "GeneralizationStatus",
     "GraphBackend",
     "HARM_LADDER",
     "HarmStage",
@@ -1402,6 +1504,7 @@ __all__ = [
     "ModelZoneWinrate",
     "MutationAttempt",
     "MutationOperatorStat",
+    "MutationVariant",
     "NearMiss",
     "NearMissInput",
     "NetworkEvent",
