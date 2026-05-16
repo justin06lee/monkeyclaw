@@ -19,7 +19,7 @@ import random
 import sys
 import uuid
 from dataclasses import asdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from interfaces.mcp_tools import MonkeyClawMCP
 from interfaces.types import (
@@ -80,8 +80,10 @@ class MockMCP(MonkeyClawMCP):
             zid: {
                 "zone_id": zid,
                 "zone_name": name,
-                "coverage_score": self.rand.uniform(0.0, 0.6),
-                "vulns_open": self.rand.randint(0, 4),
+                # Start clean — no fabricated coverage. Real coverage
+                # accrues only as zones are actually tested.
+                "coverage_score": 0.0,
+                "vulns_open": 0,
                 "severity_weight": sev,
                 "last_tested_at": None,
                 "description": f"Mock zone: {name}",
@@ -96,40 +98,8 @@ class MockMCP(MonkeyClawMCP):
         self._repro_packages: dict[str, ReproPackage] = {}
         self._regression_tests: dict[str, RegressionTest] = {}
         self._alerts: list[dict] = []
-        self._seed_history()
-
-    def _seed_history(self) -> None:
-        """Plant a handful of fake findings + an entry in the repro queue so callers
-        get non-empty results during early testing."""
-        examples = [
-            ("PROMPT-INJ", "Tool-call exfil via doc paste", "prompt_injection", "high"),
-            ("SBX-FS", "Symlink escape from /tmp", "sandbox_escape", "critical"),
-            ("PRV-ROUTE", "Cloud-route PII bypass", "pii_leak", "high"),
-            ("SOCIAL-ENG", "Multi-turn policy walk", "behavioral_manipulation", "medium"),
-        ]
-        for zone, summary, fail, sev in examples:
-            fid = _new_id("FND")
-            rec = FindingRecord(
-                finding_id=fid,
-                cycle_id=0,
-                idea_id=_new_id("IDEA"),
-                zone_id=zone,
-                source_mode="creative",
-                idea_summary=summary,
-                verdict="confirmed",
-                tier_caught="programmatic" if fail != "behavioral_manipulation" else "semantic",
-                failure_class=fail,
-                severity=sev,
-                evidence=json.dumps([{"check_name": "filesystem_breach", "triggered": True}]),
-                repro_rate=0.8,
-                patch_status="open",
-                reusability=0.6,
-                created_at=(datetime.now(UTC) - timedelta(days=2)).isoformat(),
-            )
-            self._findings[fid] = rec
-        # One item already queued for repro
-        sample_id = next(iter(self._findings))
-        self._repro_queue.append((sample_id, "high"))
+        # No seeded history — the mock server starts empty. Findings,
+        # cycles, and repro packages exist only once they are really logged.
 
     # ------------------------------------------------------------------
     def _log(self, op: str, payload: dict) -> None:
@@ -221,18 +191,7 @@ class MockMCP(MonkeyClawMCP):
     # Cycle summaries
     # ------------------------------------------------------------------
     def get_recent_summaries(self, n: int) -> list[CycleSummary]:
-        if not self._cycles:
-            # Synthesize a few so Mode A ideation has something to read
-            for i in range(min(3, n)):
-                self._cycles.append(
-                    CycleSummary(
-                        cycle_id=i,
-                        summary=f"Mock cycle {i}: targeted PROMPT-INJ and SBX-FS, found 1 confirmed.",
-                        zones_targeted=["PROMPT-INJ", "SBX-FS"],
-                        vulns_confirmed=1,
-                        created_at=(datetime.now(UTC) - timedelta(hours=i)).isoformat(),
-                    )
-                )
+        # Only real logged cycles — empty until cycles actually run.
         return list(reversed(self._cycles))[:n]
 
     def log_cycle_summary(self, summary: CycleSummaryInput) -> None:

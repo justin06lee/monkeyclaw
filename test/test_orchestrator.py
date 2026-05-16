@@ -17,8 +17,9 @@ def test_orchestrator_runs_two_cycles(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("MC_LANES__LANE_TIMEOUT_SECONDS", "5")
     rc = orch_main(["--use-mock-provisioner", "--max-cycles", "2"])
     assert rc == 0
-    # Verify cycle_log got entries
-    conn = sqlite3.connect((tmp_path / "mc.db").as_posix())
+    # Mock-provisioner runs use a separate `-mock` database so they never
+    # touch the real knowledge base.
+    conn = sqlite3.connect((tmp_path / "mc-mock.db").as_posix())
     rows = conn.execute("SELECT cycle_id, ideas_generated FROM cycle_log").fetchall()
     conn.close()
     assert len(rows) >= 2

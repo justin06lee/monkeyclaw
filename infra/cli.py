@@ -394,7 +394,8 @@ def _cmd_demo(args: argparse.Namespace) -> int:
         banner("FULL CYCLE COMPLETE")
         print(f"  finding {finding_id} ({judgment.severity} {judgment.failure_class}) "
               f"→ {n_repro} repro'd → {n_patches} patch candidate(s) generated")
-        print("  see `monkeyclaw status` / `monkeyclaw findings` / the dashboard.")
+        print("  (planted-victim demo — results went to the separate mock DB; "
+              "the real knowledge base is untouched.)")
         return 0
     finally:
         rt.shutdown()

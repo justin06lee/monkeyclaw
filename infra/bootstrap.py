@@ -38,7 +38,14 @@ def boot(config_path: str | Path | None = None,
          use_mock_provisioner: bool = False) -> Runtime:
     cfg = load_config(config_path)
     setup_logging(cfg)
-    db = Database(cfg.storage.db_path)
+    # Mock/demo runs (planted-victim) use a SEPARATE database so they never
+    # write fabricated findings into the real knowledge base. A real run
+    # against a live sandbox always uses the configured db_path.
+    db_path = cfg.storage.db_path
+    if use_mock_provisioner:
+        p = Path(db_path)
+        db_path = str(p.with_name(f"{p.stem}-mock{p.suffix}"))
+    db = Database(db_path)
     # Persistent memory — surface what carried over from prior runs so the
     # continuity is visible (the SQLite knowledge base survives restarts).
     try:
@@ -49,7 +56,7 @@ def boot(config_path: str | Path | None = None,
         print(f"[memory] Loaded {nf['n'] if nf else 0} findings, "
               f"{nt['n'] if nt else 0} regression tests, "
               f"{nz['n'] if nz else 0} zones from persistent memory "
-              f"({cfg.storage.db_path})", flush=True)
+              f"({db_path})", flush=True)
     except Exception as e:  # noqa: BLE001
         LOG.warning("could not read persistent memory: %s", e)
     dispatcher = AlertDispatcher(cfg.notifications)
