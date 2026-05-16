@@ -15,6 +15,7 @@ from infra.guardrails import PolicyEnforcer
 from infra.mcp_server import MCPServer
 from infra.notifications import AlertDispatcher
 from infra.provisioning_nemoclaw import MockProvisioner, NemoClawProvisioner
+from infra.sandbox_capabilities import probe as probe_capabilities
 from interfaces.config_schema import MonkeyClawConfig
 from interfaces.model_router import ModelRouter
 from interfaces.provisioning import VictimProvisioner, set_provisioner
@@ -73,16 +74,30 @@ def boot(config_path: str | Path | None = None,
     if use_mock_provisioner:
         provisioner: VictimProvisioner = MockProvisioner()
     else:
-        provisioner = NemoClawProvisioner(
-            cli_binary=cfg.nemoclaw.cli_binary,
-            sandbox_name=cfg.nemoclaw.sandbox_name,
-            sandbox_namespace=cfg.nemoclaw.sandbox_namespace,
-            clean_snapshot=cfg.nemoclaw.clean_snapshot,
-            gateway_endpoint=cfg.nemoclaw.gateway_endpoint,
-            gateway_container=cfg.nemoclaw.gateway_container,
-            snapshot_restore_timeout_s=cfg.nemoclaw.snapshot_restore_timeout_s,
-            recover_timeout_s=cfg.nemoclaw.recover_timeout_s,
-        )
+        caps = probe_capabilities(cfg.nemoclaw.cli_binary,
+                                  cfg.nemoclaw.sandbox_name)
+        if not caps.cli_present:
+            LOG.warning(
+                "`%s` CLI not found — falling back to MockProvisioner. "
+                "Install NemoClaw to run against a live victim.",
+                cfg.nemoclaw.cli_binary)
+            provisioner = MockProvisioner()
+        else:
+            provisioner = NemoClawProvisioner(
+                cli_binary=cfg.nemoclaw.cli_binary,
+                sandbox_name=cfg.nemoclaw.sandbox_name,
+                sandbox_namespace=cfg.nemoclaw.sandbox_namespace,
+                clean_snapshot=cfg.nemoclaw.clean_snapshot,
+                baseline_snapshot=cfg.nemoclaw.baseline_snapshot,
+                gateway_endpoint=cfg.nemoclaw.gateway_endpoint,
+                gateway_container=cfg.nemoclaw.gateway_container,
+                snapshot_restore_timeout_s=(
+                    cfg.nemoclaw.snapshot_restore_timeout_s),
+                recover_timeout_s=cfg.nemoclaw.recover_timeout_s,
+                work_area_dir=cfg.nemoclaw.work_area_dir,
+                nemoclaw_repo_path=cfg.nemoclaw.repo_path,
+                patch_build_timeout_s=cfg.nemoclaw.patch_build_timeout_s,
+            )
     set_provisioner(provisioner)
     # A8 — one PolicyEnforcer per run; the orchestrator/CLI threads it into
     # the lane scheduler and per-lane harnesses.
