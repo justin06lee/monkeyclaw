@@ -174,3 +174,43 @@ def test_real_provisioner_raises_on_subprocess_timeout(monkeypatch):
     with pytest.raises(ProvisioningError) as exc:
         prov.provision_victim(_real_cfg())
     assert "timed out" in str(exc.value)
+
+
+def test_victim_snapshot_records_determinism_and_patched():
+    from interfaces.provisioning import VictimSnapshot
+
+    s = VictimSnapshot(
+        name="clean-baseline", sandbox_id="monkey-victim",
+        created_at="2026-05-15T00:00:00Z", deterministic=True,
+        patched=False, base_snapshot=None,
+    )
+    assert s.deterministic is True
+    assert s.patched is False
+
+
+def test_sandbox_capabilities_has_five_flags():
+    from dataclasses import fields
+
+    from interfaces.provisioning import SandboxCapabilities
+
+    fnames = {f.name for f in fields(SandboxCapabilities)}
+    assert fnames == {"cli_present", "snapshots", "ephemeral",
+                      "container_fsdiff", "recover"}
+
+
+def test_victim_provisioner_protocol_includes_recover_and_snapshot():
+    from interfaces.provisioning import VictimProvisioner
+
+    # Method names are part of the extended contract.
+    assert hasattr(VictimProvisioner, "recover_victim")
+    assert hasattr(VictimProvisioner, "snapshot_victim")
+
+
+def test_victim_telemetry_bundle_carries_five_observable_lists():
+    from dataclasses import fields
+
+    from interfaces.types import VictimTelemetryBundle
+
+    fnames = {f.name for f in fields(VictimTelemetryBundle)}
+    assert {"fs_diff", "network_events", "process_events",
+            "inference_events", "memory_diff"} <= fnames

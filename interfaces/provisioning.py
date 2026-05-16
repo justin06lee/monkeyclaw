@@ -44,6 +44,32 @@ class VictimInstance:
     metadata: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass
+class VictimSnapshot:
+    """A named capture of victim state. `deterministic` is False when the
+    capture was taken without true snapshot isolation; `patched` is True for
+    snapshots built by the patch builder."""
+
+    name: str
+    sandbox_id: str
+    created_at: str
+    deterministic: bool
+    patched: bool = False
+    base_snapshot: str | None = None
+
+
+@dataclass
+class SandboxCapabilities:
+    """What the local `nemoclaw` build supports. Probed once at provisioner
+    construction; every lifecycle method branches on it."""
+
+    cli_present: bool
+    snapshots: bool
+    ephemeral: bool
+    container_fsdiff: bool
+    recover: bool
+
+
 @runtime_checkable
 class VictimProvisioner(Protocol):
     """Abstract provisioning surface. Implemented by:
@@ -66,6 +92,15 @@ class VictimProvisioner(Protocol):
 
     def list_victims(self) -> list[VictimInstance]:
         """All currently-tracked victim instances (running or stopped-pending-cleanup)."""
+        ...
+
+    def recover_victim(self, instance_id: str) -> VictimInstance:
+        """Restart the gateway + agent in place, clearing session/
+        conversation state without a full reprovision. Idempotent."""
+        ...
+
+    def snapshot_victim(self, instance_id: str, name: str) -> VictimSnapshot:
+        """Capture the current victim state as a named snapshot."""
         ...
 
 
@@ -104,13 +139,27 @@ def teardown_victim(instance_id: str) -> None:
     get_provisioner().teardown_victim(instance_id)
 
 
+def recover_victim(instance_id: str) -> VictimInstance:
+    """Module-level convenience wrapping the configured backend."""
+    return get_provisioner().recover_victim(instance_id)
+
+
+def snapshot_victim(instance_id: str, name: str) -> VictimSnapshot:
+    """Module-level convenience wrapping the configured backend."""
+    return get_provisioner().snapshot_victim(instance_id, name)
+
+
 __all__ = [
     "ProvisioningError",
+    "SandboxCapabilities",
     "VictimConfig",
     "VictimInstance",
     "VictimProvisioner",
+    "VictimSnapshot",
     "get_provisioner",
     "provision_victim",
+    "recover_victim",
     "set_provisioner",
+    "snapshot_victim",
     "teardown_victim",
 ]

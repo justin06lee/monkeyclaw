@@ -47,6 +47,7 @@ PolicyDecisionType = Literal["allow", "deny", "ask"]
 ReproQueueStatus = Literal["queued", "processing", "completed", "failed"]
 RegressionTestStatus = Literal["untested", "passing", "failing", "quarantined"]
 JudgeRole = Literal["semantic", "safety", "programmatic"]
+SandboxMode = Literal["ephemeral", "recover_only", "mock"]
 
 # ---------------------------------------------------------------------------
 # Message + observability primitives
@@ -108,6 +109,19 @@ class InferenceEvent:
     content_preview: str  # first 200 chars
     pii_detected: bool
     pii_types: list[str] | None = None
+
+
+@dataclass
+class VictimTelemetryBundle:
+    """Real observables captured from a running/just-finished victim sandbox.
+    Each field reuses an existing observable type; missing streams degrade to
+    an empty list / None rather than aborting the lane."""
+
+    fs_diff: FsDiff | None = None
+    network_events: list[NetworkEvent] = field(default_factory=list)
+    process_events: list[ProcessEvent] = field(default_factory=list)
+    inference_events: list[InferenceEvent] = field(default_factory=list)
+    memory_diff: MemoryDiff | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -759,8 +773,10 @@ __all__ = [
     "ReproPackage",
     "ReproPackageInput",
     "ReproQueueStatus",
+    "SandboxMode",
     "SeccompProfile",
     "TelemetryEvent",
     "TelemetryEventInput",
     "TelemetryEventType",
+    "VictimTelemetryBundle",
 ]
