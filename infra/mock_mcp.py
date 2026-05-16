@@ -28,9 +28,14 @@ from interfaces.types import (
     ArchiveUpdateInput,
     CheckResult,
     CodeChunk,
+    ControlValidationRun,
     CoverageGap,
     CycleSummary,
     CycleSummaryInput,
+    DetectionCoverage,
+    DetectionRule,
+    DetectionRuleInput,
+    DetectionVerdict,
     DupResult,
     FindingInput,
     FindingRecord,
@@ -46,6 +51,7 @@ from interfaces.types import (
     PolicyCorpusResultInput,
     RegressionTest,
     RegressionTestInput,
+    ReportCard,
     ReproPackage,
     ReproPackageInput,
     TelemetryEvent,
@@ -121,6 +127,12 @@ class MockMCP(MonkeyClawMCP):
         self._patch_statuses: dict[str, dict] = {}
         self._archive_cells: dict[str, ArchiveCell] = {}
         self._idea_components: dict[str, list[IdeaComponent]] = {}
+        # Purple-team stores (purple-team spec §8)
+        self._detection_results: list[DetectionVerdict] = []
+        self._detection_rules: list[DetectionRule] = []
+        self._detection_coverage: dict[str, DetectionCoverage] = {}
+        self._validation_runs: list[ControlValidationRun] = []
+        self._report_cards: list[ReportCard] = []
         self._seed_history()
 
     def _seed_history(self) -> None:
@@ -560,6 +572,85 @@ class MockMCP(MonkeyClawMCP):
 
     def get_policy_corpus_results(self, run_id: str) -> list[PolicyCorpusResult]:
         return [r for r in self._corpus_results if r.run_id == run_id]
+
+    # ------------------------------------------------------------------
+    # Purple team — detection-as-pass scoring (purple-team spec §8)
+    # ------------------------------------------------------------------
+    def log_detection_result(self, verdict: DetectionVerdict) -> str:
+        rid = _new_id("DET")
+        self._detection_results.append(DetectionVerdict(
+            execution_id=verdict.execution_id, session_id=verdict.session_id,
+            zone_id=verdict.zone_id, quadrant=verdict.quadrant,
+            prevention=verdict.prevention, observability=verdict.observability,
+            rule_id=verdict.rule_id, evidence=verdict.evidence))
+        self._log("log_detection_result", {"result_id": rid})
+        return rid
+
+    def get_detection_results(
+        self, zone_id: str | None = None
+    ) -> list[DetectionVerdict]:
+        if zone_id is None:
+            return list(self._detection_results)
+        return [v for v in self._detection_results if v.zone_id == zone_id]
+
+    def log_detection_rule(self, rule: DetectionRuleInput) -> str:
+        rid = _new_id("RULE")
+        self._detection_rules.append(DetectionRule(
+            rule_id=rid, zone_id=rule.zone_id,
+            source_finding_id=rule.source_finding_id, logic=rule.logic,
+            expected_telemetry_signature=rule.expected_telemetry_signature,
+            response_action=rule.response_action, status=rule.status,
+            created_at=_now()))
+        self._log("log_detection_rule", {"rule_id": rid})
+        return rid
+
+    def get_detection_rules(
+        self, zone_id: str | None = None
+    ) -> list[DetectionRule]:
+        if zone_id is None:
+            return list(self._detection_rules)
+        return [r for r in self._detection_rules if r.zone_id == zone_id]
+
+    def upsert_detection_coverage(self, coverage: DetectionCoverage) -> None:
+        self._detection_coverage[coverage.zone_id] = DetectionCoverage(
+            zone_id=coverage.zone_id, coverage_score=coverage.coverage_score,
+            sample_count=coverage.sample_count,
+            updated_at=coverage.updated_at or _now())
+
+    def get_detection_coverage(self, zone_id: str) -> DetectionCoverage | None:
+        return self._detection_coverage.get(zone_id)
+
+    def log_control_validation_run(self, run: ControlValidationRun) -> str:
+        rid = run.run_id or _new_id("CVR")
+        self._validation_runs.append(ControlValidationRun(
+            run_id=rid, kind=run.kind, cases_total=run.cases_total,
+            cases_passed=run.cases_passed, regressions=list(run.regressions),
+            victim_build_id=run.victim_build_id, status=run.status,
+            created_at=run.created_at or _now()))
+        self._log("log_control_validation_run", {"run_id": rid})
+        return rid
+
+    def get_control_validation_runs(
+        self, kind: str | None = None
+    ) -> list[ControlValidationRun]:
+        runs = list(reversed(self._validation_runs))
+        if kind is None:
+            return runs
+        return [r for r in runs if r.kind == kind]
+
+    def log_report_card(self, card: ReportCard) -> str:
+        cid = card.card_id or _new_id("CARD")
+        self._report_cards.append(ReportCard(
+            card_id=cid, generated_at=card.generated_at or _now(),
+            dimensions=list(card.dimensions), summary=card.summary,
+            self_governance=card.self_governance))
+        self._log("log_report_card", {"card_id": cid})
+        return cid
+
+    def get_latest_report_card(self) -> ReportCard | None:
+        if not self._report_cards:
+            return None
+        return self._report_cards[-1]
 
     # ------------------------------------------------------------------
     # Queue / package / patch status transitions
