@@ -576,23 +576,22 @@ class MCPServer(MonkeyClawMCP):
     def mark_repro_queue_status(
         self, finding_id: str, status: str, worker_id: str | None = None
     ) -> None:
-        with self.db.lock():
-            # Silent no-op if the row is absent — callers transition rows they already own.
-            self.db.execute(
-                "UPDATE repro_queue SET status=?, worker_id=COALESCE(?, worker_id) "
-                "WHERE finding_id=?",
-                (status, worker_id, finding_id),
-            )
+        """Transition a repro_queue row through the FSM. Raises
+        IllegalTransition on an illegal edge, KeyError on a missing row."""
+        self.transitions.transition(
+            entity="repro_queue", entity_id=finding_id, to_state=status,
+            actor=worker_id or "mcp", reason="mark_repro_queue_status",
+        )
 
     def mark_repro_package_status(
         self, package_id: str, blue_team_status: str
     ) -> None:
-        with self.db.lock():
-            # Silent no-op if the row is absent — callers transition rows they already own.
-            self.db.execute(
-                "UPDATE repro_packages SET blue_team_status=? WHERE package_id=?",
-                (blue_team_status, package_id),
-            )
+        """Transition a repro package through the REPRO_PKG_FSM."""
+        self.transitions.transition(
+            entity="repro_package", entity_id=package_id,
+            to_state=blue_team_status, actor="blue_pipeline",
+            reason="mark_repro_package_status",
+        )
 
     def log_patch_candidate(self, patch: PatchCandidateInput) -> str:
         pid = _new_id("PATCH")
@@ -611,14 +610,19 @@ class MCPServer(MonkeyClawMCP):
         self, patch_id: str, status: str,
         verification_results: dict | None = None,
     ) -> None:
-        with self.db.lock():
-            # Silent no-op if the row is absent — callers transition rows they already own.
-            vr = json.dumps(verification_results) if verification_results is not None else None
-            self.db.execute(
-                "UPDATE patches SET status=?, verification_results=? "
-                "WHERE patch_id=?",
-                (status, vr, patch_id),
-            )
+        """Transition a patch through the PATCH_FSM, optionally storing
+        verification results."""
+        self.transitions.transition(
+            entity="patch", entity_id=patch_id, to_state=status,
+            actor="patch_verifier", reason="mark_patch_status",
+        )
+        if verification_results is not None:
+            with self.db.lock():
+                self.db.execute(
+                    "UPDATE patches SET verification_results = ? "
+                    "WHERE patch_id = ?",
+                    (json.dumps(verification_results), patch_id),
+                )
 
     # ------------------------------------------------------------------
     # MAP-Elites archive
