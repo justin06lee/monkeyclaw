@@ -297,6 +297,13 @@ class MCPServer(MonkeyClawMCP):
     def push_repro_package(self, package: ReproPackageInput) -> str:
         pid = _new_id("PKG")
         vuln_id = package.vuln_id or _vuln_id()
+        # `mint_vuln_id` on the blue side is a process-local counter, so
+        # separate runs re-mint the same id (MC-2026-0001, ...). The DB's
+        # `vuln_id` column is UNIQUE — re-mint until we land a free one.
+        while self.db.fetchone(
+            "SELECT 1 FROM repro_packages WHERE vuln_id = ?", (vuln_id,)
+        ) is not None:
+            vuln_id = _vuln_id()
         affected_paths = (
             json.dumps([asdict(p) for p in package.affected_paths])
             if package.affected_paths is not None else None
