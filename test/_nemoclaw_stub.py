@@ -38,9 +38,9 @@ def write_stub(
         f'  *recover*) exit {rec_rc} ;;\n'
         '  *gateway-token*) echo "tok-stub"; exit 0 ;;\n'
         f'  *"inspect --container"*) echo "{container}"; exit 0 ;;\n'
-        '  *"net-log"*) echo \'{"host":"evil.test","decision":"deny"}\'; exit 0 ;;\n'
-        '  *"proc-log"*) echo \'{"comm":"curl","pid":42}\'; exit 0 ;;\n'
-        '  *"inference-log"*) echo \'{"route":"cloud","pii_class":"email"}\'; exit 0 ;;\n'
+        '  *"net-log"*) echo \'{"destination_domain":"evil.test","destination_port":443,"method":"GET","payload_size_bytes":0,"blocked":true}\'; exit 0 ;;\n'
+        '  *"proc-log"*) echo \'{"process_name":"curl","pid":42,"blocked":false,"inside_sandbox":true}\'; exit 0 ;;\n'
+        '  *"inference-log"*) echo \'{"routed_to":"cloud","content_preview":"hi","pii_detected":true,"pii_types":["email"]}\'; exit 0 ;;\n'
         '  *) exit 0 ;;\n'
         'esac\n'
     )
