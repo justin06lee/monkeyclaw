@@ -121,6 +121,42 @@ def test_send_alert_persists(real_mcp, tmp_db):
     assert row["severity"] == "high"
 
 
+def test_real_server_telemetry_roundtrip(server):
+    from interfaces.types import TelemetryEventInput
+    eid = server.log_telemetry_event(TelemetryEventInput(
+        session_id="S1", event_type="agent.tool.requested",
+        actor="attacker", action_class="tool", target="Bash"))
+    assert eid
+    tl = server.get_session_timeline("S1")
+    assert len(tl) == 1 and tl[0].event_type == "agent.tool.requested"
+
+
+def test_real_server_model_run_and_judge_vote(server):
+    from interfaces.types import ModelRunInput, JudgeVoteInput
+    rid = server.log_model_run(ModelRunInput(
+        role="red_ideation", model="m", provider="nvidia",
+        input_tokens=5, output_tokens=7, latency_ms=42))
+    assert rid
+    vid = server.log_judge_vote(JudgeVoteInput(
+        lane_id="L1", judge_role="semantic", verdict="confirmed",
+        score=0.9, confidence=0.8, reasoning="r", evidence_turns=[3]))
+    assert vid
+
+
+def test_real_server_policy_corpus_roundtrip(server):
+    from interfaces.types import PolicyCorpusResultInput
+    server.log_policy_corpus_result(PolicyCorpusResultInput(
+        run_id="RUN1", case_id="T01", observed_decision="deny",
+        expected_decision="deny", passed=True, evidence="hook denial"))
+    results = server.get_policy_corpus_results("RUN1")
+    assert len(results) == 1 and results[0].passed is True
+
+
+def test_real_server_conforms_to_protocol_v2(server):
+    from interfaces.mcp_tools import MonkeyClawMCP
+    assert isinstance(server, MonkeyClawMCP)
+
+
 def test_a3_tables_exist(db):
     names = {r[0] for r in db.fetchall(
         "SELECT name FROM sqlite_master WHERE type='table'")}

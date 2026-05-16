@@ -31,6 +31,11 @@ def real_mcp(tmp_db: Database) -> MCPServer:
     return MCPServer(tmp_db)
 
 
+@pytest.fixture
+def server(db: Database) -> MCPServer:
+    return MCPServer(db)
+
+
 @pytest.fixture(autouse=True)
 def _isolate_logs(tmp_path: Path, monkeypatch):
     """Send logs to a per-test directory so we don't pollute logs/ on rerun."""

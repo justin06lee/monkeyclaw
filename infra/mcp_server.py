@@ -27,10 +27,17 @@ from interfaces.types import (
     FindingInput,
     FindingRecord,
     IdeaInput,
+    JudgeVoteInput,
+    ModelRunInput,
+    PatchCandidateInput,
+    PolicyCorpusResult,
+    PolicyCorpusResultInput,
     RegressionTest,
     RegressionTestInput,
     ReproPackage,
     ReproPackageInput,
+    TelemetryEvent,
+    TelemetryEventInput,
 )
 
 LOG = logging.getLogger("monkeyclaw.mcp")
@@ -388,6 +395,148 @@ class MCPServer(MonkeyClawMCP):
                 score=similarity,
             ))
         return out
+
+    # ------------------------------------------------------------------
+    # Telemetry & policy events
+    # ------------------------------------------------------------------
+    def log_telemetry_event(self, event: TelemetryEventInput) -> str:
+        eid = _new_id("EVT")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO telemetry_events(event_id, session_id, event_type, "
+                "timestamp, actor, action_class, target, decision, reason_code, "
+                "data_class, content_hash, excerpt, metadata) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (eid, event.session_id, event.event_type, _now(), event.actor,
+                 event.action_class, event.target, event.decision,
+                 event.reason_code, event.data_class, event.content_hash,
+                 event.excerpt, json.dumps(event.metadata)),
+            )
+        return eid
+
+    def get_session_timeline(self, session_id: str) -> list[TelemetryEvent]:
+        rows = self.db.fetchall(
+            "SELECT * FROM telemetry_events WHERE session_id=? "
+            "ORDER BY timestamp, event_id",
+            (session_id,),
+        )
+        return [TelemetryEvent(
+            event_id=r["event_id"], session_id=r["session_id"],
+            event_type=r["event_type"], timestamp=r["timestamp"],
+            actor=r["actor"], action_class=r["action_class"],
+            target=r["target"], decision=r["decision"],
+            reason_code=r["reason_code"], data_class=r["data_class"],
+            content_hash=r["content_hash"], excerpt=r["excerpt"],
+            metadata=json.loads(r["metadata"]),
+        ) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Model run accounting
+    # ------------------------------------------------------------------
+    def log_model_run(self, run: ModelRunInput) -> str:
+        rid = _new_id("RUN")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO model_runs(run_id, role, model, provider, "
+                "input_tokens, output_tokens, latency_ms, cost_usd, success, "
+                "error, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (rid, run.role, run.model, run.provider, run.input_tokens,
+                 run.output_tokens, run.latency_ms, run.cost_usd,
+                 1 if run.success else 0, run.error, _now()),
+            )
+        return rid
+
+    # ------------------------------------------------------------------
+    # Judge votes
+    # ------------------------------------------------------------------
+    def log_judge_vote(self, vote: JudgeVoteInput) -> str:
+        vid = _new_id("VOTE")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO judge_votes(vote_id, lane_id, judge_role, verdict, "
+                "score, confidence, reasoning, evidence_turns, created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (vid, vote.lane_id, vote.judge_role, vote.verdict, vote.score,
+                 vote.confidence, vote.reasoning,
+                 json.dumps(list(vote.evidence_turns)), _now()),
+            )
+        return vid
+
+    # ------------------------------------------------------------------
+    # Policy corpus
+    # ------------------------------------------------------------------
+    def log_policy_corpus_result(self, result: PolicyCorpusResultInput) -> str:
+        rid = _new_id("PCR")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO policy_corpus_results(result_id, run_id, case_id, "
+                "observed_decision, expected_decision, passed, evidence, notes, "
+                "created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (rid, result.run_id, result.case_id, result.observed_decision,
+                 result.expected_decision, 1 if result.passed else 0,
+                 result.evidence, result.notes, _now()),
+            )
+        return rid
+
+    def get_policy_corpus_results(self, run_id: str) -> list[PolicyCorpusResult]:
+        rows = self.db.fetchall(
+            "SELECT * FROM policy_corpus_results WHERE run_id=? "
+            "ORDER BY created_at, result_id",
+            (run_id,),
+        )
+        return [PolicyCorpusResult(
+            result_id=r["result_id"], run_id=r["run_id"], case_id=r["case_id"],
+            observed_decision=r["observed_decision"],
+            expected_decision=r["expected_decision"],
+            passed=bool(r["passed"]), evidence=r["evidence"],
+            notes=r["notes"], created_at=r["created_at"],
+        ) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Queue / package / patch status transitions
+    # ------------------------------------------------------------------
+    def mark_repro_queue_status(
+        self, finding_id: str, status: str, worker_id: str | None = None
+    ) -> None:
+        with self.db.lock():
+            self.db.execute(
+                "UPDATE repro_queue SET status=?, worker_id=COALESCE(?, worker_id) "
+                "WHERE finding_id=?",
+                (status, worker_id, finding_id),
+            )
+
+    def mark_repro_package_status(
+        self, package_id: str, blue_team_status: str
+    ) -> None:
+        with self.db.lock():
+            self.db.execute(
+                "UPDATE repro_packages SET blue_team_status=? WHERE package_id=?",
+                (blue_team_status, package_id),
+            )
+
+    def log_patch_candidate(self, patch: PatchCandidateInput) -> str:
+        pid = _new_id("PATCH")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO patches(patch_id, vuln_ids, zone_id, approach, "
+                "invasiveness, diff, explanation, side_effects, status, "
+                "created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (pid, json.dumps(patch.vuln_ids), patch.zone_id, patch.approach,
+                 patch.invasiveness, patch.diff, patch.explanation,
+                 patch.side_effects, "proposed", _now()),
+            )
+        return pid
+
+    def mark_patch_status(
+        self, patch_id: str, status: str,
+        verification_results: dict | None = None,
+    ) -> None:
+        with self.db.lock():
+            self.db.execute(
+                "UPDATE patches SET status=?, verification_results=? "
+                "WHERE patch_id=?",
+                (status, json.dumps(verification_results or {}), patch_id),
+            )
 
     # ------------------------------------------------------------------
     # Notifications
