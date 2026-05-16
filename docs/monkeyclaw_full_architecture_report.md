@@ -330,10 +330,21 @@ startup janitor reclaims orphaned `mc-patch-*` worktrees.
 Purple is neither attacker nor patcher — it scores defense behavior.
 `PurplePipeline.run` executes once per cycle:
 
-1. **Derived-evidence adapter** (`derived_adapter.py`) — infers
-   `TelemetryEvent` and `ControlDecision` records from monitoring-harness
-   side-effects (network/fs/process/inference logs). It is the dense producer
-   of the `telemetry_events` table.
+1. **Telemetry adapter** — materialises `TelemetryEvent` and
+   `ControlDecision` records behind the `interfaces/control_telemetry.py`
+   contract. Two interchangeable implementations, selected by
+   `purple.telemetry_adapter` (default `derived`):
+   - **Derived-evidence adapter** (`derived_adapter.py`) — infers records
+     from monitoring-harness side-effects (network/fs/process/inference
+     logs). The default, zero-credential producer of `telemetry_events`.
+   - **Native event adapter** (`native_event_adapter.py`) — tails the
+     OpenClaw `purple-team-telemetry` plugin's hook-event JSONL
+     (`purple_team/openclaw_plugin/`, 17 lifecycle hooks, 4 of them decision
+     hooks) and maps each line to the same records, at higher fidelity. The
+     tail is offset-resumable; malformed lines and unknown hooks are skipped
+     and counted, never aborting ingest. Selected with
+     `telemetry_adapter: native` plus `native_event_source` /
+     `native_offset_store`. The oracle is identical for either adapter.
 2. **Detection oracle** (`detection_oracle.py`) — the core of
    detection-as-pass. It scores each execution on two axes:
    - **prevention** — `blocked` vs `succeeded` (derived from the red verdict).

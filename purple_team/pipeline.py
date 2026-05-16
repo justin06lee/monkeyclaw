@@ -34,6 +34,7 @@ from purple_team.derived_adapter import DerivedEvidenceAdapter
 from purple_team.detection_oracle import DetectionOracle
 from purple_team.detection_synthesizer import DetectionSynthesizer
 from purple_team.feedback_router import FeedbackRouter
+from purple_team.native_event_adapter import NativeEventAdapter
 from purple_team.report_card import ReportCardGenerator
 from purple_team.self_governance import AgentProfile, SelfGovernance
 from red_team.policy_corpus import PolicyCorpusCase
@@ -75,9 +76,21 @@ class PurplePipeline:
         case_runner: CaseRunner,
         full_sweep_every: int = 10,
         self_governance_enabled: bool = True,
+        telemetry_adapter: str = "derived",
+        native_event_source: str | None = None,
+        native_offset_store: str | None = None,
     ) -> None:
         self.mcp = mcp
-        self.adapter = DerivedEvidenceAdapter()
+        # Telemetry adapter selection (native-event-adapter spec §8). The
+        # derived adapter stays the default; "native" tails the OpenClaw
+        # hook-event JSONL. Both satisfy the same ControlTelemetryAdapter
+        # contract, so the oracle below never changes.
+        self._native_event_source = native_event_source
+        self._native_offset_store = native_offset_store
+        if telemetry_adapter == "native":
+            self.adapter = NativeEventAdapter()
+        else:
+            self.adapter = DerivedEvidenceAdapter()
         self.oracle = DetectionOracle()
         self.coverage = CoverageModel(mcp)
         self.validator = ControlValidator(
@@ -90,7 +103,42 @@ class PurplePipeline:
         self.full_sweep_every = max(1, full_sweep_every)
         self.self_governance_enabled = self_governance_enabled
 
+    def _refresh_native_telemetry(self) -> None:
+        """When the native adapter is active, tail the OpenClaw hook-event
+        JSONL from the persisted offset before scoring this cycle. Offset is
+        stored to make the tail resumable across cycles (spec §8). A missing
+        source degrades to no events — the oracle handles that as unknown."""
+        if not isinstance(self.adapter, NativeEventAdapter):
+            return
+        if not self._native_event_source:
+            LOG.info("purple: native adapter selected but no event source")
+            return
+        import os
+
+        since = 0
+        store = self._native_offset_store
+        if store and os.path.exists(os.path.expanduser(store)):
+            try:
+                with open(os.path.expanduser(store), encoding="utf-8") as fh:
+                    since = int((fh.read() or "0").strip() or 0)
+            except (ValueError, OSError):
+                since = 0
+        result = self.adapter.ingest(self._native_event_source, since)
+        if store:
+            try:
+                with open(os.path.expanduser(store), "w",
+                          encoding="utf-8") as fh:
+                    fh.write(str(result.offset))
+            except OSError as e:  # noqa: BLE001
+                LOG.warning("purple: could not persist native offset: %s", e)
+        if result.skipped or result.unknown_hooks:
+            LOG.info(
+                "purple: native ingest — %d malformed, %d unknown-hook lines",
+                result.skipped, result.unknown_hooks)
+
     def run(self, ctx: CycleContext) -> PurpleCycleResult:
+        # 0: when native, ingest the OpenClaw hook-event JSONL first.
+        self._refresh_native_telemetry()
         # 1-3: materialise telemetry, score, update coverage.
         all_verdicts: list[DetectionVerdict] = []
         for execution, judgment in ctx.executions:
