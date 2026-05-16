@@ -990,9 +990,47 @@ _PAGE = r"""<!doctype html>
   a{color:inherit;}
 
   /* ---- header — just the mark, centered, blended into the page ---- */
-  header{display:flex; justify-content:center; padding:60px 28px 24px;}
-  header img{height:340px; width:auto; max-width:94%;
-    filter:drop-shadow(0 0 56px rgba(245,166,35,.24));}
+  header{display:flex; justify-content:center; padding:34px 28px 6px;}
+  header img{height:116px; width:auto; max-width:62%;
+    filter:drop-shadow(0 0 30px rgba(245,166,35,.22));}
+
+  /* ---- sticky section nav + live status pill ---- */
+  nav.secnav{position:sticky; top:0; z-index:30;
+    background:rgba(11,11,13,.86); backdrop-filter:blur(10px);
+    -webkit-backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--line);}
+  nav.secnav .navinner{max-width:1240px; margin:0 auto; padding:8px 24px;
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap;}
+  nav.secnav .links{display:flex; gap:1px; flex-wrap:wrap; flex:1;}
+  nav.secnav a{font:600 10.5px/1 var(--mono); letter-spacing:.11em;
+    text-transform:uppercase; color:var(--faint); text-decoration:none;
+    padding:7px 9px; border-radius:6px;
+    transition:color .15s,background .15s;}
+  nav.secnav a:hover{color:var(--dim); background:var(--panel);}
+  nav.secnav a.on{color:var(--accent);}
+  .navstat{display:flex; align-items:center; gap:7px; white-space:nowrap;
+    font:600 11px/1 var(--mono); color:var(--dim);
+    padding:6px 11px; border:1px solid var(--line); border-radius:7px;}
+  .navstat .dot{flex:none; width:8px; height:8px; border-radius:50%;
+    background:var(--ok); animation:pulse 1.9s infinite;}
+  .navstat.idle .dot{background:var(--faint); animation:none;}
+  .navstat b{color:var(--accent); font-weight:700;}
+
+  /* ---- metric-card sparkline + delta ---- */
+  .spark{display:block; width:100%; height:22px; margin-top:10px;}
+  .spark polyline{fill:none; stroke:var(--accent); stroke-width:1.5;
+    stroke-linejoin:round; stroke-linecap:round;}
+  .metric .v .dlt{font:700 13px/1 var(--mono); margin-left:7px;}
+  .dlt.up{color:var(--ok);} .dlt.dn{color:var(--crit);}
+
+  /* ---- stale-connection notice ---- */
+  .stale{position:fixed; left:50%; bottom:22px; transform:translateX(-50%);
+    z-index:60; display:none; padding:9px 18px; border-radius:9px;
+    background:var(--crit); color:#0b0b0d;
+    box-shadow:0 10px 34px rgba(0,0,0,.55);
+    font:700 11.5px/1.4 var(--mono); letter-spacing:.04em;}
+  .stale.show{display:block;}
+
   @keyframes pulse{
     0%{box-shadow:0 0 0 0 rgba(54,211,147,.55);}
     70%{box-shadow:0 0 0 12px rgba(54,211,147,0);}
@@ -1000,7 +1038,8 @@ _PAGE = r"""<!doctype html>
   }
 
   /* ---- sections ---- */
-  section{margin-top:62px; opacity:0; transform:translateY(14px);
+  section{margin-top:62px; scroll-margin-top:62px; opacity:0;
+    transform:translateY(14px);
     animation:rise .6s cubic-bezier(.2,.7,.2,1) forwards;}
   section:nth-of-type(1){margin-top:40px;}
   section:nth-of-type(2){animation-delay:.06s;}
@@ -1239,9 +1278,30 @@ _PAGE = r"""<!doctype html>
 
 <header><img src="/logo.png" alt="MonkeyClaw"></header>
 
+<nav class="secnav"><div class="navinner">
+  <div class="links">
+    <a href="#sec-overview">Overview</a>
+    <a href="#sec-attack">Attack</a>
+    <a href="#sec-agents">Agents</a>
+    <a href="#sec-red">Red</a>
+    <a href="#sec-repro">Repro</a>
+    <a href="#sec-blue">Blue</a>
+    <a href="#sec-search">Search</a>
+    <a href="#sec-judge">Judgment</a>
+    <a href="#sec-evidence">Evidence</a>
+    <a href="#sec-sandbox">Sandbox</a>
+    <a href="#sec-cost">Cost</a>
+    <a href="#sec-purple">Purple</a>
+  </div>
+  <div class="navstat idle" id="navstat"><span class="dot"></span><span
+    id="navtxt">connecting…</span></div>
+</div></nav>
+
+<div class="stale" id="stale"></div>
+
 <div class="wrap">
 
-  <section>
+  <section id="sec-overview">
     <div class="kicker">Overview</div>
     <h2>Run status</h2>
     <div class="desc">What the agent is doing right now, and the run reduced
@@ -1252,7 +1312,7 @@ _PAGE = r"""<!doctype html>
     <div class="metrics" id="metrics"></div>
   </section>
 
-    <section>
+    <section id="sec-attack">
       <div class="kicker">Attack surface</div>
     <h2>Coverage heatmap</h2>
     <div class="desc">All 18 attack-surface zones. Greener means better tested;
@@ -1260,7 +1320,7 @@ _PAGE = r"""<!doctype html>
     <div class="heat" id="zones"></div>
     </section>
 
-    <section>
+    <section id="sec-agents">
       <div class="kicker">Agents</div>
       <h2>Live LLM &amp; tool stream</h2>
       <div class="desc">Every deployed agent's reasoning, turn by turn — each
@@ -1280,7 +1340,7 @@ _PAGE = r"""<!doctype html>
       </div>
     </section>
 
-    <section>
+    <section id="sec-red">
     <div class="kicker">Red team</div>
     <h2>Ideas &amp; findings</h2>
     <div class="desc">The freshest Nemotron-generated attack ideas on the left,
@@ -1294,7 +1354,7 @@ _PAGE = r"""<!doctype html>
     </div>
   </section>
 
-  <section>
+  <section id="sec-repro">
     <div class="kicker">Reproduction</div>
     <h2>Repro pipeline</h2>
     <div class="desc">Findings handed to the repro pipeline, and the minimal
@@ -1307,7 +1367,7 @@ _PAGE = r"""<!doctype html>
     </div>
   </section>
 
-  <section>
+  <section id="sec-blue">
     <div class="kicker">Blue team</div>
     <h2>Patches &amp; regression</h2>
     <div class="desc">Candidate fixes generated for confirmed vulnerabilities,
@@ -1320,7 +1380,7 @@ _PAGE = r"""<!doctype html>
     </div>
   </section>
 
-  <section>
+  <section id="sec-search">
     <div class="kicker">Search intelligence</div>
     <h2>How the search is learning</h2>
     <div class="desc">The MAP-Elites archive preserves diverse elite attacks;
@@ -1335,7 +1395,7 @@ _PAGE = r"""<!doctype html>
     </div>
   </section>
 
-  <section>
+  <section id="sec-judge">
     <div class="kicker">Judgment quality</div>
     <h2>Appeals &amp; attack Elo</h2>
     <div class="desc">Frontier-model appeal outcomes and per-zone attack Elo
@@ -1348,7 +1408,7 @@ _PAGE = r"""<!doctype html>
     </div>
   </section>
 
-  <section>
+  <section id="sec-evidence">
     <div class="kicker">Evidence</div>
     <h2>Telemetry timeline</h2>
     <div class="desc">Tool requests, file / network / process events, MCP calls
@@ -1361,7 +1421,7 @@ _PAGE = r"""<!doctype html>
     </div>
   </section>
 
-  <section>
+  <section id="sec-sandbox">
     <div class="kicker">Sandbox</div>
     <h2>Provisioned runs</h2>
     <div class="desc">Recent sandbox/victim sessions, their deterministic
@@ -1369,7 +1429,7 @@ _PAGE = r"""<!doctype html>
     <div class="card"><div class="scroll" id="sandboxRuns"></div></div>
   </section>
 
-  <section>
+  <section id="sec-cost">
     <div class="kicker">Cost</div>
     <h2>Model usage</h2>
     <div class="desc">Token spend, latency and success rate for every model
@@ -1377,7 +1437,7 @@ _PAGE = r"""<!doctype html>
     <div class="card"><div id="models" class="heat"></div></div>
   </section>
 
-  <section>
+  <section id="sec-purple">
     <div class="kicker">Purple</div>
     <h2>Detection coverage &amp; report card</h2>
     <div class="desc">Joint attack-coverage x detection-coverage per zone, the
@@ -1419,8 +1479,51 @@ function trunc(s,n){s=esc(s);return s.length>n?s.slice(0,n)+"…":s;}
 function num(n){return (n||0).toLocaleString();}
 function badge(txt,col){return `<span class="badge" style="background:${col};`
   +`color:#0b0b0d">${esc(txt)}</span>`;}
-function set(id,html){const el=document.getElementById(id);if(el)el.innerHTML=html;}
+// Diff-render: skip the DOM write when a section's markup is unchanged, and
+// preserve scroll position when it is not — kills the 5s flicker / jump.
+// HTML is parsed into a fragment (scripts inert) rather than assigned raw.
+const _LAST={}, _RANGE=document.createRange();
+function paint(el,html){
+  el.replaceChildren(_RANGE.createContextualFragment(html));
+}
+function set(id,html){
+  const el=document.getElementById(id);
+  if(!el||_LAST[id]===html)return;
+  _LAST[id]=html;
+  const sc=el.closest('.scroll');
+  const top=sc?sc.scrollTop:0;
+  paint(el,html);
+  if(sc&&sc.scrollTop!==top)sc.scrollTop=top;
+}
 async function j(u){try{return await (await fetch(u)).json();}catch(e){return null;}}
+
+// Relative time — "2m ago"; falls back to the absolute stamp if unparseable.
+function rel(s){
+  if(!s)return'—';
+  const t=Date.parse(String(s).replace(' ','T'));
+  if(isNaN(t))return ts(s);
+  let d=(Date.now()-t)/1000; if(d<0)d=0;
+  if(d<60)return Math.floor(d)+'s ago';
+  if(d<3600)return Math.floor(d/60)+'m ago';
+  if(d<86400)return Math.floor(d/3600)+'h ago';
+  return Math.floor(d/86400)+'d ago';
+}
+
+// Inline SVG sparkline — single stroked polyline, no axes/fill (rec #5).
+function spark(vals,col){
+  vals=(vals||[]).filter(v=>v!=null);
+  if(vals.length<2)return'';
+  const w=100,h=22,p=2;
+  const mx=Math.max(...vals),mn=Math.min(...vals),rng=(mx-mn)||1;
+  const pts=vals.map((v,i)=>{
+    const x=p+i*(w-2*p)/(vals.length-1);
+    const y=h-p-((v-mn)/rng)*(h-2*p);
+    return x.toFixed(1)+','+y.toFixed(1);
+  }).join(' ');
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">`
+    +`<polyline points="${pts}" vector-effect="non-scaling-stroke"`
+    +(col?` style="stroke:${col}"`:'')+`/></svg>`;
+}
 
 function renderLive(s){
   const live=document.getElementById('live');
@@ -1456,25 +1559,35 @@ function renderFlow(s){
     +(i<nodes.length-1?'<div class="arrow">→</div>':'')).join(''));
 }
 
-function renderMetrics(s){
+function renderMetrics(s,cycles){
   if(!s){set('metrics','');return;}
   const cov=Math.round((s.coverage||0)*100);
   const reg=Math.round((s.regression_rate||0)*100);
+  // cycle_log arrives newest-first — reverse for a chronological series.
+  const cyc=(cycles||[]).slice().reverse();
+  const confSeries=cyc.map(c=>c.vulns_confirmed||0);
+  const tokSeries=cyc.map(c=>c.total_tokens_used||0);
+  const lastConf=confSeries.length?confSeries[confSeries.length-1]:0;
+  const dlt=lastConf>0
+    ? ` <span class="dlt up">&#9650;${lastConf}</span>` : '';
   const m=[
-    [s.cycles||0,"Cycles completed",""],
-    [`${s.confirmed||0}`,"Confirmed findings",`${s.suspicious||0} suspicious`],
+    [`${s.cycles||0}`,"Cycles completed","",''],
+    [`${s.confirmed||0}${dlt}`,"Confirmed findings",
+      `${s.suspicious||0} suspicious · +${lastConf} last cycle`,
+      spark(confSeries,'var(--crit)')],
     [`${s.patches_verified||0}<small> / ${s.patches||0}</small>`,
-      "Patches verified",`${s.patches_open||0} still open`],
+      "Patches verified",`${s.patches_open||0} still open`,''],
     [`${reg}<small>%</small>`,"Regression pass rate",
-      `${s.regression_pass||0} / ${s.regression_tests||0} tests`],
-    [`${cov}<small>%</small>`,"Mean zone coverage",`${s.zone_count||0} zones`],
+      `${s.regression_pass||0} / ${s.regression_tests||0} tests`,''],
+    [`${cov}<small>%</small>`,"Mean zone coverage",`${s.zone_count||0} zones`,''],
     [`$${(s.cost_usd||0).toFixed(2)}`,"Model cost",
-      `${num(s.tokens_used)} tokens`],
+      `${num(s.tokens_used)} tokens`,spark(tokSeries,'var(--accent)')],
   ];
     set('metrics',m.map(x=>
       `<div class="metric"><div class="v">${x[0]}</div>`
       +`<div class="l">${x[1]}</div>`
-      +(x[2]?`<div class="sub">${esc(x[2])}</div>`:'')+`</div>`).join(''));
+      +(x[2]?`<div class="sub">${esc(x[2])}</div>`:'')
+      +(x[3]||'')+`</div>`).join(''));
   }
 
   // ---- live LLM & tool stream --------------------------------------------
@@ -1728,7 +1841,7 @@ function renderMetrics(s){
         +`background:${col}"></i></div>
       <div class="ft"><span>${x.vulns_open||0} open · `
         +`${x.unique_ideas_tried||0} ideas</span>`
-      +`<span>${x.last_tested_at?ts(x.last_tested_at):'never tested'}</span></div>
+      +`<span>${x.last_tested_at?rel(x.last_tested_at):'never tested'}</span></div>
     </div>`;}).join(''));
 }
 
@@ -1945,7 +2058,7 @@ function renderSandboxRuns(rows){
         <span class="chip">${esc(x.mode||'mock')}</span>
         <span class="chip">${x.deterministic?'deterministic':'best effort'}</span>
         ${x.patch_applied?'<span class="chip">patched</span>':''}</div>
-      <div class="mt">${esc(x.instance_id||'')} · ${ts(x.provisioned_at)}</div>
+      <div class="mt">${esc(x.instance_id||'')} · ${rel(x.provisioned_at)}</div>
     </div>`;}).join(''));
 }
 
@@ -2034,11 +2147,66 @@ function renderPurpleTimeline(t){
       +`</div></div>`).join(''));
 }
 
+// persistent live status pill in the sticky nav — the at-a-glance scoreboard
+function renderNav(s){
+  const box=document.getElementById('navstat');
+  const txt=document.getElementById('navtxt');
+  if(!box||!txt)return;
+  let str,idle;
+  if(s&&s.current){
+    idle=false;
+    str=`cycle ${s.current.cycle} running · ${s.confirmed||0} confirmed`
+      +` · $${(s.cost_usd||0).toFixed(2)}`;
+  }else if(s){
+    idle=true;
+    str=`idle · ${s.cycles||0} cycles · ${s.confirmed||0} confirmed`
+      +` · $${(s.cost_usd||0).toFixed(2)}`;
+  }else return;
+  if(txt.textContent!==str)txt.textContent=str;
+  box.classList.toggle('idle',idle);
+}
+
+// highlight the nav link for whichever section is in view
+function initNav(){
+  const links={};
+  document.querySelectorAll('nav.secnav a').forEach(a=>{
+    links[a.getAttribute('href').slice(1)]=a;
+  });
+  const obs=new IntersectionObserver(es=>{
+    es.forEach(e=>{
+      if(!e.isIntersecting)return;
+      Object.values(links).forEach(a=>a.classList.remove('on'));
+      const a=links[e.target.id];
+      if(a)a.classList.add('on');
+    });
+  },{rootMargin:'-58px 0px -62% 0px'});
+  document.querySelectorAll('section[id]').forEach(s=>obs.observe(s));
+}
+
+// stale-data notice — shown when /api/all has not answered in a while
+let LAST_OK=Date.now();
+function checkStale(){
+  const el=document.getElementById('stale');
+  if(!el)return;
+  const age=(Date.now()-LAST_OK)/1000;
+  if(age>13){
+    el.textContent='connection lost · last update '+Math.floor(age)+'s ago';
+    el.classList.add('show');
+  }else el.classList.remove('show');
+}
+
 async function tick(){
   const d=await j('/api/all');
-  if(!d){document.getElementById('liveText').textContent=
-    "no data — knowledge base unreachable";return;}
-    renderLive(d.status); renderFlow(d.status); renderMetrics(d.status);
+  if(!d){
+    const lt=document.getElementById('liveText');
+    if(lt)lt.textContent="no data — knowledge base unreachable";
+    return;                       // LAST_OK left stale -> notice appears
+  }
+  LAST_OK=Date.now();
+  const st=document.getElementById('stale');
+  if(st)st.classList.remove('show');
+  renderNav(d.status);
+  renderLive(d.status); renderFlow(d.status); renderMetrics(d.status,d.cycles);
     renderAgents(d.agents);
     renderZones(d.zones); renderFindings(d.findings); renderIdeas(d.ideas);
   renderRepro(d.repro); renderPackages(d.packages); renderPatches(d.patches);
@@ -2054,7 +2222,8 @@ async function tick(){
   document.getElementById('stamp').textContent=
     'live · updated '+new Date().toLocaleTimeString();
 }
-tick(); setInterval(tick,5000);
+initNav();
+tick(); setInterval(tick,5000); setInterval(checkStale,1000);
 </script>
 </body></html>
 """
