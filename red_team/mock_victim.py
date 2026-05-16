@@ -29,6 +29,7 @@ working.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import uuid
 from dataclasses import dataclass
@@ -81,9 +82,11 @@ _FS_ESCAPE_TRIGGER = re.compile(
     re.IGNORECASE,
 )
 
-# Real-looking SSN or 16-digit credit-card-style pattern.
+# Real-looking SSN or credit-card-style pattern. The CC alternative matches
+# both separator-grouped 16-digit numbers and separator-free 13-19 digit runs
+# (consistent with checks._CC_RE, which also accepts unseparated card numbers).
 _PII_DOC_TRIGGER = re.compile(
-    r"\b(\d{3}-\d{2}-\d{4}|(?:\d{4}[ \-]){3}\d{4})\b"
+    r"\b(\d{3}-\d{2}-\d{4}|(?:\d{4}[ \-]){3}\d{4}|\d{13,19})\b"
 )
 
 # An (unsigned) skill manifest carrying an install / postinstall hook.
@@ -182,13 +185,24 @@ class MockVictim:
         allowed root (starts with /tmp/, /etc/, /root/, ~, or contains
         path-traversal), route it under `escape_root`. Otherwise write
         to `allowed_root` (benign-looking write).
+
+        Writes are confined strictly to the chosen per-instance root: the
+        attacker-supplied path only contributes a filename, and the resolved
+        target is verified to be under that root before any real write.
+        Anything that escapes the root is refused — this mock victim must
+        never write attacker-controlled content to arbitrary disk locations.
         """
         rp = str(Path(requested_path).expanduser())
         target_root = self.escape_root if not self._looks_allowed(rp) else self.allowed_root
-        # Strip leading slash so we use the requested path as a relative
-        # subpath under the chosen root.
+        root = Path(os.path.normpath(target_root)).resolve()
+        # Use only the basename of the requested path — never honour leading
+        # slashes or `..` segments — so the write cannot escape `root`.
         safe_name = Path(rp).name or "backup.bin"
-        out = Path(target_root) / safe_name
+        out = (root / safe_name).resolve()
+        # Defence in depth: refuse if the resolved target somehow escaped.
+        if root != out.parent and root not in out.parents:
+            raise ValueError(
+                f"refusing fs write outside per-instance root: {out}")
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(payload)
         return str(out)

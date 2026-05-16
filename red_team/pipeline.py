@@ -24,7 +24,6 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from dataclasses import dataclass
 
 from infra.bootstrap import Runtime
 from infra.monitoring_harness import MonitoringHarness
@@ -35,7 +34,6 @@ from interfaces.nemoclaw_policy import nemoclaw_policy_config
 from interfaces.provisioning import VictimInstance
 from interfaces.types import (
     CoverageGap,
-    CycleSummaryInput,
     IdeaInput,
     IdeaObject,
     LaneResult,
@@ -45,12 +43,17 @@ from interfaces.types import (
 from red_team.archive import EliteArchive
 from red_team.dedup import deduplicate_and_log
 from red_team.execution_agent import ExecutionAgent, ExecutionConfig
-from red_team.ideation import IdeationConfig, IdeationEngine
+from red_team.ideation import IdeationConfig, IdeationEngine, tournament_ideas
 from red_team.judge import Judge, JudgeConfig
 from red_team.priority import score_ideas
 from red_team.progress import score_progress, search_score
 from red_team.routing import route_judgment
 from red_team.strategist import Strategist
+from red_team.tournament import (
+    ModelTournament,
+    ModelTournamentConfig,
+    load_tournament_config,
+)
 
 LOG = logging.getLogger("monkeyclaw.red.pipeline")
 
@@ -70,13 +73,6 @@ def policy_from_config(cfg: MonkeyClawConfig) -> PolicyConfig:
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class _PerIdeaContext:
-    """We need to remember each idea by ID to pair lane results with its
-    source on judgment. Built when generate_ideas runs, consulted in judge()."""
-    idea: IdeaObject
 
 
 class Pipeline:
@@ -124,6 +120,19 @@ class Pipeline:
             tier2_confidence_threshold=self.cfg.judgment.tier2_confidence_threshold,
         )
         self.ideation = IdeationEngine(self.llm, self.mcp, ideation_cfg)
+        self._ideation_cfg = ideation_cfg
+        # B9 — model tournament. Disabled unless `red_team.model_tournament`
+        # is configured; when enabled, extra entrants also ideate per zone.
+        # A malformed tournament YAML must not crash pipeline construction —
+        # fall back to a disabled (default) config on any load failure.
+        try:
+            tournament_cfg = load_tournament_config()
+        except Exception as e:  # noqa: BLE001
+            LOG.warning(
+                "tournament config failed to load (%s) — tournament disabled",
+                e)
+            tournament_cfg = ModelTournamentConfig()
+        self.tournament = ModelTournament(tournament_cfg)
         self.strategist = Strategist(self.llm)
         self.execution = ExecutionAgent(self.llm, execution_cfg)
         self.judger = Judge(self.llm, self.policy, judge_cfg, mcp=self.mcp)
@@ -141,6 +150,16 @@ class Pipeline:
         # call (orchestrator updates the summary itself, but Person 2 owns
         # the deduplicated/executed counts).
         self._last_cycle_metrics: dict[str, int] = {}
+
+    # ------------------------------------------------------------------
+    def _llm_for_entrant(self, entrant) -> object:
+        """Resolve an LLM client for one model-tournament entrant."""
+        return make_llm(
+            backend=entrant.provider or None,
+            model=entrant.model or None,
+            role=entrant.role or None,
+            cfg=self.cfg,
+        )
 
     # ------------------------------------------------------------------
     # generate_ideas
@@ -165,6 +184,14 @@ class Pipeline:
             new_ideas = self.ideation.generate_for_zone(gap, cycle_id)
             ideas_generated += len(new_ideas)
             candidates.extend(new_ideas)
+            # B9 — when the model tournament is enabled, extra entrant models
+            # ideate the same zone; their ideas join the pool for dedup +
+            # priority. A disabled tournament returns [] (no-op).
+            t_ideas = tournament_ideas(
+                self.tournament, self._llm_for_entrant, self.mcp, gap,
+                cycle_id, self._ideation_cfg)
+            ideas_generated += len(t_ideas)
+            candidates.extend(t_ideas)
             # Estimate when we have enough — dedup typically halves the
             # pool, so chase 2.5× n_lanes before stopping.
             if len(candidates) >= max(int(n_lanes * 2.5), n_lanes + 2):
@@ -182,14 +209,15 @@ class Pipeline:
         ideas_deduped = sum(1 for o in outcomes if not o.keep)
 
         # Retry loop — if dedup chopped us below n_lanes, generate "unlike"
-        # ideas. Bounded by retry_max.
+        # ideas. Bounded by retry_max. Walk through `gaps` on each retry so we
+        # widen zone diversity instead of repeatedly mining `gaps[0]`.
         attempts = 0
         while (
             sum(1 for o in outcomes if o.keep) < n_lanes
             and attempts < self.cfg.ideation.retry_max
         ):
+            unlike_zone = gaps[attempts % len(gaps)]
             attempts += 1
-            unlike_zone = gaps[0]
             extra = self.ideation.generate_for_zone(unlike_zone, cycle_id)
             ideas_generated += len(extra)
             if not extra:

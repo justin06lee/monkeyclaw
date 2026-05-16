@@ -47,43 +47,53 @@ def boot(config_path: str | Path | None = None,
     if use_mock_provisioner:
         p = Path(db_path)
         db_path = str(p.with_name(f"{p.stem}-mock{p.suffix}"))
+    # A genuine DB-open failure (corrupt file, bad schema) must surface here
+    # rather than be masked — let Database() raise.
     db = Database(db_path)
     # Persistent memory — surface what carried over from prior runs so the
     # continuity is visible (the SQLite knowledge base survives restarts).
+    # Only the cosmetic banner counts are wrapped: a failure here is not fatal.
     try:
-        nf = db.fetchone("SELECT COUNT(*) AS n FROM findings")
-        nt = db.fetchone(
-            "SELECT COUNT(*) AS n FROM regression_tests WHERE deprecated = 0")
-        nz = db.fetchone("SELECT COUNT(*) AS n FROM surface_zones")
-        print(f"[memory] Loaded {nf['n'] if nf else 0} findings, "
-              f"{nt['n'] if nt else 0} regression tests, "
-              f"{nz['n'] if nz else 0} zones from persistent memory "
+        row = db.fetchone(
+            "SELECT (SELECT COUNT(*) FROM findings) AS nf, "
+            "(SELECT COUNT(*) FROM regression_tests WHERE deprecated = 0) AS nt, "
+            "(SELECT COUNT(*) FROM surface_zones) AS nz")
+        print(f"[memory] Loaded {row['nf'] if row else 0} findings, "
+              f"{row['nt'] if row else 0} regression tests, "
+              f"{row['nz'] if row else 0} zones from persistent memory "
               f"({db_path})", flush=True)
     except Exception as e:  # noqa: BLE001
-        LOG.warning("could not read persistent memory: %s", e)
+        LOG.warning("could not read persistent-memory banner counts: %s", e)
     dispatcher = AlertDispatcher(cfg.notifications)
-    mcp = MCPServer(db, alert_sink=dispatcher.send)
-    mcp.set_code_context(
-        backend=cfg.code_context.backend,
-        argyph_binary=cfg.code_context.argyph_binary,
-        repo_path=cfg.nemoclaw.repo_path,
-    )
-    if use_mock_provisioner:
-        provisioner: VictimProvisioner = MockProvisioner()
-    else:
-        provisioner = NemoClawProvisioner(
-            cli_binary=cfg.nemoclaw.cli_binary,
-            sandbox_name=cfg.nemoclaw.sandbox_name,
-            sandbox_namespace=cfg.nemoclaw.sandbox_namespace,
-            clean_snapshot=cfg.nemoclaw.clean_snapshot,
-            gateway_endpoint=cfg.nemoclaw.gateway_endpoint,
-            gateway_container=cfg.nemoclaw.gateway_container,
-            snapshot_restore_timeout_s=cfg.nemoclaw.snapshot_restore_timeout_s,
-            recover_timeout_s=cfg.nemoclaw.recover_timeout_s,
+    # If anything below fails, the dispatcher's httpx.Client would leak —
+    # close it on a failed boot.
+    try:
+        mcp = MCPServer(db, alert_sink=dispatcher.send)
+        mcp.set_code_context(
+            backend=cfg.code_context.backend,
+            argyph_binary=cfg.code_context.argyph_binary,
+            repo_path=cfg.nemoclaw.repo_path,
         )
-    set_provisioner(provisioner)
-    # A8 — one PolicyEnforcer per run; the orchestrator/CLI threads it into
-    # the lane scheduler and per-lane harnesses.
-    enforcer = PolicyEnforcer(cfg.guardrails)
+        if use_mock_provisioner:
+            provisioner: VictimProvisioner = MockProvisioner()
+        else:
+            provisioner = NemoClawProvisioner(
+                cli_binary=cfg.nemoclaw.cli_binary,
+                sandbox_name=cfg.nemoclaw.sandbox_name,
+                sandbox_namespace=cfg.nemoclaw.sandbox_namespace,
+                clean_snapshot=cfg.nemoclaw.clean_snapshot,
+                gateway_endpoint=cfg.nemoclaw.gateway_endpoint,
+                gateway_container=cfg.nemoclaw.gateway_container,
+                snapshot_restore_timeout_s=cfg.nemoclaw.snapshot_restore_timeout_s,
+                recover_timeout_s=cfg.nemoclaw.recover_timeout_s,
+            )
+        set_provisioner(provisioner)
+        # A8 — one PolicyEnforcer per run; the orchestrator/CLI threads it
+        # into the lane scheduler and per-lane harnesses.
+        enforcer = PolicyEnforcer(cfg.guardrails)
+    except Exception:
+        dispatcher.close()
+        db.close()
+        raise
     return Runtime(cfg=cfg, db=db, mcp=mcp, provisioner=provisioner,
                     alert_dispatcher=dispatcher, enforcer=enforcer)

@@ -377,7 +377,10 @@ class PatchCandidate:
     diff: str
     explanation: str
     side_effects: str
-    status: str  # "proposed" | "testing" | "approved" | "rejected"
+    # Lifecycle of a patch candidate. Code writes "proposed" (on generation),
+    # then "verified" / "approved" / "rejected" after verification; "testing"
+    # is the in-flight state. Mirrors schema.sql patches.status.
+    status: str  # "proposed" | "testing" | "approved" | "rejected" | "verified"
     # --- spec C5 candidate metadata (additive, optional) ---------------
     # `expected_tests`: human-readable test scenarios this patch should
     # satisfy. `confidence`: generator's self-rated confidence in [0, 1].
@@ -595,6 +598,26 @@ class ArchiveCell:
     updated_at: str
 
 
+@dataclass
+class ArchiveUpdateInput:
+    """Write-side payload for update_archive_cell."""
+
+    zone_id: str
+    interaction_style: str
+    response_movement: str
+    idea_id: str
+    score: float
+
+
+@dataclass
+class IdeaComponentInput:
+    """Write-side payload for store_idea_components — server fills component_id."""
+
+    idea_id: str
+    component_type: str
+    content: str
+
+
 # ---------------------------------------------------------------------------
 # Judge votes (Person B — multi-judge ensemble)
 # ---------------------------------------------------------------------------
@@ -682,6 +705,7 @@ class PatchCandidateInput:
 __all__ = [
     "AgentPolicy",
     "ArchiveCell",
+    "ArchiveUpdateInput",
     "CheckResult",
     "CodeChunk",
     "CoverageGap",
@@ -693,6 +717,7 @@ __all__ = [
     "FixSite",
     "FsDiff",
     "IdeaComponent",
+    "IdeaComponentInput",
     "IdeaInput",
     "IdeaObject",
     "InferenceEvent",

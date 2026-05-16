@@ -44,6 +44,10 @@ class TelemetryEmitter:
     def __init__(self, mcp: MonkeyClawMCP, session_id: str) -> None:
         self.mcp = mcp
         self.session_id = session_id
+        # Telemetry failures (e.g. DB down) can recur for every event — log
+        # the first with a traceback, then degrade to terse warnings so the
+        # logs are not flooded.
+        self._emit_failures = 0
 
     def _emit(self, event_type: str, actor: str, action_class: str,
               *, target: str | None = None, decision: str | None = None,
@@ -59,8 +63,13 @@ class TelemetryEmitter:
                 reason_code=reason_code, data_class=data_class,
                 content_hash=content_hash(raw_content), excerpt=excerpt,
                 metadata=metadata or {}))
-        except Exception:  # noqa: BLE001 - telemetry must never break a lane
-            LOG.exception("telemetry emit failed for %s", event_type)
+        except Exception as e:  # noqa: BLE001 - telemetry must never break a lane
+            self._emit_failures += 1
+            if self._emit_failures == 1:
+                LOG.exception("telemetry emit failed for %s", event_type)
+            else:
+                LOG.warning("telemetry emit failed for %s (%d failures): %s",
+                            event_type, self._emit_failures, e)
             return ""
 
     # --- the 13 catalog events --------------------------------------------

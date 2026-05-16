@@ -45,16 +45,6 @@ DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b"
 DEFAULT_NEMOTRON_BASE_URL = "https://integrate.api.nvidia.com/v1"
 DEFAULT_CLI_BINARY = "claude"
 
-# Appended to any prompt that expects JSON back. Nemotron, unlike Claude,
-# benefits from an explicit, terminal instruction to suppress preamble and
-# markdown fences. `extract_json` tolerates both anyway, but this keeps
-# responses clean and cheap to parse.
-JSON_ONLY_INSTRUCTION = (
-    "Respond ONLY with valid JSON. No preamble, no markdown fences, "
-    "no explanation."
-)
-
-
 @dataclass
 class LLMResponse:
     text: str
@@ -194,13 +184,17 @@ class ClaudeCLILLM(LLMClient):
     name = "claude_cli"
 
     def __init__(self, binary: str = DEFAULT_CLI_BINARY, timeout_s: int = 180) -> None:
-        path = shutil.which(binary) or binary
-        if not (shutil.which(binary) or os.path.exists(binary)):
+        resolved = shutil.which(binary)
+        if resolved is not None:
+            self.binary = resolved
+        elif os.path.isfile(binary) and os.access(binary, os.X_OK):
+            # `binary` is an explicit path to an executable file, not on PATH.
+            self.binary = binary
+        else:
             raise RuntimeError(
                 f"claude CLI not found on PATH (looked for {binary!r}). "
                 f"Set MC_NVIDIA_API_KEY to use the Nemotron backend instead."
             )
-        self.binary = path
         self.timeout_s = timeout_s
 
     def complete(
@@ -274,8 +268,10 @@ class MockLLM(LLMClient):
             text = self._queue.pop(0)
         else:
             text = self._fallback(system, prompt)
-        return LLMResponse(text=text, input_tokens=len(prompt) // 4,
-                            output_tokens=len(text) // 4)
+        # The system prompt is part of the input — count it too.
+        return LLMResponse(text=text,
+                           input_tokens=(len(system) + len(prompt)) // 4,
+                           output_tokens=len(text) // 4)
 
     @staticmethod
     def _fallback(system: str, prompt: str) -> str:
@@ -450,7 +446,6 @@ def extract_json(text: str) -> Any:
 
 __all__ = [
     "ClaudeCLILLM",
-    "JSON_ONLY_INSTRUCTION",
     "LLMClient",
     "LLMMessage",
     "LLMResponse",

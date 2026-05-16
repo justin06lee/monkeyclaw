@@ -94,6 +94,46 @@ def test_protocol_declares_new_methods():
         assert hasattr(MonkeyClawMCP, name), f"protocol missing {name}"
 
 
+def test_protocol_declares_archive_methods():
+    from interfaces.mcp_tools import MonkeyClawMCP
+    for name in (
+        "update_archive_cell", "get_archive_cells",
+        "store_idea_components", "get_idea_components",
+    ):
+        assert hasattr(MonkeyClawMCP, name), f"protocol missing {name}"
+
+
+def test_mock_mcp_archive_roundtrip():
+    from infra.mock_mcp import MockMCP
+    from interfaces.types import ArchiveUpdateInput, IdeaComponentInput
+    m = MockMCP(verbose=False)
+    cell = m.update_archive_cell(ArchiveUpdateInput(
+        zone_id="PROMPT-INJ", interaction_style="direct",
+        response_movement="refusal", idea_id="IDEA-1", score=0.4))
+    assert cell.occupancy == 1
+    assert cell.best_idea_id == "IDEA-1"
+    # Lower score does not displace the elite, but occupancy still grows.
+    cell2 = m.update_archive_cell(ArchiveUpdateInput(
+        zone_id="PROMPT-INJ", interaction_style="direct",
+        response_movement="refusal", idea_id="IDEA-2", score=0.1))
+    assert cell2.occupancy == 2
+    assert cell2.best_idea_id == "IDEA-1"
+    # Higher score displaces it.
+    cell3 = m.update_archive_cell(ArchiveUpdateInput(
+        zone_id="PROMPT-INJ", interaction_style="direct",
+        response_movement="refusal", idea_id="IDEA-3", score=0.9))
+    assert cell3.best_idea_id == "IDEA-3"
+    assert cell3.occupancy == 3
+    cells = m.get_archive_cells("PROMPT-INJ")
+    assert len(cells) == 1
+    assert m.get_archive_cells("SBX-FS") == []
+    ids = m.store_idea_components("IDEA-1", [
+        IdeaComponentInput("IDEA-1", "interaction_style", "direct")])
+    assert len(ids) == 1
+    comps = m.get_idea_components("IDEA-1")
+    assert len(comps) == 1 and comps[0].content == "direct"
+
+
 def test_mock_mcp_model_run_and_judge_vote_roundtrip():
     from infra.mock_mcp import MockMCP
     from interfaces.types import JudgeVoteInput, ModelRunInput

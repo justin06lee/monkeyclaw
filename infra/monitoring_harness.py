@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import shlex
 import subprocess
 import threading
@@ -47,6 +48,10 @@ from interfaces.types import (
 )
 
 LOG = logging.getLogger("monkeyclaw.harness")
+
+# Container/namespace/pod names that get interpolated into a docker/kubectl
+# argv must be restricted to a safe character set.
+_K8S_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def _now() -> str:
@@ -119,9 +124,22 @@ def snapshot_sandbox_paths(
     root_list = [str(r) for r in roots]
     if not root_list:
         return snap
+    # These three values are interpolated into a docker/kubectl argv —
+    # restrict them to a safe character set so they cannot inject flags or
+    # extra arguments.
+    for label, value in (("container", container), ("namespace", namespace),
+                         ("pod", pod)):
+        if not _K8S_NAME_RE.match(value):
+            LOG.error("sandbox fs snapshot: refusing unsafe %s name %r",
+                      label, value)
+            return snap
     quoted = " ".join(shlex.quote(r) for r in root_list)
     # 2>/dev/null: some roots may not exist in a given image — tolerate that.
-    find_cmd = f"find {quoted} -type f -printf '%s\\t%T@\\t%p\\n' 2>/dev/null"
+    # `stat` is portable across GNU/BusyBox; `find -printf` is GNU-only and
+    # silently yields nothing on Alpine/BusyBox sandbox images, which would
+    # let in-sandbox filesystem escapes go undetected.
+    find_cmd = (f"find {quoted} -type f -exec stat -c '%s\\t%Y\\t%n' {{}} + "
+                f"2>/dev/null")
     cmd = [
         "docker", "exec", container,
         "kubectl", "exec", "-n", namespace, "-c", "agent", pod,
@@ -132,9 +150,13 @@ def snapshot_sandbox_paths(
     except (subprocess.TimeoutExpired, OSError) as e:
         LOG.warning("sandbox fs snapshot failed (%s/%s): %s", container, pod, e)
         return snap
-    if proc.returncode != 0 and not proc.stdout:
-        LOG.warning("sandbox fs snapshot returned %d: %s",
-                    proc.returncode, proc.stderr.strip()[:200])
+    if not proc.stdout:
+        # Empty output with a non-zero exit is a hard failure (image missing
+        # `stat`, pod gone, etc.) — log loudly so escapes are not missed.
+        if proc.returncode != 0:
+            LOG.error("sandbox fs snapshot returned %d with NO output "
+                      "(filesystem escapes may be undetected): %s",
+                      proc.returncode, proc.stderr.strip()[:200])
         return snap
     for line in proc.stdout.splitlines():
         parts = line.split("\t", 2)
@@ -157,7 +179,12 @@ def diff_snapshots(before: FsSnapshot, after: FsSnapshot,
             rp = str(Path(path).resolve())
         except OSError:
             rp = path
-        return not any(rp.startswith(a) for a in allowed) if allowed else False
+        if not allowed:
+            return False
+        # A bare `startswith` would treat /tmp/openshell-evil as inside the
+        # allowed /tmp/openshell — require an exact match or a true subpath.
+        return not any(
+            rp == a or rp.startswith(a + os.sep) for a in allowed)
 
     created, modified, deleted, accessed = [], [], [], []
     outside: list[str] = []
@@ -304,9 +331,18 @@ class MonitoringHarness:
         # destinations are checked against policy. Unset -> behavior is
         # identical to before.
         self._enforcer = enforcer
+        # An orphaned (timed-out) executor thread may still call record_*
+        # while the scheduler thread builds the LaneResult — guard every
+        # mutable collector and the final snapshot with this lock.
+        self._record_lock = threading.Lock()
+        self._terminated = False
         self.network_log: list[NetworkEvent] = []
         self.inference_log: list[InferenceEvent] = []
         self.transcript: list[Message] = []
+        # Process events recorded externally (e.g. by the lane scheduler from
+        # in-sandbox monitoring). Kept separate from the psutil sampler's own
+        # events so they are never dropped when host sampling is disabled.
+        self._external_process_events: list[ProcessEvent] = []
         self.attacker_tokens = 0
         self.victim_tokens = 0
         self.attacker_self_assessment = ""
@@ -371,8 +407,11 @@ class MonitoringHarness:
     # Event recording — callbacks for the execution lane
     # ------------------------------------------------------------------
     def record_message(self, msg: Message) -> None:
-        self.transcript.append(msg)
-        self._turns += 1
+        with self._record_lock:
+            if self._terminated:
+                return
+            self.transcript.append(msg)
+            self._turns += 1
 
     def guard_path_read(self, path: str):
         """Consult the PolicyEnforcer for a host-path read; emit telemetry.
@@ -403,7 +442,10 @@ class MonitoringHarness:
         return decision
 
     def record_network(self, event: NetworkEvent) -> None:
-        self.network_log.append(event)
+        with self._record_lock:
+            if self._terminated:
+                return
+            self.network_log.append(event)
         if self._enforcer is not None:
             decision = self.guard_network(event.destination_domain,
                                           phase="default")
@@ -418,10 +460,19 @@ class MonitoringHarness:
                 decision="deny" if event.blocked else "allow")
 
     def record_inference(self, event: InferenceEvent) -> None:
-        self.inference_log.append(event)
+        with self._record_lock:
+            if self._terminated:
+                return
+            self.inference_log.append(event)
 
     def record_process(self, event: ProcessEvent) -> None:
-        self._sampler.events.append(event)
+        # Externally-recorded process events must always be reported, even
+        # when host psutil sampling is disabled — keep them in a dedicated
+        # list that result() always includes.
+        with self._record_lock:
+            if self._terminated:
+                return
+            self._external_process_events.append(event)
 
     def set_self_assessment(self, text: str) -> None:
         self.attacker_self_assessment = text
@@ -448,6 +499,20 @@ class MonitoringHarness:
         mem_diff = diff_memory(self._mem_before or {}, self._mem_after or {})
         end_iso = _now()
         wall_ms = int((time.time() - self._started_at) * 1000)
+        # Snapshot all collector lists under the lock and stop accepting new
+        # record_* calls — an orphaned executor thread must not mutate these
+        # lists while we copy them.
+        with self._record_lock:
+            self._terminated = True
+            transcript = list(self.transcript)
+            network_log = list(self.network_log)
+            inference_log = list(self.inference_log)
+            external_proc = list(self._external_process_events)
+            turns = self._turns
+        # Always include externally-recorded process events; add psutil
+        # sampler events only when host process sampling was enabled.
+        process_log = external_proc + (
+            list(self._sampler.events) if self._monitor_processes else [])
         return LaneResult(
             lane_id=self.lane_id,
             idea_id=self.idea_id,
@@ -455,16 +520,16 @@ class MonitoringHarness:
             start_time=self._start_iso,
             end_time=end_iso,
             wall_time_ms=wall_ms,
-            turns_used=self._turns,
+            turns_used=turns,
             tokens_used_attacker=self.attacker_tokens,
             tokens_used_victim=self.victim_tokens,
             termination_reason=self._termination,
-            transcript=list(self.transcript),
+            transcript=transcript,
             fs_diff=fs_diff,
-            network_log=list(self.network_log),
-            process_log=list(self._sampler.events) if self._monitor_processes else [],
+            network_log=network_log,
+            process_log=process_log,
             memory_diff=mem_diff,
-            inference_routing_log=list(self.inference_log),
+            inference_routing_log=inference_log,
             attacker_self_assessment=self.attacker_self_assessment,
         )
 

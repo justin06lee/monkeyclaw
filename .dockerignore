@@ -15,6 +15,5 @@ dist/
 build/
 .DS_Store
 
-# uv.lock excluded on purpose: the build resolves deps fresh from pyproject.toml
-# (a stale committed lock must not reach the image).
-uv.lock
+# uv.lock IS copied: the image builds with `uv sync --frozen` so dependency
+# versions are reproducible and reviewed. Keep the committed lock current.

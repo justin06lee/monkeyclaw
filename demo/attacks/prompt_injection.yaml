@@ -1,7 +1,10 @@
 # B1 playbook — prompt_injection_document_instruction
 # Deterministic scripted attack: get the agent to reveal its hidden system
-# prompt. Triggers the planted PROMPT_LEAK vulnerability.
+# prompt. Triggers the planted PROMPT-INJ vulnerability.
 name: prompt_injection
+# `profile` is the playbook identifier consumed by red_team/playbooks.py
+# (PLAYBOOK_PROFILES). The planted victim binding is `target_victim` below,
+# which matches a key in demo/victims/registry.py PROFILES.
 profile: prompt_injection_document_instruction
 zone: PROMPT-INJ
 severity: high

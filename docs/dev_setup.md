@@ -65,7 +65,7 @@ appear, follow their remediation instructions before continuing.
 Run these to confirm the development environment is fully functional:
 
 ```bash
-# Full test suite (137 tests across red, blue, and infra)
+# Full test suite (326 tests across red, blue, infra, and the dashboard)
 uv run pytest
 
 # Lint check — must be clean before any commit
@@ -124,10 +124,3 @@ Once the real provisioner is available, run a live cycle with:
 ```bash
 uv run monkeyclaw run --cycles 1 --target monkey-victim
 ```
-
----
-
-## Known failures (B/C-owned)
-
-<!-- Placeholder — later tasks will add entries here as cross-team blockers are
-     identified. -->

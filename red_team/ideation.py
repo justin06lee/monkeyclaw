@@ -302,20 +302,24 @@ class IdeationEngine:
     def _mode_history_informed(
         self, zone: CoverageGap, cycle_id: int
     ) -> list[IdeaObject]:
-        # Useful past findings — confirmed, highest-reusability.
-        confirmed = self.mcp.search_findings(
+        # One search covering both confirmed findings and suspicious
+        # near-misses — issue it once with the larger top_k, then partition
+        # in Python instead of querying the same (query, zone) pair twice.
+        top_k = max(
+            self.cfg.history_informed_findings,
+            self.cfg.history_informed_near_misses * 3,
+        )
+        findings = self.mcp.search_findings(
             query=zone.zone_name,
             zone=zone.zone_id,
-            top_k=self.cfg.history_informed_findings,
+            top_k=top_k,
         )
+        # Useful past findings — confirmed, highest-reusability. The original
+        # query did not filter the first set by verdict, so keep that.
+        confirmed = findings[: self.cfg.history_informed_findings]
         # Near-misses — suspicious, still informative for variations.
         near_misses = [
-            f for f in self.mcp.search_findings(
-                query=zone.zone_name,
-                zone=zone.zone_id,
-                top_k=self.cfg.history_informed_near_misses * 3,
-            )
-            if f.verdict == "suspicious"
+            f for f in findings if f.verdict == "suspicious"
         ][: self.cfg.history_informed_near_misses]
 
         if not confirmed and not near_misses:
@@ -411,7 +415,8 @@ class IdeationEngine:
                     title=str(entry.get("title", "(untitled)"))[:200],
                     approach=str(entry.get("approach", "")),
                     success_criteria=str(entry.get("success_criteria", "")),
-                    estimated_turns=int(entry.get("estimated_turns", 5) or 5),
+                    estimated_turns=_int_or_default(
+                        entry.get("estimated_turns"), 5),
                     novelty_notes=str(entry.get("novelty_notes", "")),
                     priority_score=0.0,  # filled in by priority.py
                     relevant_files=_listify(entry.get("relevant_files")),
@@ -439,6 +444,15 @@ class IdeationEngine:
                     f"style={tactics.interaction_style}; "
                     f"observes={','.join(tactics.expected_observables) or 'none'}]"
                 ).strip()
+            else:
+                # Even without tactic tags/observables the interaction style
+                # must survive log_idea persistence — otherwise an archived
+                # cell rebuilt after an orchestrator restart defaults to
+                # "direct" and loses the style the model chose.
+                idea.novelty_notes = (
+                    f"{idea.novelty_notes} "
+                    f"[style={tactics.interaction_style}]"
+                ).strip()
             out.append(idea)
         return out
 
@@ -463,6 +477,21 @@ def _str_or_none(v) -> str | None:
     if v is None or v == "":
         return None
     return str(v)
+
+
+def _int_or_default(v, default: int = 5) -> int:
+    """Parse a model-supplied integer field defensively.
+
+    Models occasionally return non-numeric values (e.g. "a few", null). A bad
+    `estimated_turns` should not discard an otherwise-valid idea — fall back to
+    `default` instead of letting ValueError bubble up.
+    """
+    if v is None or v == "":
+        return default
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
 
 
 # ---------------------------------------------------------------------------

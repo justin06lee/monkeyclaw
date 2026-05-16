@@ -212,10 +212,16 @@ class TriageAgent:
     def _group_key(self, pkg: ReproPackage) -> tuple[str, str] | None:
         if not pkg.affected_paths:
             return None
-        for site in pkg.affected_paths:
-            if site.confidence >= self.cfg.grouping_min_confidence and site.file:
-                return (pkg.affected_zone, site.file)
-        return None
+        # Grouping must be order-independent: pick the highest-confidence
+        # qualifying site rather than the first one encountered.
+        qualifying = [
+            site for site in pkg.affected_paths
+            if site.confidence >= self.cfg.grouping_min_confidence and site.file
+        ]
+        if not qualifying:
+            return None
+        best = max(qualifying, key=lambda s: s.confidence)
+        return (pkg.affected_zone, best.file)
 
     # ------------------------------------------------------------------
     # Scoring

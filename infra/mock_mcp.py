@@ -24,6 +24,8 @@ from datetime import UTC, datetime, timedelta
 
 from interfaces.mcp_tools import MonkeyClawMCP
 from interfaces.types import (
+    ArchiveCell,
+    ArchiveUpdateInput,
     CheckResult,
     CodeChunk,
     CoverageGap,
@@ -32,6 +34,8 @@ from interfaces.types import (
     DupResult,
     FindingInput,
     FindingRecord,
+    IdeaComponent,
+    IdeaComponentInput,
     IdeaInput,
     JudgeVote,
     JudgeVoteInput,
@@ -115,6 +119,8 @@ class MockMCP(MonkeyClawMCP):
         self._corpus_results: list[PolicyCorpusResult] = []
         self._patch_candidates: dict[str, PatchCandidateInput] = {}
         self._patch_statuses: dict[str, dict] = {}
+        self._archive_cells: dict[str, ArchiveCell] = {}
+        self._idea_components: dict[str, list[IdeaComponent]] = {}
         self._seed_history()
 
     def _seed_history(self) -> None:
@@ -218,7 +224,10 @@ class MockMCP(MonkeyClawMCP):
         )
         self._findings[fid] = rec
         if finding.verdict == "confirmed":
-            self._zones.setdefault(finding.zone_id, {"vulns_open": 0})
+            # Mirror update_zone_coverage: an unknown zone is an error rather
+            # than a silently-created partial zone dict missing required keys.
+            if finding.zone_id not in self._zones:
+                raise KeyError(f"unknown zone {finding.zone_id}")
             self._zones[finding.zone_id]["vulns_open"] = (
                 self._zones[finding.zone_id].get("vulns_open", 0) + 1
             )
@@ -296,16 +305,24 @@ class MockMCP(MonkeyClawMCP):
         self._log("push_to_repro_queue", {"finding_id": finding_id, "priority": priority})
 
     def get_repro_queue(self) -> list[FindingRecord]:
-        # Atomic single-item dequeue
-        for i, (fid, _prio) in enumerate(self._repro_queue):
-            if fid not in self._repro_processing:
-                self._repro_processing.add(fid)
-                self._repro_queue.pop(i)
-                rec = self._findings.get(fid)
-                if rec is None:
-                    continue
-                self._log("get_repro_queue", {"finding_id": fid})
-                return [rec]
+        # Atomic single-item dequeue. Iterate a copy so we can drop already-
+        # claimed entries from _repro_queue (otherwise they inflate depth).
+        for fid, _prio in list(self._repro_queue):
+            if fid in self._repro_processing:
+                # Already claimed elsewhere — drop the stale queue entry.
+                self._repro_queue = [
+                    (q, p) for q, p in self._repro_queue if q != fid
+                ]
+                continue
+            self._repro_processing.add(fid)
+            self._repro_queue = [
+                (q, p) for q, p in self._repro_queue if q != fid
+            ]
+            rec = self._findings.get(fid)
+            if rec is None:
+                continue
+            self._log("get_repro_queue", {"finding_id": fid})
+            return [rec]
         return []
 
     # ------------------------------------------------------------------
@@ -333,9 +350,12 @@ class MockMCP(MonkeyClawMCP):
             created_at=_now(),
         )
         self._repro_packages[pid] = full
-        # mark the original finding as repro'd
+        # mark the original finding as repro'd — store a new record rather
+        # than mutating the shared dataclass in place.
         if package.finding_id in self._findings:
-            self._findings[package.finding_id].repro_rate = package.repro_rate
+            self._findings[package.finding_id] = dataclasses.replace(
+                self._findings[package.finding_id], repro_rate=package.repro_rate
+            )
         self._log("push_repro_package", {"package_id": pid, "vuln_id": package.vuln_id})
         return pid
 
@@ -533,7 +553,7 @@ class MockMCP(MonkeyClawMCP):
         elif status == "queued":
             self._repro_processing.discard(finding_id)
             if not any(fid == finding_id for fid, _ in self._repro_queue):
-                self._repro_queue.append((finding_id, "normal"))
+                self._repro_queue.append((finding_id, "low"))
         self._log("mark_repro_queue_status", {"finding_id": finding_id, "status": status,
                                                "worker_id": worker_id})
 
@@ -564,6 +584,60 @@ class MockMCP(MonkeyClawMCP):
         self._log("mark_patch_status", {"patch_id": patch_id, "status": status})
 
     # ------------------------------------------------------------------
+    # MAP-Elites archive
+    # ------------------------------------------------------------------
+    def update_archive_cell(self, update: ArchiveUpdateInput) -> ArchiveCell:
+        cell_id = f"{update.zone_id}|{update.interaction_style}|{update.response_movement}"
+        existing = self._archive_cells.get(cell_id)
+        if existing is None:
+            cell = ArchiveCell(
+                cell_id=cell_id, zone_id=update.zone_id,
+                interaction_style=update.interaction_style,
+                response_movement=update.response_movement,
+                best_idea_id=update.idea_id, best_score=update.score,
+                occupancy=1, updated_at=_now(),
+            )
+        else:
+            promote = update.score > existing.best_score
+            cell = ArchiveCell(
+                cell_id=cell_id, zone_id=update.zone_id,
+                interaction_style=update.interaction_style,
+                response_movement=update.response_movement,
+                best_idea_id=update.idea_id if promote else existing.best_idea_id,
+                best_score=update.score if promote else existing.best_score,
+                occupancy=existing.occupancy + 1, updated_at=_now(),
+            )
+        self._archive_cells[cell_id] = cell
+        self._log("update_archive_cell", {"cell_id": cell_id,
+                  "elite": cell.best_idea_id, "occupancy": cell.occupancy})
+        return cell
+
+    def get_archive_cells(self, zone: str | None) -> list[ArchiveCell]:
+        cells = list(self._archive_cells.values())
+        if zone is not None:
+            cells = [c for c in cells if c.zone_id == zone]
+        return cells
+
+    def store_idea_components(
+        self, idea_id: str, components: list[IdeaComponentInput]
+    ) -> list[str]:
+        ids: list[str] = []
+        rows = self._idea_components.setdefault(idea_id, [])
+        for comp in components:
+            cid = _new_id("CMP")
+            rows.append(IdeaComponent(
+                component_id=cid, idea_id=idea_id,
+                component_type=comp.component_type, content=comp.content,
+                created_at=_now(),
+            ))
+            ids.append(cid)
+        self._log("store_idea_components", {"idea_id": idea_id, "count": len(ids)})
+        return ids
+
+    def get_idea_components(self, idea_id: str) -> list[IdeaComponent]:
+        return list(self._idea_components.get(idea_id, []))
+
+    # ------------------------------------------------------------------
     # Inspection helpers (mock-only — not part of the Protocol)
     # ------------------------------------------------------------------
     def dump_state(self) -> dict:
@@ -590,6 +664,21 @@ class MockMCP(MonkeyClawMCP):
 # ---------------------------------------------------------------------------
 
 
+# Explicit allow-list of MCP tool methods exposed over HTTP. Dynamic dispatch
+# via getattr would expose ANY public attribute to unauthenticated callers.
+_ALLOWED_TOOLS = frozenset({
+    "get_coverage_gaps", "update_zone_coverage", "log_finding", "search_findings",
+    "get_recent_summaries", "log_cycle_summary", "check_duplicate", "log_idea",
+    "push_to_repro_queue", "get_repro_queue", "push_repro_package",
+    "get_blue_team_queue", "get_regression_suite", "add_regression_test",
+    "search_codebase", "send_alert", "log_telemetry_event", "get_session_timeline",
+    "log_model_run", "log_judge_vote", "log_policy_corpus_result",
+    "get_policy_corpus_results", "mark_repro_queue_status", "mark_repro_package_status",
+    "log_patch_candidate", "mark_patch_status", "update_archive_cell",
+    "get_archive_cells", "store_idea_components", "get_idea_components",
+})
+
+
 def build_app(mcp: MockMCP):
     """Build a FastAPI app that exposes every MCP tool as POST /<tool>."""
     from fastapi import FastAPI, HTTPException
@@ -606,8 +695,10 @@ def build_app(mcp: MockMCP):
 
     @app.post("/tool/{name}")
     def call(name: str, payload: dict):
+        if name not in _ALLOWED_TOOLS:
+            raise HTTPException(status_code=404, detail=f"unknown tool {name}")
         tool = getattr(mcp, name, None)
-        if tool is None or name.startswith("_") or not callable(tool):
+        if not callable(tool):
             raise HTTPException(status_code=404, detail=f"unknown tool {name}")
         try:
             result = tool(**payload)
