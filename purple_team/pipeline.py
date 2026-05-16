@@ -35,9 +35,21 @@ from purple_team.detection_oracle import DetectionOracle
 from purple_team.detection_synthesizer import DetectionSynthesizer
 from purple_team.feedback_router import FeedbackRouter
 from purple_team.report_card import ReportCardGenerator
+from purple_team.self_governance import AgentProfile, SelfGovernance
 from red_team.policy_corpus import PolicyCorpusCase
 
 LOG = logging.getLogger("monkeyclaw.purple.pipeline")
+
+
+def _default_agent_profiles() -> list[AgentProfile]:
+    """The governance posture of MonkeyClaw's own agents in mock mode:
+    every agent runs bounded, sandboxed, secret-free, with a full audit
+    trail — the posture the real runtime must preserve."""
+    names = ["attacker", "cold-verifier", "patch-generator", "judge"]
+    return [AgentProfile(
+        name=n, egress_bounded=True, sandboxed=True,
+        reads_secret_paths=False, audit_trail_complete=True)
+        for n in names]
 
 
 @dataclass
@@ -74,6 +86,7 @@ class PurplePipeline:
         self.correlator = Correlator(mcp)
         self.report = ReportCardGenerator(mcp)
         self.router = FeedbackRouter(mcp)
+        self.self_governance = SelfGovernance(mcp)
         self.full_sweep_every = max(1, full_sweep_every)
         self.self_governance_enabled = self_governance_enabled
 
@@ -108,8 +121,12 @@ class PurplePipeline:
             if rule is not None:
                 new_rules.append(rule)
 
-        # 6: regenerate the report card.
-        report_card = self.report.generate()
+        # 6: regenerate the report card (with self-governance on full sweeps).
+        self_gov = None
+        if is_sweep and self.self_governance_enabled:
+            self_gov = self.self_governance.audit_self(
+                _default_agent_profiles())
+        report_card = self.report.generate(self_governance=self_gov)
 
         # 7: route feedback signals.
         routed = self.router.route(all_verdicts, validation_run)

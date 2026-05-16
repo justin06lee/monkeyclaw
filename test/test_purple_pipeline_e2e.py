@@ -130,3 +130,33 @@ def test_pipeline_routes_feedback_signals(server):
     result = _pipeline(server).run(ctx)
     # a PARTIAL/FAIL execution routes at least one signal.
     assert isinstance(result.routed_signals, list)
+
+
+def test_pipeline_runs_self_governance_on_full_sweep(server):
+    pipe = PurplePipeline(
+        server, corpus=CORPUS, case_runner=lambda c: c.expected_decision,
+        full_sweep_every=2, self_governance_enabled=True)
+    # cycle 2 == full sweep -> self-governance runs and attaches to the card.
+    result = pipe.run(CycleContext(cycle_id=2, zone_id="SBX-NET",
+                                   executions=[]))
+    assert result.report_card.self_governance is not None
+    assert result.report_card.self_governance.passed is True
+
+
+def test_pipeline_skips_self_governance_when_disabled(server):
+    pipe = PurplePipeline(
+        server, corpus=CORPUS, case_runner=lambda c: c.expected_decision,
+        full_sweep_every=2, self_governance_enabled=False)
+    result = pipe.run(CycleContext(cycle_id=2, zone_id="SBX-NET",
+                                   executions=[]))
+    assert result.report_card.self_governance is None
+
+
+def test_pipeline_inline_cycle_has_no_self_governance(server):
+    pipe = PurplePipeline(
+        server, corpus=CORPUS, case_runner=lambda c: c.expected_decision,
+        full_sweep_every=10, self_governance_enabled=True)
+    # cycle 1 is inline (not a sweep) -> no self-governance.
+    result = pipe.run(CycleContext(cycle_id=1, zone_id="SBX-NET",
+                                   executions=[]))
+    assert result.report_card.self_governance is None
