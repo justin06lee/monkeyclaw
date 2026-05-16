@@ -3,9 +3,10 @@
 When the five role judges disagree (high disagreement metric) or are
 collectively unsure (low aggregate confidence), the verdict is decided by the
 same noisy ensemble that produced the disagreement. This module escalates such
-a contested case to a single frontier model, resolved by the caller via
-`make_llm("semantic_judge_appeal")`. The frontier model is told the five
-judges disagreed and on which axis; it arbitrates, it does not re-judge blind.
+a contested case to a single frontier model, resolved by the caller through
+the model router's `semantic_judge_appeal` role. The frontier model is told
+the five judges disagreed and on which axis; it arbitrates, it does not
+re-judge blind.
 
 The appeal NEVER raises and NEVER makes a case worse than the ensemble: a
 failed call returns an AppealVerdict flagged `errored=true`, in which case the
