@@ -1148,6 +1148,24 @@ from interfaces.code_graph import (  # noqa: E402
     SymbolKind,
 )
 
+# ---------------------------------------------------------------------------
+# Verifier gate hardening — mutation robustness + detection gate
+# (verifier-gate-hardening spec §7)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class VariantResult:
+    """One mutated attack variant replayed against the patched victim by
+    gate1b_mutation_robustness. `blocked` False means the patch over-fits
+    the recorded payload — the variant of the same attack family leaked."""
+
+    operator: str
+    variant_hash: str
+    blocked: bool
+    judge_verdict: str
+
+
 __all__ = [
     "AgentPolicy",
     "AppealVerdict",
@@ -1243,6 +1261,7 @@ __all__ = [
     "TelemetryEventType",
     "Trajectory",
     "TurnScore",
+    "VariantResult",
     "VictimTelemetryBundle",
     "ZoneCoverage",
 ]
