@@ -92,3 +92,21 @@ def test_protocol_declares_new_methods():
         "log_patch_candidate", "mark_patch_status",
     ):
         assert hasattr(MonkeyClawMCP, name), f"protocol missing {name}"
+
+
+def test_mock_mcp_conforms_to_protocol():
+    from interfaces.mcp_tools import MonkeyClawMCP
+    from infra.mock_mcp import MockMCP
+    assert isinstance(MockMCP(verbose=False), MonkeyClawMCP)
+
+
+def test_mock_mcp_telemetry_roundtrip():
+    from infra.mock_mcp import MockMCP
+    from interfaces.types import TelemetryEventInput
+    m = MockMCP(verbose=False)
+    eid = m.log_telemetry_event(TelemetryEventInput(
+        session_id="S1", event_type="agent.session.started",
+        actor="orchestrator", action_class="session"))
+    assert isinstance(eid, str) and eid
+    timeline = m.get_session_timeline("S1")
+    assert len(timeline) == 1 and timeline[0].event_id == eid
