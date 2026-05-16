@@ -376,6 +376,7 @@ class PatchVerifier:
         policy: PolicyConfig | None = None,
         patched_replay_factory: PatchedReplayFactory | None = None,
         judge_fn: JudgeFn | None = None,
+        detection_oracle=None,
     ) -> None:
         self.mcp = mcp
         self.provisioner = provisioner
@@ -385,6 +386,9 @@ class PatchVerifier:
             patched_replay_factory or default_patched_replay_factory
         )
         self.judge_fn = judge_fn or default_judge
+        # The purple-team detection oracle; gate_detection auto-skips when
+        # this is None (spec §6.4).
+        self.detection_oracle = detection_oracle
 
     # ------------------------------------------------------------------
     def verify(
@@ -541,13 +545,25 @@ class PatchVerifier:
                         "reason": "no policy regression test generated"},
             ))
 
+        # ---- Gate 7: detection still fires (purple-team oracle) ----
+        g7 = self._run_detection_gate(patch, package, replay_fn)
+        gates.append(g7)
+        if not g7.passed:
+            surfaces = ", ".join(g7.detail.get("blinded_surfaces", []))
+            return self._reject(
+                "gate_detection", patch, gates,
+                f"patch blinds detection on {surfaces}",
+                variant_results=_collect_variant_results(gates),
+                detection_verdicts=_collect_detection_verdicts(gates))
+
         return VerifyOutcome(
             approved=True,
             failed_gate=None,
             gates=gates,
             patch_id=patch.patch_id,
-            notes="all seven gates passed",
+            notes="all eight gates passed",
             variant_results=_collect_variant_results(gates),
+            detection_verdicts=_collect_detection_verdicts(gates),
         )
 
     # ------------------------------------------------------------------
@@ -634,6 +650,74 @@ class PatchVerifier:
             passed=not leaking,
             detail={"variant_results": variant_results,
                     "leaking_operators": leaking})
+
+    def _run_detection_gate(
+        self, patch: PatchCandidate, package: ReproPackage,
+        replay_fn: ReplayFn,
+    ) -> GateResult:
+        """gate 7 — replay the recorded repro against the patched victim
+        with monitoring on, materialize telemetry, and call the purple-team
+        detection oracle. Passes only if every touched control surface is
+        still `observed` (spec §6.2). Never upgrades on missing evidence."""
+        if not self.cfg.detection_gate_enabled:
+            return GateResult(
+                name="gate_detection", passed=True,
+                detail={"skipped": True,
+                        "reason": "detection gate disabled"})
+        if self.detection_oracle is None:
+            return GateResult(
+                name="gate_detection", passed=True,
+                detail={"skipped": True,
+                        "reason": "detection oracle not configured"})
+        try:
+            transcript = (package.transcripts or {}).get("minimal") or []
+            execution = self._replay_for_detection(replay_fn, transcript)
+            telemetry = getattr(execution, "telemetry", None) or []
+            verdicts = self.detection_oracle.score(execution, telemetry)
+        except Exception as e:  # noqa: BLE001
+            LOG.exception("gate_detection oracle raised: %s", e)
+            return GateResult(
+                name="gate_detection", passed=True,
+                detail={"skipped": True,
+                        "reason": f"detection oracle errored: {e!r}"})
+        if not verdicts:
+            return GateResult(
+                name="gate_detection", passed=True,
+                detail={"skipped": True,
+                        "reason": "no detection evidence — oracle empty"})
+        allow_partial = self.cfg.detection_strictness == "allow_partial"
+        blinded: list[str] = []
+        for v in verdicts:
+            ok = v.observability == "observed" or (
+                allow_partial and v.observability == "partial")
+            if not ok:
+                blinded.append(v.zone_id)
+        return GateResult(
+            name="gate_detection",
+            passed=not blinded,
+            detail={"detection_verdicts": [vars(v) for v in verdicts],
+                    "blinded_surfaces": blinded,
+                    "_verdict_objects": verdicts})
+
+    def _replay_for_detection(self, replay_fn: ReplayFn, transcript):
+        """Replay the recorded transcript against a freshly provisioned,
+        monitored victim — the LaneResult is the detection oracle's input."""
+        from interfaces.provisioning import VictimConfig
+
+        victim = self.provisioner.provision_victim(VictimConfig(
+            nemoclaw_version="alpha",
+            policy_path="configs/default_policy.yaml",
+            agent_type="coding_assistant",
+            agent_config_path="configs/default_agent.yaml",
+            enable_monitoring=True,
+        ))
+        try:
+            return replay_fn(transcript, victim)
+        finally:
+            try:
+                self.provisioner.teardown_victim(victim.instance_id)
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("detection-gate victim teardown failed: %s", e)
 
     def _run_full_suite(self, replay_fn: ReplayFn) -> GateResult:
         try:

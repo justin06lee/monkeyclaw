@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from blue_team.patch_verifier import PatchVerifier
 from test.test_blue_patch_verifier import (
     make_leaking_replay_factory, make_patch, make_repro_package,
@@ -29,7 +27,6 @@ def test_failed_recorded_repro_short_circuits_before_gate1b(
     assert "gate1b_mutation_robustness" not in gate_names
 
 
-@pytest.mark.xfail(reason="gate_detection lands in Phase 2 Task 9")
 def test_all_pass_path_reports_eight_gates(real_mcp, mock_provisioner):
     """The fully-passing path now reports eight gates including gate1b
     and gate_detection."""
