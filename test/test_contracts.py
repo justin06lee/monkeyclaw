@@ -56,3 +56,28 @@ def test_provisioner_protocol():
     from infra.provisioning_nemoclaw import MockProvisioner
     p = MockProvisioner()
     assert isinstance(p, VictimProvisioner)
+
+
+def test_new_dataclasses_importable_and_constructible():
+    from interfaces.types import (
+        ArchiveCell, IdeaComponent, JudgeVote, JudgeVoteInput, ModelRunInput,
+        ModelRunRecord, PatchCandidateInput, PolicyCorpusCase, PolicyCorpusResult,
+        PolicyCorpusResultInput, PolicyDecision, QueueState, TelemetryEvent,
+        TelemetryEventInput,
+    )
+    ev = TelemetryEventInput(
+        session_id="S1", event_type="agent.session.started", actor="orchestrator",
+        action_class="session", target=None, decision=None, reason_code=None,
+        data_class=None, content_hash=None, excerpt=None, metadata={},
+    )
+    assert ev.session_id == "S1"
+    vote = JudgeVoteInput(
+        lane_id="L1", judge_role="semantic", verdict="confirmed", score=0.9,
+        confidence=0.8, reasoning="r", evidence_turns=[1, 2],
+    )
+    assert vote.evidence_turns == [1, 2]
+    run = ModelRunInput(
+        role="red_ideation", model="m", provider="nvidia", input_tokens=10,
+        output_tokens=20, latency_ms=100, cost_usd=None, success=True, error=None,
+    )
+    assert run.success is True
