@@ -696,6 +696,25 @@ def render_near_miss_queue(mcp) -> str:
             f"<th>erosion excerpt</th><th>seeds</th></tr>{body}</table>")
 
 
+def render_dataset_readiness(mcp) -> str:
+    """The dataset-readiness panel — when is learned-ranker training viable."""
+    from red_team.dataset_readiness import evaluate_readiness
+
+    traces = mcp.get_attempt_traces()
+    pairs = mcp.get_pairwise_labels()
+    result = evaluate_readiness(traces, pairs)
+    status = "READY" if result.ready else "NOT READY"
+    metric_rows = "".join(
+        f"<tr><td>{k}</td><td>{v}</td></tr>"
+        for k, v in sorted(result.metrics.items()))
+    failure_rows = "".join(
+        f"<li>{f}</li>" for f in result.failures) or "<li>none</li>"
+    return ("<h2>Dataset readiness</h2>"
+            f"<p>status: <b>{status}</b></p>"
+            f"<table>{metric_rows}</table>"
+            f"<h3>failing criteria</h3><ul>{failure_rows}</ul>")
+
+
 def _trajectory_views(db_path: str) -> dict[str, str]:
     """Render both trajectory views from a database path. Best-effort —
     returns empty placeholders when the DB or its tables are absent."""
@@ -708,6 +727,7 @@ def _trajectory_views(db_path: str) -> dict[str, str]:
             return {
                 "trajectory_ribbon": render_trajectory_ribbon(mcp),
                 "near_miss_queue": render_near_miss_queue(mcp),
+                "dataset_readiness": render_dataset_readiness(mcp),
             }
         finally:
             db.close()
@@ -715,6 +735,7 @@ def _trajectory_views(db_path: str) -> dict[str, str]:
         return {
             "trajectory_ribbon": render_trajectory_ribbon(_EmptyMCP()),
             "near_miss_queue": render_near_miss_queue(_EmptyMCP()),
+            "dataset_readiness": render_dataset_readiness(_EmptyMCP()),
         }
 
 
@@ -725,6 +746,12 @@ class _EmptyMCP:
         return []
 
     def search_near_misses(self, zone, *, only_unconsumed, top_k):
+        return []
+
+    def get_attempt_traces(self, zone_id=None):
+        return []
+
+    def get_pairwise_labels(self):
         return []
 
 
@@ -1504,9 +1531,11 @@ def build_dashboard_app(db_path: str):
 
     @app.get("/api/trajectory_views", response_class=HTMLResponse)
     def api_trajectory_views() -> str:
-        """Two additive views: the trajectory ribbon + near-miss queue."""
+        """Additive views: trajectory ribbon, near-miss queue, dataset
+        readiness."""
         views = _trajectory_views(db_path)
-        return views["trajectory_ribbon"] + views["near_miss_queue"]
+        return (views["trajectory_ribbon"] + views["near_miss_queue"]
+                + views["dataset_readiness"])
 
     @app.get("/kill-chains", response_class=HTMLResponse)
     def kill_chains() -> str:

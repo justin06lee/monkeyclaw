@@ -293,3 +293,12 @@ def test_patch_hardening_panel_renders(server):
     assert "paraphrase" in html
     assert "add_benign_framing" in html
     assert "PASS" in html
+
+
+def test_dashboard_renders_dataset_readiness(server):
+    from infra.dashboard import render_dataset_readiness
+
+    html = render_dataset_readiness(server)
+    assert "dataset readiness" in html.lower()
+    # An empty dataset is not ready — the volume criterion must show.
+    assert "volume" in html.lower()
