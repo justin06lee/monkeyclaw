@@ -278,13 +278,16 @@ class PatchVerifier:
                 diff=patch.diff, explanation=patch.explanation,
                 side_effects=patch.side_effects,
             ))
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("log_patch_candidate(%s) failed, falling back to "
+                        "in-memory patch_id: %s", patch.patch_id, e)
             db_patch_id = patch.patch_id
         # proposed -> testing before any gate runs.
         try:
             self.mcp.mark_patch_status(db_patch_id, "testing")
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("mark_patch_status(%s, testing) failed: %s",
+                        db_patch_id, e)
         outcome = self._run_gates(patch=patch, package=package,
                                   test_pair=test_pair)
         # testing -> approved | rejected once the gates have spoken.
@@ -298,8 +301,9 @@ class PatchVerifier:
                     "notes": outcome.notes,
                 },
             )
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("mark_patch_status(%s, %s) failed: %s", db_patch_id,
+                        "approved" if outcome.approved else "rejected", e)
         return outcome
 
     def _run_gates(
