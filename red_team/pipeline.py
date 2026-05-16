@@ -111,6 +111,8 @@ class Pipeline:
         )
         execution_cfg = execution_cfg or ExecutionConfig(
             max_turns=self.cfg.lanes.max_turns,
+            strategies_per_lane=self.cfg.lanes.strategies_per_lane,
+            turns_per_strategy=self.cfg.lanes.turns_per_strategy,
             temperature=0.7,
         )
         judge_cfg = judge_cfg or JudgeConfig(
@@ -124,6 +126,9 @@ class Pipeline:
 
         # idea_id → IdeaObject so judge() can look up the source.
         self._idea_book: dict[str, IdeaObject] = {}
+        # zone_id → all generated ideas for it this cycle; the execution
+        # agent works through several of these per lane (multi-strategy).
+        self._strategy_pool: dict[str, list[IdeaObject]] = {}
         self._book_lock = threading.Lock()
 
         # Cycle accounting for log_cycle_summary on the next generate_ideas
@@ -194,10 +199,19 @@ class Pipeline:
         prioritized = select_top_n(outcomes, zones_by_id, n_lanes)
         chosen = [p.idea for p in prioritized]
 
+        # Strategy pool — every kept idea grouped by zone. Each lane's
+        # attacker works through several of these (multi-strategy attacks),
+        # so the whole generated batch gets used, not just the top-N.
+        pool: dict[str, list[IdeaObject]] = {}
+        for o in outcomes:
+            if o.keep:
+                pool.setdefault(o.idea.zone_id, []).append(o.idea)
+
         # Remember each idea for judge()
         with self._book_lock:
             for i in chosen:
                 self._idea_book[i.idea_id] = i
+            self._strategy_pool = pool
 
         self._last_cycle_metrics = {
             "cycle_id": cycle_id,
@@ -224,7 +238,12 @@ class Pipeline:
         harness: MonitoringHarness,
         lane_cfg: LaneConfig,
     ) -> None:
-        self.execution.execute(idea, victim, harness, lane_cfg)
+        # Hand the attacker the other generated ideas for this zone as a
+        # strategy pool — it works through several, pivoting and chaining.
+        with self._book_lock:
+            pool = list(self._strategy_pool.get(idea.zone_id, []))
+        self.execution.execute(idea, victim, harness, lane_cfg,
+                               strategy_pool=pool)
 
     # ------------------------------------------------------------------
     # judge

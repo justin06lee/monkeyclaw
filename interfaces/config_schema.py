@@ -26,9 +26,14 @@ class IdeationConfig(BaseModel):
 
 class LaneConfig(BaseModel):
     pool_size: int = 4
-    lane_timeout_seconds: int = 600
+    lane_timeout_seconds: int = 1800
     max_turns: int = 50
     psutil_interval_seconds: float = 0.5
+    # Multi-strategy execution: per lane the attacker works through several
+    # candidate strategies (drawn from the cycle's generated ideas) against
+    # one victim, in one continuing conversation — pivoting and chaining.
+    strategies_per_lane: int = 5
+    turns_per_strategy: int = 3
 
 
 class JudgmentConfig(BaseModel):
