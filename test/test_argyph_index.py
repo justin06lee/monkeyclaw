@@ -90,3 +90,12 @@ def test_live_index_and_search(tmp_path):
     idx.index(str(tmp_path))
     chunks = idx.search("greet function", top_k=3, repo_path=str(tmp_path))
     assert isinstance(chunks, list)
+
+
+def test_search_codebase_falls_back_to_python_when_argyph_absent(server):
+    """With backend=argyph but no binary, search_codebase still returns a
+    list (Python fallback), never raises."""
+    server.set_code_context(backend="argyph", argyph_binary="/nonexistent/argyph",
+                            repo_path="/tmp")
+    result = server.search_codebase("anything", top_k=3)
+    assert isinstance(result, list)

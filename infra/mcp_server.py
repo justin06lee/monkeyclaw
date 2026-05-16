@@ -63,6 +63,19 @@ class MCPServer(MonkeyClawMCP):
         self.embedder = embedder or EmbeddingModel.shared()
         self.alert_sink = alert_sink  # Callable[[str, str], None] | None
         self._telemetry = None
+        self._code_backend = "python"
+        self._argyph = None
+        self._repo_path = "."
+
+    def set_code_context(self, backend: str = "python",
+                         argyph_binary: str | None = None,
+                         repo_path: str = ".") -> None:
+        """Configure the code-context backend (called by bootstrap)."""
+        self._code_backend = backend
+        self._repo_path = repo_path
+        if backend == "argyph":
+            from infra.argyph_index import ArgyphIndex  # noqa: PLC0415
+            self._argyph = ArgyphIndex(binary=argyph_binary)
 
     def attach_telemetry(self, emitter) -> None:
         """Attach a TelemetryEmitter so MCP calls emit agent.mcp.invoked.
@@ -387,6 +400,12 @@ class MCPServer(MonkeyClawMCP):
     # ------------------------------------------------------------------
     def search_codebase(self, query: str, top_k: int) -> list[CodeChunk]:
         self._emit_invoked("search_codebase")
+        if self._code_backend == "argyph" and self._argyph is not None \
+                and self._argyph.available:
+            chunks = self._argyph.search(query, top_k, self._repo_path)
+            if chunks:
+                return chunks
+            # fall through to the Python indexer on empty/failed Argyph search
         emb = self.embedder.encode_one(query)
         candidates = self.db.vector_search("code_chunks_vec", "chunk_id", emb, top_k)
         if not candidates:

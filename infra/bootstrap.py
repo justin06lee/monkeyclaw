@@ -56,6 +56,11 @@ def boot(config_path: str | Path | None = None,
         LOG.warning("could not read persistent memory: %s", e)
     dispatcher = AlertDispatcher(cfg.notifications)
     mcp = MCPServer(db, alert_sink=dispatcher.send)
+    mcp.set_code_context(
+        backend=cfg.code_context.backend,
+        argyph_binary=cfg.code_context.argyph_binary,
+        repo_path=cfg.nemoclaw.repo_path,
+    )
     if use_mock_provisioner:
         provisioner: VictimProvisioner = MockProvisioner()
     else:
