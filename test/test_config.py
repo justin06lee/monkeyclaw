@@ -59,3 +59,11 @@ def test_ideation_taxonomy_config_defaults():
     cfg = load_config()
     assert cfg.ideation.taxonomy_mode is True
     assert cfg.ideation.taxonomy_gap_top_n == 4
+
+
+def test_red_chains_config_defaults():
+    cfg = load_config()
+    chains = cfg.red.chains
+    assert chains.enabled is True
+    assert chains.n_chains == 2
+    assert chains.max_turns == 30

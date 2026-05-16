@@ -245,3 +245,9 @@ red:
     niche_gap_low: 0.5
     niche_gap_high: 1.5
     seed_cross_zone_count: 2
+  chains:
+    # Cross-zone attack chaining — composes single-zone primitives into
+    # multi-zone kill chains. n_chains chain lanes are emitted per cycle.
+    enabled: true
+    n_chains: 2
+    max_turns: 30
