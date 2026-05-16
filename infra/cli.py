@@ -371,13 +371,29 @@ def _cmd_demo(args: argparse.Namespace) -> int:
                   f"cold_verified={p.cold_verified}")
 
         # ---- STAGE 5: BLUE TEAM ----
-        banner("STAGE 5 / 5 — BLUE TEAM  (triage → patch → test → verify)")
-        n_approved = blue.process_blue_queue()
-        print(f"  blue pipeline approved {n_approved} patch(es)")
+        banner("STAGE 5 / 5 — BLUE TEAM  (triage → patch generation → test generation)")
+        tasks = blue.triage.triage(pkgs)
+        n_patches = 0
+        for task in tasks:
+            print(f"  triage {task.task_id}: severity={task.severity}, "
+                  f"approach: {task.recommended_approach[:90]}")
+            cands = blue.patch_generator.generate_for_task(task)
+            n_patches += len(cands)
+            for c in cands:
+                print(f"  patch [{c.patch_id}] {c.approach}  ({c.invasiveness})")
+                for ln in c.diff.strip().splitlines()[:10]:
+                    print(f"      {ln}")
+            if cands and task.packages:
+                pair = blue.test_generator.generate(task.packages[0], cands[0])
+                print(f"  regression test generated for {pair.vuln_id} "
+                      f"({len(pair.positive_test.test_script)} chars)")
+        print(f"\n  blue team produced {n_patches} patch candidate(s) + regression test(s).")
+        print("  (patch verification — the 3-gate check — needs a live, "
+              "rebuildable victim; not run in mock mode.)")
 
         banner("FULL CYCLE COMPLETE")
         print(f"  finding {finding_id} ({judgment.severity} {judgment.failure_class}) "
-              f"→ {n_repro} repro'd → {n_approved} patched")
+              f"→ {n_repro} repro'd → {n_patches} patch candidate(s) generated")
         print("  see `monkeyclaw status` / `monkeyclaw findings` / the dashboard.")
         return 0
     finally:
