@@ -294,11 +294,20 @@ class ChainConfig(BaseModel):
     max_turns: int = 30
 
 
+class RankerConfig(BaseModel):
+    """Ranker selection — learned-ranking-model spec §10."""
+
+    mode: str = "heuristic"        # "heuristic" | "learned"
+    artifact_path: str = "data/ranker_artifact.json"
+    pairwise_budget: int = 4       # max pairwise comparisons per cycle
+
+
 class RedConfig(BaseModel):
     """Red-team subsystem tuning."""
 
     archive: ArchiveConfig = Field(default_factory=ArchiveConfig)
     chains: ChainConfig = Field(default_factory=ChainConfig)
+    ranker: RankerConfig = Field(default_factory=RankerConfig)
 
 
 class MonkeyClawConfig(BaseModel):

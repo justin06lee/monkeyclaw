@@ -294,7 +294,6 @@ def test_patch_hardening_panel_renders(server):
     assert "add_benign_framing" in html
     assert "PASS" in html
 
-
 def test_dashboard_exposes_generalization_panel(tmp_path: Path):
     """The dashboard surfaces per-patch round count, operators tried,
     bypasses found and the final generalization status."""
@@ -322,3 +321,12 @@ def test_dashboard_exposes_generalization_panel(tmp_path: Path):
     assert "P1" in body
     assert "paraphrase" in body
     assert "generalized" in body
+
+
+def test_dashboard_renders_dataset_readiness(server):
+    from infra.dashboard import render_dataset_readiness
+
+    html = render_dataset_readiness(server)
+    assert "dataset readiness" in html.lower()
+    # An empty dataset is not ready — the volume criterion must show.
+    assert "volume" in html.lower()

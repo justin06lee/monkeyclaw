@@ -29,6 +29,8 @@ from interfaces.types import (
     ArchiveUpdateInput,
     AttackChain,
     AttackElo,
+    AttemptTrace,
+    AttemptTraceInput,
     ChainFinding,
     ChainStepResult,
     CheckResult,
@@ -60,6 +62,8 @@ from interfaces.types import (
     PatchCandidateInput,
     PolicyCorpusResult,
     PolicyCorpusResultInput,
+    Preference,
+    PreferenceInput,
     RegressionTest,
     RegressionTestInput,
     ReportCard,
@@ -152,6 +156,9 @@ class MockMCP(MonkeyClawMCP):
         self._report_cards: list[ReportCard] = []
         self._trajectories: list[Trajectory] = []
         self._near_misses: list[NearMiss] = []
+        # Learned ranking — the structured trace dataset (ranking spec §7)
+        self._attempt_traces: list[AttemptTrace] = []
+        self._pairwise_labels: list[Preference] = []
         # Mutation operator learning (mutation-operator-learning spec §8)
         self._mutation_stats: dict[str, MutationOperatorStat] = {}
         self._mutation_stats_by_zone: dict[
@@ -1034,6 +1041,56 @@ class MockMCP(MonkeyClawMCP):
         for nm in self._near_misses:
             if nm.near_miss_id == near_miss_id:
                 nm.consumed = True
+
+    # ------------------------------------------------------------------
+    # Learned ranking — the structured trace dataset (ranking spec §7)
+    # ------------------------------------------------------------------
+    def log_attempt_trace(self, trace: AttemptTraceInput) -> str:
+        tid = _new_id("TRC")
+        self._attempt_traces.append(AttemptTrace(
+            trace_id=tid, idea_id=trace.idea_id, finding_id=trace.finding_id,
+            cycle_id=trace.cycle_id, zone_id=trace.zone_id,
+            feature_schema_version=trace.feature_schema_version,
+            idea_summary=trace.idea_summary,
+            tactic_tags=list(trace.tactic_tags),
+            mutation_operator=trace.mutation_operator,
+            interaction_style=trace.interaction_style,
+            progress_dims=dict(trace.progress_dims),
+            judge_scores=dict(trace.judge_scores),
+            token_cost=trace.token_cost, repro_outcome=trace.repro_outcome,
+            judge_verdict=trace.judge_verdict,
+            search_score=trace.search_score,
+            archive_niche=trace.archive_niche,
+            usefulness_label=trace.usefulness_label, created_at=_now(),
+        ))
+        self._log("log_attempt_trace", {"trace_id": tid})
+        return tid
+
+    def get_attempt_traces(
+        self, zone_id: str | None = None
+    ) -> list[AttemptTrace]:
+        rows = list(reversed(self._attempt_traces))  # newest-first
+        if zone_id is not None:
+            rows = [t for t in rows if t.zone_id == zone_id]
+        return rows
+
+    def attach_repro_outcome(self, trace_id: str, outcome: str) -> None:
+        for t in self._attempt_traces:
+            if t.trace_id == trace_id:
+                t.repro_outcome = outcome
+
+    def log_pairwise_label(self, preference: PreferenceInput) -> str:
+        pid = _new_id("PRF")
+        self._pairwise_labels.append(Preference(
+            pair_id=pid, trace_a=preference.trace_a,
+            trace_b=preference.trace_b, preferred=preference.preferred,
+            judge_confidence=preference.judge_confidence, created_at=_now(),
+        ))
+        self._log("log_pairwise_label", {"pair_id": pid})
+        return pid
+
+    def get_pairwise_labels(self) -> list[Preference]:
+        return list(reversed(self._pairwise_labels))  # newest-first
 
     # ------------------------------------------------------------------
     # Corpus-driven ideation — technique tags + coverage axis
