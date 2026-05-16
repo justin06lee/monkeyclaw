@@ -66,6 +66,12 @@ class BlueTeamConfig(BaseModel):
     patch_verify_max_attempts: int = 3
     auto_commit_patches: bool = False
     high_severity_alt_count: int = 3
+    # Verifier gate hardening — mutation robustness + detection gate.
+    mutation_gate_enabled: bool = True
+    mutation_operators: list[str] = []
+    mutation_max_variants: int = 8
+    detection_gate_enabled: bool = True
+    detection_strictness: str = "observed_only"
 
 
 class OrchestratorConfig(BaseModel):

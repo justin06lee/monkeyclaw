@@ -288,6 +288,28 @@ def test_gate3_runs_active_regression_suite(tmp_path: Path):
     assert g3.detail["failed"] == []
 
 
+def test_patch_verifier_config_carries_hardening_knobs():
+    from blue_team.patch_verifier import PatchVerifierConfig
+
+    cfg = PatchVerifierConfig()
+    assert cfg.mutation_gate_enabled is True
+    assert cfg.detection_gate_enabled is True
+    assert cfg.mutation_max_variants == 8
+    assert cfg.detection_strictness == "observed_only"
+    # default operator selection skips operators needing an `extra` arg.
+    assert "change_persona" not in cfg.mutation_operators
+    assert "paraphrase" in cfg.mutation_operators
+
+
+def test_patch_verifier_config_from_blue_team_cfg():
+    from blue_team.patch_verifier import PatchVerifierConfig
+    from infra.config import load_config
+
+    cfg = PatchVerifierConfig.from_blue_team_cfg(load_config().blue_team)
+    assert cfg.mutation_gate_enabled is True
+    assert isinstance(cfg.mutation_operators, list)
+
+
 def test_gate3_fails_when_existing_test_regresses(tmp_path: Path):
     allowed = tmp_path / "allowed"
     escape = tmp_path / "evil"

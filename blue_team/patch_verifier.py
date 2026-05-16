@@ -72,6 +72,20 @@ from blue_team.test_generator import RegressionTestPair, execute_test_script
 LOG = logging.getLogger("monkeyclaw.blue.patch_verify")
 
 
+# gate1b default operator selection — the spec §6.3 curated subset, all of
+# which transform a string with no `extra` argument.
+_DEFAULT_MUTATION_OPERATORS: tuple[str, ...] = (
+    "paraphrase",
+    "add_benign_framing",
+    "split_into_multi_turn",
+    "add_constraints",
+    "abstract_final_request",
+    "concretize_final_request",
+    "insert_untrusted_document",
+    "move_instruction_into_tool_output",
+)
+
+
 # ---------------------------------------------------------------------------
 # Control-plane weakening detection (spec §C7)
 # ---------------------------------------------------------------------------
@@ -199,11 +213,30 @@ class VerifyOutcome:
 class PatchVerifierConfig:
     max_attempts_per_patch: int = 3  # used by the pipeline glue, not here
     full_suite_concurrency: int = 1  # placeholder for future parallelism
+    # --- verifier gate hardening (spec §6.3) --------------------------
+    mutation_gate_enabled: bool = True
+    mutation_operators: list[str] = field(
+        default_factory=lambda: list(_DEFAULT_MUTATION_OPERATORS))
+    mutation_max_variants: int = 8
+    detection_gate_enabled: bool = True
+    detection_strictness: str = "observed_only"  # or "allow_partial"
 
     @classmethod
     def from_blue_team_cfg(cls, blue_cfg) -> "PatchVerifierConfig":
         return cls(
-            max_attempts_per_patch=getattr(blue_cfg, "patch_verify_max_attempts", 3),
+            max_attempts_per_patch=getattr(
+                blue_cfg, "patch_verify_max_attempts", 3),
+            mutation_gate_enabled=getattr(
+                blue_cfg, "mutation_gate_enabled", True),
+            mutation_operators=list(getattr(
+                blue_cfg, "mutation_operators", None)
+                or _DEFAULT_MUTATION_OPERATORS),
+            mutation_max_variants=getattr(
+                blue_cfg, "mutation_max_variants", 8),
+            detection_gate_enabled=getattr(
+                blue_cfg, "detection_gate_enabled", True),
+            detection_strictness=getattr(
+                blue_cfg, "detection_strictness", "observed_only"),
         )
 
 

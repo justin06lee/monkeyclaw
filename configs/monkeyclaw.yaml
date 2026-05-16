@@ -79,6 +79,11 @@ blue_team:
   patch_verify_max_attempts: 3
   auto_commit_patches: false
   high_severity_alt_count: 3
+  # Verifier gate hardening — mutation robustness + detection gate.
+  mutation_gate_enabled: true
+  mutation_max_variants: 8
+  detection_gate_enabled: true
+  detection_strictness: observed_only
 
 orchestrator:
   red_team_batch_size: 50
