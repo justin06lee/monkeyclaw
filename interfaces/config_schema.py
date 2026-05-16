@@ -125,6 +125,24 @@ class ModelsConfig(BaseModel):
     roles: dict[str, ModelRoute] = Field(default_factory=_default_model_roles)
 
 
+class GuardrailsConfig(BaseModel):
+    """MonkeyClaw self-containment limits — deliverable A8."""
+
+    artifact_dir: str = "data/artifacts"
+    denied_host_paths: list[str] = [
+        "~/.ssh", "~/.aws", "~/.config/gcloud", "/etc/shadow",
+    ]
+    network_allowlist: dict[str, list[str]] = Field(default_factory=lambda: {
+        "default": ["localhost", "127.0.0.1"],
+        "analysis": ["docs.anthropic.com"],
+    })
+    model_route_allowlist: list[str] = ["nvidia", "openai", "anthropic_or_openai"]
+    mcp_tool_allowlist: list[str] = ["argyph", "github-readonly", "docs-search"]
+    max_lanes_per_cycle: int = 64
+    max_tokens_per_cycle: int = 5_000_000
+    emergency_stop: bool = False
+
+
 class MonkeyClawConfig(BaseModel):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     ideation: IdeationConfig = Field(default_factory=IdeationConfig)
@@ -138,3 +156,4 @@ class MonkeyClawConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     nemoclaw: NemoClawConfig = Field(default_factory=NemoClawConfig)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
+    guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
