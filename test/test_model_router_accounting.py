@@ -113,3 +113,23 @@ def test_per_role_cost_rollup(tmp_path):
         assert abs(by_role["patch_generation"]["cost_usd"] - 3.0) < 1e-6
     finally:
         db.close()
+
+
+def test_dashboard_cost_panel_uses_model_runs(tmp_path):
+    from infra.database import Database
+    from infra.mcp_server import MCPServer
+    from interfaces.types import ModelRunInput
+    db = Database(str(tmp_path / "d.db"))
+    mcp = MCPServer(db)
+    try:
+        mcp.log_model_run(ModelRunInput(
+            role="patch_generation", model="frontier-coding",
+            provider="anthropic_or_openai", input_tokens=1000,
+            output_tokens=1000, latency_ms=50, cost_usd=18.0))
+        # The dashboard cost view is a function of get_model_cost_rollup.
+        rollup = mcp.get_model_cost_rollup()
+        total = sum(r["cost_usd"] for r in rollup)
+        assert abs(total - 18.0) < 1e-6
+        assert rollup[0]["role"] == "patch_generation"
+    finally:
+        db.close()
