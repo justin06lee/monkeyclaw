@@ -134,3 +134,23 @@ def test_a3_schema_version_is_2(db):
     row = db.fetchone(
         "SELECT value FROM schema_meta WHERE key='schema_version'")
     assert row[0] == "2"
+
+
+def test_migration_upgrades_legacy_v1_db(tmp_path):
+    """A DB that predates A3 tables gets upgraded on open."""
+    import sqlite3
+    from infra.database import Database
+    p = tmp_path / "legacy.db"
+    # Simulate a v1 DB: schema_meta exists, version=1, no A3 tables.
+    raw = sqlite3.connect(p.as_posix())
+    raw.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    raw.execute("INSERT INTO schema_meta VALUES('schema_version','1')")
+    raw.commit()
+    raw.close()
+    db = Database(p)  # opening must migrate it
+    names = {r[0] for r in db.fetchall(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "telemetry_events" in names
+    row = db.fetchone("SELECT value FROM schema_meta WHERE key='schema_version'")
+    assert row[0] == "2"
+    db.close()
