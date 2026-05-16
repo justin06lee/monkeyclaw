@@ -29,6 +29,13 @@ services:
       - "8787:8787"         # dashboard  (binds 127.0.0.1 in-container)
       - "7321:7321"         # mock MCP
       - "7322:7322"         # MCP server
+    volumes:
+      # Real (non-overlay) storage for the nested Docker daemon. Without this
+      # the inner daemon stores at /var/lib/docker on the container's own
+      # overlayfs; building the NemoClaw sandbox image then stacks overlayfs
+      # on overlayfs, which the kernel rejects ("mount ... overlay ... invalid
+      # argument"). A named volume is ext4-backed, so inner overlay2 works.
+      - dind-storage:/var/lib/docker
 
   # Offline/mock path: no key, no privileged. Reuses the same image; the
   # entrypoint skips NemoClaw setup when NVIDIA_API_KEY is absent.
@@ -41,3 +48,7 @@ services:
       - NVIDIA_API_KEY=     # explicitly empty -> entrypoint skips live setup
     stdin_open: true
     tty: true
+
+volumes:
+  # Nested-Docker storage for the live `monkeyclaw` service (see its comment).
+  dind-storage:

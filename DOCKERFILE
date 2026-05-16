@@ -27,9 +27,16 @@
 FROM ubuntu:24.04
 
 # Base tools: curl/ca-certs for the install scripts; git + zstd + sudo are
-# required by the NemoClaw installer; iptables by the Docker-in-Docker daemon.
+# required by the NemoClaw installer; iptables by the Docker-in-Docker daemon;
+# binutils provides `strings`, which the OpenShell installer uses to verify
+# messaging-credential rewrite support (onboarding aborts without it);
+# python3-venv lets `nemoclaw onboard` build the model-router venv with the
+# SYSTEM python3 (the project's own Python comes from uv and is not used here);
+# openssh-client gives `ssh`/`ssh-keygen` -- `openshell forward` shells out to
+# /usr/bin/ssh to forward the dashboard port into the sandbox over SSH.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates git zstd sudo iptables \
+        curl ca-certificates git zstd sudo iptables binutils python3-venv \
+        openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Docker-in-Docker: the FULL Docker engine (daemon + CLI + containerd) so a

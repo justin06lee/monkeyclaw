@@ -42,6 +42,16 @@ echo "[nemoclaw-setup] Docker daemon is up."
 : "${NVIDIA_API_KEY:?[nemoclaw-setup] set NVIDIA_API_KEY before running}"
 echo "[nemoclaw-setup] installing + onboarding NemoClaw (sandbox: ${SANDBOX})..."
 echo "  this builds the ~2.4 GB sandbox image -- this can take several minutes."
+# A failed run leaves ~/.nemoclaw/onboard-session.json behind; the installer's
+# bundled `nemoclaw onboard` then aborts ("previous onboarding session
+# failed"). This is a one-shot setup script, so discard any stale session up
+# front -- a re-run starts clean (equivalent to `nemoclaw onboard --fresh`).
+rm -f "${HOME:-/root}/.nemoclaw/onboard-session.json"
+# A failed run also leaves the model-router process alive on port 4000;
+# `nemoclaw onboard` then refuses ("Port 4000 already has a healthy router
+# endpoint, but its credential state is unknown"). Stop any stale router so
+# this run starts and credential-verifies its own.
+pkill -f 'model-router-venv/bin/model-router' 2>/dev/null || true
 # Non-interactive flags avoid the stdin-EOF hang that a piped installer hits
 # at the onboarding prompts (NVIDIA/NemoClaw issue #362).
 curl -fsSL https://www.nvidia.com/nemoclaw.sh | \
