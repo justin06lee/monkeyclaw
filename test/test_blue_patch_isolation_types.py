@@ -32,3 +32,16 @@ def test_patch_build_mock_construction():
         build_status="mock")
     assert b.isolation_mode == "mock"
     assert b.build_status == "mock"
+
+
+def test_migration_creates_patch_builds_table(db):
+    rows = db.fetchall("SELECT name FROM sqlite_master WHERE type='table'")
+    assert "patch_builds" in {r["name"] for r in rows}
+
+
+def test_patch_builds_has_isolation_columns(db):
+    cols = {r["name"] for r in db.fetchall(
+        "PRAGMA table_info(patch_builds)")}
+    assert {"build_id", "patch_id", "base_ref", "worktree_path",
+            "diff_applied", "rejected_hunks", "build_status",
+            "victim_instance_id", "isolation_mode", "torn_down"} <= cols

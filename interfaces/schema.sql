@@ -664,6 +664,29 @@ CREATE TABLE IF NOT EXISTS technique_coverage (
 );
 
 --------------------------------------------------------------------------------
+-- patch_builds — patch-isolation build audit (patch-isolation §7).
+-- Reference copy; kept in sync with infra/migrations/0013_patch_isolation.sql.
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS patch_builds (
+    build_id                TEXT PRIMARY KEY,
+    patch_id                TEXT NOT NULL,
+    base_ref                TEXT,
+    worktree_path           TEXT,
+    diff_applied            INTEGER NOT NULL DEFAULT 0,  -- 0/1
+    rejected_hunks          TEXT NOT NULL DEFAULT '[]',  -- JSON list
+    build_status            TEXT NOT NULL,               -- built|apply_failed|build_failed|mock
+    victim_instance_id      TEXT,
+    isolation_mode          TEXT NOT NULL DEFAULT 'mock',  -- live|mock
+    build_duration_seconds  REAL NOT NULL DEFAULT 0.0,
+    torn_down               INTEGER NOT NULL DEFAULT 0,  -- 0/1
+    created_at              TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_patch_builds_patch
+    ON patch_builds(patch_id);
+CREATE INDEX IF NOT EXISTS idx_patch_builds_torn_down
+    ON patch_builds(torn_down);
+
+--------------------------------------------------------------------------------
 -- schema_meta — track schema version for migrations
 --------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -672,7 +695,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 
 INSERT OR IGNORE INTO schema_meta(key, value) VALUES
-    ('schema_version', '12'),
+    ('schema_version', '13'),
     ('taxonomy_corpus_version', 'atlas-5.4.0+owasp-2025'),
     ('embedding_model', 'sentence-transformers/all-MiniLM-L6-v2'),
     ('embedding_dim',   '384');
