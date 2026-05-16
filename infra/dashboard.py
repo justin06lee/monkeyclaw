@@ -192,6 +192,39 @@ def _operators(db_path: str) -> list[dict[str, Any]]:
     )
 
 
+def _purple_heatmap(db_path: str) -> list[dict[str, Any]]:
+    """Joint attack-coverage x detection-coverage, one cell per zone."""
+    return _query(db_path,
+        "SELECT z.zone_id AS zone_id, z.name AS zone_name, "
+        "z.coverage_score AS attack_coverage, "
+        "COALESCE(c.coverage_score, 0.0) AS detection_coverage, "
+        "COALESCE(c.sample_count, 0) AS detection_samples "
+        "FROM surface_zones z "
+        "LEFT JOIN detection_coverage c ON c.zone_id = z.zone_id "
+        "ORDER BY z.zone_id")
+
+
+def _purple_report_card(db_path: str) -> dict[str, Any]:
+    """The most recent report card, decoded for the dashboard."""
+    rows = _query(db_path,
+        "SELECT card_id, generated_at, dimensions, summary "
+        "FROM report_cards ORDER BY generated_at DESC LIMIT 1")
+    if not rows:
+        return {}
+    import json
+    card = dict(rows[0])
+    card["dimensions"] = json.loads(card.get("dimensions") or "[]")
+    return card
+
+
+def _purple_timeline(db_path: str) -> list[dict[str, Any]]:
+    """Recent detection results — the evidence-timeline feed."""
+    return _query(db_path,
+        "SELECT result_id, session_id, execution_id, zone_id, quadrant, "
+        "prevention, observability, created_at "
+        "FROM detection_results ORDER BY created_at DESC LIMIT 50")
+
+
 def _status(db_path: str) -> dict[str, Any]:
     zones = _zones(db_path)
     findings = _findings(db_path)
@@ -278,6 +311,9 @@ def _all(db_path: str) -> dict[str, Any]:
         "telemetry": _telemetry(db_path),
         "judges": _judges(db_path),
         "activity": _activity(db_path),
+        "purple_heatmap": _purple_heatmap(db_path),
+        "purple_report_card": _purple_report_card(db_path),
+        "purple_timeline": _purple_timeline(db_path),
     }
 
 
@@ -571,6 +607,22 @@ _PAGE = r"""<!doctype html>
     <div class="desc">Token spend, latency and success rate for every model
       role driving the run.</div>
     <div class="card"><div id="models" class="heat"></div></div>
+  </section>
+
+  <section>
+    <div class="kicker">Purple</div>
+    <h2>Detection coverage &amp; report card</h2>
+    <div class="desc">Joint attack-coverage x detection-coverage per zone, the
+      measured-vs-target security report card, and the recent detection
+      verdict timeline.</div>
+    <div class="card"><h3>Joint coverage heatmap</h3>
+      <div id="purpleHeatmap" class="heat"></div></div>
+    <div class="cols">
+      <div class="card"><h3>Security report card</h3>
+        <div class="scroll" id="purpleReportCard"></div></div>
+      <div class="card"><h3>Detection timeline</h3>
+        <div class="scroll tl" id="purpleTimeline"></div></div>
+    </div>
   </section>
 
   <footer>
@@ -870,6 +922,58 @@ function renderModels(m){
     </div>`;}).join(''));
 }
 
+const QUAD={PASS:"var(--ok)",PARTIAL:"var(--med)",
+  WEAK:"var(--high)",FAIL:"var(--crit)"};
+
+function renderPurpleHeatmap(h){
+  if(!h||!h.length){set('purpleHeatmap',
+    '<div class="empty">no detection coverage yet</div>');return;}
+  set('purpleHeatmap',h.map(z=>{
+    const a=z.attack_coverage||0, d=z.detection_coverage||0;
+    return `<div class="zone">
+      <div class="top"><span class="id">${esc(z.zone_id)}</span>
+        <span class="pct" style="color:${heat(d)}">`
+        +`${Math.round(d*100)}%</span></div>
+      <div class="nm">${esc(z.zone_name||'')}</div>
+      <div class="bar"><i style="width:${Math.max(3,a*100)}%;`
+        +`background:${heat(a)}"></i></div>
+      <div class="bar"><i style="width:${Math.max(3,d*100)}%;`
+        +`background:${heat(d)}"></i></div>
+      <div class="ft"><span>attack ${Math.round(a*100)}%</span>`
+      +`<span>detect ${Math.round(d*100)}% · ${z.detection_samples||0}n`
+      +`</span></div>
+    </div>`;}).join(''));
+}
+
+function renderPurpleReportCard(c){
+  if(!c||!c.dimensions||!c.dimensions.length){set('purpleReportCard',
+    '<div class="empty">no report card generated yet</div>');return;}
+  const head=`<div class="ap" style="margin-bottom:8px">`
+    +`${trunc(c.summary,200)}</div>`;
+  const rows=c.dimensions.map(d=>{
+    const m=d.measured||0, t=d.target||0;
+    const lbl=d.target_is_aspirational?' (aspirational)':'';
+    return `<div class="row" style="border-left-color:${heat(m)}">
+      <div class="hd"><span class="ti">${esc(d.name)}</span>
+        <span class="chip"><b>${(m).toFixed(2)}</b> measured</span>
+        <span class="chip">target ${(t).toFixed(2)}${lbl}</span>
+        <span class="chip">${d.evidence_count||0} evidence</span></div>
+      ${d.notes?`<div class="ap">${trunc(d.notes,140)}</div>`:''}</div>`;
+  }).join('');
+  set('purpleReportCard',head+rows);
+}
+
+function renderPurpleTimeline(t){
+  if(!t||!t.length){set('purpleTimeline',
+    '<div class="empty">no detection results yet</div>');return;}
+  set('purpleTimeline',t.map(r=>
+    `<div class="ev"><span class="ts">${ts(r.created_at)}</span>
+      <div><div class="et">${esc(r.zone_id)} `
+      +`${badge(r.quadrant,QUAD[r.quadrant]||'var(--dim)')}</div>
+      <div class="em">${esc(r.prevention)} · ${esc(r.observability)}</div>`
+      +`</div></div>`).join(''));
+}
+
 async function tick(){
   const d=await j('/api/all');
   if(!d){document.getElementById('liveText').textContent=
@@ -881,6 +985,9 @@ async function tick(){
   renderOperators(d.operators); renderJudges(d.judges);
   renderTelemetry(d.telemetry); renderCycles(d.cycles);
   renderModels(d.models);
+  renderPurpleHeatmap(d.purple_heatmap);
+  renderPurpleReportCard(d.purple_report_card);
+  renderPurpleTimeline(d.purple_timeline);
   document.getElementById('stamp').textContent=
     'live · updated '+new Date().toLocaleTimeString();
 }
