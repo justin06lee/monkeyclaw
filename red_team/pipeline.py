@@ -35,6 +35,7 @@ from interfaces.mcp_tools import MonkeyClawMCP
 from interfaces.model_router import ModelRouter
 from interfaces.nemoclaw_policy import nemoclaw_policy_config
 from interfaces.provisioning import VictimInstance
+from interfaces.ranker import RankerInput
 from interfaces.types import (
     CoverageGap,
     CycleSummaryInput,
@@ -53,14 +54,17 @@ from red_team.execution_agent import ExecutionAgent, ExecutionConfig
 from red_team.ideation import IdeationConfig, IdeationEngine
 from red_team.ideation_tournament import IdeationTournamentJudge
 from red_team.judge import Judge, JudgeConfig
+from red_team.judge_ensemble import EnsembleOutcome, RoleVote
 from red_team.mutation_engine import (
     MutationConfig,
     MutationEngine,
     load_mutation_config,
 )
+from red_team.heuristic_ranker import HeuristicRanker
 from red_team.mutation_policy import MutationPolicy
 from red_team.mutations import MutationStats
 from red_team.priority import score_ideas
+from red_team.trace_collector import TraceCollector
 from red_team.progress import score_progress, search_score
 from red_team.near_miss import extract_near_misses
 from red_team import chain_composer
@@ -236,6 +240,24 @@ class Pipeline:
             self.mutation_engine = MutationEngine(
                 policy=policy, stats_by_zone={}, global_stats=global_stats,
                 mcp=self.mcp, cfg=self.mutation_cfg)
+
+        # Ranking layer (learned-ranking-model spec §10). The Ranker is
+        # advisory and reversible — it orders pre-ranking candidates and
+        # ranks mutation operators, but never gates a finding. HeuristicRanker
+        # ships day one; mode=learned swaps in a gated LearnedRanker that
+        # falls back to the heuristic on any artifact problem.
+        self._ranker_stats = MutationStats()
+        ranker_cfg = self.cfg.red.ranker
+        if ranker_cfg.mode == "learned":
+            from red_team.learned_ranker import LearnedRanker
+            self._ranker = LearnedRanker.load(
+                ranker_cfg.artifact_path,
+                fallback=HeuristicRanker(mutation_stats=self._ranker_stats))
+        else:
+            self._ranker = HeuristicRanker(mutation_stats=self._ranker_stats)
+        # The trace-collection layer accrues one labelled AttemptTrace per
+        # judged attempt — the load-bearing dataset deliverable (spec §6.2).
+        self._trace_collector = TraceCollector(self.mcp)
 
     # ------------------------------------------------------------------
     def _llm_for_entrant(self, entrant) -> object:
@@ -437,6 +459,12 @@ class Pipeline:
         kept_ideas = [p.idea for p in prioritized]
         if not kept_ideas:
             return []
+        # Pre-ranking through the Ranker interface (learned-ranking-model
+        # spec §10). For not-yet-executed ideas the HeuristicRanker has no
+        # trajectory features and returns a flat 0.5 prior, so its stable
+        # argsort preserves the priority-sorted order — behaviour-equivalent
+        # today, the seam a learned ranker later swaps into.
+        kept_ideas = self._rank_ideas(kept_ideas)
 
         # Cross-zone chaining — compose multi-zone kill-chain lanes from the
         # cycle's primitives + archive elites. An empty composer output falls
@@ -542,6 +570,31 @@ class Pipeline:
     # ------------------------------------------------------------------
     # judge
     # ------------------------------------------------------------------
+    def _rank_ideas(self, ideas: list[IdeaObject]) -> list[IdeaObject]:
+        """Order pre-ranking candidates through the Ranker interface.
+
+        Advisory and behaviour-equivalent with the HeuristicRanker: with no
+        trajectory features every idea scores a flat prior and the stable
+        argsort preserves the incoming order. A ranker failure degrades to
+        the unranked order, never an aborted cycle (spec §11)."""
+        try:
+            ranker_inputs = [
+                RankerInput(
+                    idea_summary=f"{idea.title}: {idea.approach}",
+                    zone_id=idea.zone_id,
+                    tactic_tags=list(getattr(
+                        getattr(idea, "tactics", None), "tactic_tags", None)
+                        or []),
+                    mutation_operator=getattr(idea, "mutation_operator", None),
+                )
+                for idea in ideas
+            ]
+            order = self._ranker.rank(ranker_inputs)
+            return [ideas[i] for i in order]
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("ranker pre-ranking failed (%s) — unranked order", e)
+            return ideas
+
     def judge(self, lane_result: LaneResult) -> JudgmentResult:
         with self._book_lock:
             idea = self._idea_book.get(lane_result.idea_id)
@@ -622,6 +675,29 @@ class Pipeline:
             technique_coverage=self._technique_coverage,
             alert_severity_floor=self.alert_severity_floor,
         )
+        # Best-effort trace collection (learned-ranking-model spec §6.2).
+        # A trace-write failure is logged and swallowed — the ranking
+        # dataset is advisory and must never abort a cycle (spec §11).
+        try:
+            ensemble_outcome = EnsembleOutcome(
+                verdict=judgment.verdict,
+                failure_class=judgment.failure_class,
+                severity=judgment.severity,
+                confidence=judgment.confidence,
+                reasoning=judgment.reasoning,
+                votes=[RoleVote(
+                    role="judgment", verdict=judgment.verdict,
+                    score=judgment.confidence,
+                    confidence=judgment.confidence,
+                    reasoning=judgment.reasoning,
+                    tokens_used=judgment.tokens_used_judgment)],
+                tokens_used=judgment.tokens_used_judgment,
+            )
+            self._trace_collector.record(
+                idea, lane_result, progress, ensemble_outcome)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("trace collection failed for lane %s: %s",
+                        lane_result.lane_id, e)
         LOG.info(
             "judge: lane=%s zone=%s verdict=%s tier=%s severity=%s "
             "progress=%.2f finding=%s",
