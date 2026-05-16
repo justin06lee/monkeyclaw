@@ -312,3 +312,11 @@ def test_gate3_fails_when_existing_test_regresses(tmp_path: Path):
     outcome = verifier.verify(patch=_patch(), package=pkg, test_pair=pair)
     assert outcome.approved is False
     assert outcome.failed_gate == "gate3_full_suite"
+
+
+def test_verify_outcome_defaults_isolation_mode_to_mock():
+    from blue_team.patch_verifier import VerifyOutcome
+
+    o = VerifyOutcome(approved=True, failed_gate=None, gates=[],
+                      patch_id="P1")
+    assert o.isolation_mode == "mock"

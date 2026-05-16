@@ -193,6 +193,7 @@ class VerifyOutcome:
     patch_id: str
     notes: str = ""
     triggered_evidence: list[CheckResult] = field(default_factory=list)
+    isolation_mode: str = "mock"  # IsolationMode — proven live or on mock surface
 
 
 @dataclass
