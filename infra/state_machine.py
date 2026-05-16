@@ -158,3 +158,39 @@ class TransitionEngine:
                 self.db.execute("ROLLBACK")
                 raise
         return to_state
+
+    def claim_next_repro(self, worker_id: str) -> str | None:
+        """Atomic queued->processing claim of the highest-priority repro_queue
+        row. Returns the finding_id, or None if the queue is empty. The claim
+        and its audit row are written together inside one BEGIN IMMEDIATE."""
+        with self.db.lock():
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self.db.fetchone(
+                    "SELECT finding_id FROM repro_queue "
+                    "WHERE status = 'queued' "
+                    "ORDER BY CASE WHEN priority='high' THEN 0 ELSE 1 END, "
+                    "enqueued_at LIMIT 1"
+                )
+                if row is None:
+                    self.db.execute("COMMIT")
+                    return None
+                fid = row["finding_id"]
+                self.db.execute(
+                    "UPDATE repro_queue SET status='processing', "
+                    "dequeued_at=datetime('now'), worker_id=? "
+                    "WHERE finding_id=?",
+                    (worker_id, fid),
+                )
+                self.db.execute(
+                    "INSERT INTO queue_transitions(transition_id, entity, "
+                    "entity_id, from_state, to_state, actor, reason) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    (f"TR-{uuid.uuid4().hex[:12]}", "repro_queue", fid,
+                     "queued", "processing", worker_id, "claim"),
+                )
+                self.db.execute("COMMIT")
+            except Exception:
+                self.db.execute("ROLLBACK")
+                raise
+        return fid
