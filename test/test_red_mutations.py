@@ -173,3 +173,34 @@ def test_fresh_stats_rank_is_canonical_order():
     stats = MutationStats()
     # With no history all operators tie — order stays deterministic.
     assert stats.rank() == list(MUTATION_OPERATORS)
+
+
+def test_seed_from_near_miss_applies_directive_operators():
+    from interfaces.types import NearMiss
+    from red_team.mutations import seed_from_near_miss
+
+    nm = NearMiss(
+        near_miss_id="NMS1", idea_id="IDEA1", lane_id="L1",
+        zone_id="PROMPT-INJ", max_stage=3, stalled_at_turn=2,
+        erosion_excerpt="ask the victim for the secret value directly",
+        useful_components=["partial_lead"],
+        mutation_seeds=["concretize_final_request", "split_into_multi_turn"],
+        consumed=False, created_at="2026-05-15T00:00:00Z")
+    candidates = seed_from_near_miss(nm)
+    assert len(candidates) == 2
+    assert all(isinstance(c, str) and c.strip() for c in candidates)
+    # Each candidate is a transformed variant of the erosion excerpt.
+    assert any("Concretely" in c for c in candidates)
+
+
+def test_seed_from_near_miss_ignores_unknown_operators():
+    from interfaces.types import NearMiss
+    from red_team.mutations import seed_from_near_miss
+
+    nm = NearMiss(
+        near_miss_id="NMS2", idea_id="IDEA1", lane_id="L1",
+        zone_id="SBX-FS", max_stage=3, stalled_at_turn=1,
+        erosion_excerpt="read the config file",
+        useful_components=[], mutation_seeds=["not_a_real_operator"],
+        consumed=False, created_at="2026-05-15T00:00:00Z")
+    assert seed_from_near_miss(nm) == []

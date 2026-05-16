@@ -25,6 +25,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from collections.abc import Callable
 
+from interfaces.types import NearMiss
+
 # ---------------------------------------------------------------------------
 # Operator catalogue
 # ---------------------------------------------------------------------------
@@ -217,6 +219,22 @@ def apply_operator(name: str, idea_text: str, *, extra: str | None = None) -> st
     return get_operator(name).apply(idea_text, extra=extra)
 
 
+def seed_from_near_miss(near_miss: NearMiss) -> list[str]:
+    """Apply a near miss's directive operators to its erosion excerpt.
+
+    Produces one concrete mutated attack-instruction string per recommended
+    operator. Unknown operator names are skipped (trajectory spec §6.6).
+    """
+    base = near_miss.erosion_excerpt.strip()
+    if not base:
+        return []
+    out: list[str] = []
+    for name in near_miss.mutation_seeds:
+        if name in OPERATORS:
+            out.append(OPERATORS[name].apply(base))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Per-operator improvement stats
 # ---------------------------------------------------------------------------
@@ -330,4 +348,5 @@ __all__ = [
     "OPERATORS",
     "apply_operator",
     "get_operator",
+    "seed_from_near_miss",
 ]
