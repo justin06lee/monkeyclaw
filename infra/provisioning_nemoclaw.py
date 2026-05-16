@@ -108,21 +108,30 @@ class NemoClawProvisioner(VictimProvisioner):
         if self._telemetry is not None:
             self._telemetry.policy_loaded(actor="provisioner",
                                           target=config.policy_path)
-        LOG.info("provisioning victim %s: restoring %s -> %s, then recover",
-                 instance_id, self.sandbox_name, self.clean_snapshot)
-
-        # 1. Reset filesystem/state to the clean snapshot.
-        self._run(
-            [self.cli, self.sandbox_name, "snapshot", "restore", self.clean_snapshot],
-            timeout=self.snapshot_restore_timeout_s,
-            what="snapshot restore",
-        )
-        # 2. Restart the gateway + agent so no runtime/session state carries over.
-        self._run(
-            [self.cli, self.sandbox_name, "recover"],
-            timeout=self.recover_timeout_s,
-            what="recover",
-        )
+        if self.clean_snapshot:
+            LOG.info("provisioning victim %s: restoring %s -> %s, then recover",
+                     instance_id, self.sandbox_name, self.clean_snapshot)
+            # 1. Reset filesystem/state to the clean snapshot.
+            self._run(
+                [self.cli, self.sandbox_name, "snapshot", "restore", self.clean_snapshot],
+                timeout=self.snapshot_restore_timeout_s,
+                what="snapshot restore",
+            )
+            # 2. Restart the gateway + agent so no runtime/session state carries over.
+            self._run(
+                [self.cli, self.sandbox_name, "recover"],
+                timeout=self.recover_timeout_s,
+                what="recover",
+            )
+        else:
+            # No-reset mode: `clean_snapshot` is unset, so connect to the
+            # persistent victim without snapshot restore/recover. Agent and
+            # filesystem state carry over between lanes. Used where snapshots
+            # are unavailable (e.g. nemoclaw CPU sandboxes that don't support
+            # `snapshot create`).
+            LOG.warning("provisioning victim %s: no-reset mode (clean_snapshot "
+                        "unset) — connecting to persistent %s without reset",
+                        instance_id, self.sandbox_name)
         # 3. Fetch the gateway auth token for VictimClient.
         token = self._run(
             [self.cli, self.sandbox_name, "gateway-token", "--quiet"],

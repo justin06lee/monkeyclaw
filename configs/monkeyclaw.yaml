@@ -77,6 +77,17 @@ nemoclaw:
     - ~/.nemoclaw
   allowed_paths:
     - /tmp/openshell
+  # Live `monkey-victim` sandbox.
+  sandbox_name: monkey-victim
+  # No-reset mode: nemoclaw v0.0.44 `snapshot create` fails on this CPU
+  # sandbox, so leave clean_snapshot empty — lanes connect to the persistent
+  # victim without per-lane snapshot restore/recover. Set this to a real
+  # snapshot name once snapshots work to restore per-lane isolation.
+  clean_snapshot: ""
+  # Empty: this sandbox runs as a standalone docker container, not a k3s pod
+  # inside a gateway container, so the docker-exec fs-diff path does not apply.
+  # The monitoring harness falls back to host-path snapshots.
+  gateway_container: ""
 
 models:
   roles:
