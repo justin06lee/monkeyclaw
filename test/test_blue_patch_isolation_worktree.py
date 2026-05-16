@@ -38,3 +38,39 @@ def test_patch_builds_store_lists_untorn_builds(db):
             store.mark_torn_down(bid)
     untorn = store.list_untorn()
     assert {r["build_id"] for r in untorn} == {"B1"}
+
+
+def test_diff_applies_accepts_a_clean_diff(tmp_path, db):
+    from blue_team.patch_isolation import PatchIsolation, PatchIsolationConfig
+    from infra.patch_builds_store import PatchBuildsStore
+    from test._git_repo_fixture import GOOD_DIFF, build_repo, make_patch
+
+    repo, base = build_repo(tmp_path / "nemoclaw")
+    iso = PatchIsolation(
+        provisioner=None, store=PatchBuildsStore(db),
+        cfg=PatchIsolationConfig(
+            nemoclaw_repo_path=repo, base_ref=base,
+            worktree_root=str(tmp_path / "wt")))
+    patch = make_patch("P1", GOOD_DIFF)
+    result = iso.diff_applies(patch)
+    assert result.checked is True
+    assert result.applied is True
+    assert result.rejected_hunks == []
+
+
+def test_diff_applies_rejects_a_conflicting_diff(tmp_path, db):
+    from blue_team.patch_isolation import PatchIsolation, PatchIsolationConfig
+    from infra.patch_builds_store import PatchBuildsStore
+    from test._git_repo_fixture import CONFLICTING_DIFF, build_repo, make_patch
+
+    repo, base = build_repo(tmp_path / "nemoclaw")
+    iso = PatchIsolation(
+        provisioner=None, store=PatchBuildsStore(db),
+        cfg=PatchIsolationConfig(
+            nemoclaw_repo_path=repo, base_ref=base,
+            worktree_root=str(tmp_path / "wt")))
+    patch = make_patch("P2", CONFLICTING_DIFF)
+    result = iso.diff_applies(patch)
+    assert result.checked is True
+    assert result.applied is False
+    assert result.stderr  # git apply --check emitted a reason
