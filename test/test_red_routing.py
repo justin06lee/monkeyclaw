@@ -7,17 +7,30 @@ from interfaces.types import CheckResult, IdeaObject, JudgmentResult
 from red_team.routing import route_judgment
 
 
-def _idea() -> IdeaObject:
+def _idea(zone_id: str = "PROMPT-INJ") -> IdeaObject:
     return IdeaObject(
-        idea_id="IDEA-1", cycle_id=1, zone_id="PROMPT-INJ",
+        idea_id="IDEA-1", cycle_id=1, zone_id=zone_id,
         source_mode="creative", title="t", approach="a",
         success_criteria="s", estimated_turns=1, novelty_notes="",
     )
 
 
-def _judgment(verdict: str, severity: str = "high") -> JudgmentResult:
+def _judgment(idea_or_verdict=None, severity_or_kw: str = "high",
+              *, verdict: str | None = None) -> JudgmentResult:
+    """Build a JudgmentResult.
+
+    Two call styles are supported: the original positional
+    ``_judgment(verdict, severity)``, and ``_judgment(idea, verdict=...)``
+    where the zone is taken from the idea (corpus-driven-ideation routing
+    tests)."""
+    zone_id = "PROMPT-INJ"
+    severity = severity_or_kw
+    if isinstance(idea_or_verdict, str):
+        verdict = idea_or_verdict
+    elif idea_or_verdict is not None:
+        zone_id = idea_or_verdict.zone_id
     return JudgmentResult(
-        lane_id="LANE-1", idea_id="IDEA-1", zone_id="PROMPT-INJ",
+        lane_id="LANE-1", idea_id="IDEA-1", zone_id=zone_id,
         verdict=verdict, tier_that_caught="semantic",
         failure_class="prompt_injection", severity=severity,
         confidence=0.9,
@@ -126,3 +139,37 @@ def test_route_judgment_without_archive_skips_persistence():
     mcp = MockMCP(verbose=False)
     route_judgment(_judgment("confirmed", "critical"), _idea(), mcp)
     assert mcp.get_archive_cells(None) == []
+
+
+def test_routing_records_technique_attempt(server):
+    from interfaces.types import TechniqueRef
+    from red_team.taxonomy import load_taxonomy
+    from red_team.technique_coverage import TechniqueCoverageModel
+
+    tax = load_taxonomy()
+    cov = TechniqueCoverageModel(server, tax)
+    idea = _idea(zone_id="PROMPT-INJ")
+    idea.techniques = [TechniqueRef(
+        kind="atlas", technique_id="AML.T0051", name="LLM Prompt Injection",
+        corpus_version=tax.version, resolved_by="model")]
+    judgment = _judgment(idea, verdict="clean")
+    route_judgment(judgment, idea, server, technique_coverage=cov)
+    assert cov.coverage("PROMPT-INJ").exercised >= 1
+
+
+def test_routing_records_technique_confirmation(server):
+    from interfaces.types import TechniqueRef
+    from red_team.taxonomy import load_taxonomy
+    from red_team.technique_coverage import TechniqueCoverageModel
+
+    tax = load_taxonomy()
+    cov = TechniqueCoverageModel(server, tax)
+    idea = _idea(zone_id="MEM-STATE")
+    idea.techniques = [TechniqueRef(
+        kind="atlas", technique_id="AML.T0070",
+        name="Agent Memory Poisoning",
+        corpus_version=tax.version, resolved_by="model")]
+    judgment = _judgment(idea, verdict="confirmed")
+    fid = route_judgment(judgment, idea, server, technique_coverage=cov)
+    assert cov.coverage("MEM-STATE").confirmed >= 1
+    assert len(server.get_finding_techniques(fid)) == 1
