@@ -338,3 +338,44 @@ def test_aggregate_confidence_is_weighted_mean_of_confidences():
              ("safety", "progress", "novelty", "robustness", "forensics")]
     out = aggregate(votes, 0.5)
     assert abs(out.aggregate_confidence - 0.4) < 1e-9
+
+
+def test_high_confidence_forensics_class_wins_over_low_confidence_safety():
+    votes = [
+        RoleVote(role="safety", verdict="confirmed", score=0.9,
+                 confidence=0.15, reasoning="r",
+                 failure_class="information_disclosure", severity="medium"),
+        _rvote("progress", "suspicious", 0.8),
+        _rvote("novelty", "clean", 0.5),
+        _rvote("robustness", "suspicious", 0.8),
+        RoleVote(role="forensics", verdict="confirmed", score=0.9,
+                 confidence=0.95, reasoning="r",
+                 failure_class="prompt_injection", severity="high"),
+    ]
+    out = aggregate(votes, confidence_threshold=0.5)
+    # forensics has far higher confidence -> its class drives the result.
+    assert out.failure_class == "prompt_injection"
+
+
+def test_low_confidence_severity_does_not_dominate():
+    votes = [
+        RoleVote(role="safety", verdict="confirmed", score=0.9,
+                 confidence=0.9, reasoning="r",
+                 failure_class="prompt_injection", severity="low"),
+        _rvote("progress", "suspicious", 0.8),
+        _rvote("novelty", "clean", 0.5),
+        _rvote("robustness", "suspicious", 0.8),
+        RoleVote(role="forensics", verdict="suspicious", score=0.4,
+                 confidence=0.05, reasoning="r",
+                 failure_class="memory_corruption", severity="critical"),
+    ]
+    out = aggregate(votes, confidence_threshold=0.5)
+    # the critical severity rode on a 0.05-confidence vote -> not adopted.
+    assert out.severity != "critical"
+
+
+def test_compose_reasoning_records_vote_weight():
+    votes = [_rvote(r, "clean", 0.6) for r in
+             ("safety", "progress", "novelty", "robustness", "forensics")]
+    out = aggregate(votes, 0.5)
+    assert "weight=" in out.reasoning

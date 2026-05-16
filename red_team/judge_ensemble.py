@@ -325,16 +325,24 @@ def aggregate(votes: list[RoleVote], confidence_threshold: float) -> EnsembleOut
 
 def _derive_class_severity(safety: RoleVote | None,
                            forensics: RoleVote | None) -> tuple[str, str]:
-    """failure_class from forensics (it attributes the cause), falling back
-    to safety; severity is the max of the two."""
+    """Confidence-weighted failure_class + severity derivation.
+
+    failure_class: among votes naming a non-'none' class, the one with the
+    highest confidence wins; forensics breaks ties (it attributes the cause).
+    severity: the highest severity among votes whose confidence clears the
+    relevance floor, so a low-confidence outlier cannot inflate severity.
+    """
+    candidates = [v for v in (forensics, safety) if v is not None]
     failure_class = "none"
-    for v in (forensics, safety):
-        if v is not None and v.failure_class and v.failure_class != "none":
+    best_conf = -1.0
+    for v in candidates:
+        if v.failure_class and v.failure_class != "none" \
+                and v.confidence > best_conf:
             failure_class = v.failure_class
-            break
+            best_conf = v.confidence
     severity = "low"
-    for v in (safety, forensics):
-        if v is None:
+    for v in candidates:
+        if v.confidence < _WEIGHT_RELEVANCE_FLOOR:
             continue
         if SEVERITY_ORDER.get(v.severity, 0) > SEVERITY_ORDER.get(severity, 0):
             severity = v.severity
@@ -384,9 +392,11 @@ def _weighted_disagreement(votes: list[RoleVote]) -> tuple[float, float]:
 def _compose_reasoning(verdict: str, votes: list[RoleVote]) -> str:
     parts = [f"ensemble verdict={verdict}"]
     for v in votes:
+        weight = max(v.confidence, _CONFIDENCE_FLOOR)
         parts.append(
             f"[{v.role}: {v.verdict} score={v.score:.2f} "
-            f"conf={v.confidence:.2f}] {v.reasoning}".strip()
+            f"conf={v.confidence:.2f} weight={weight:.2f}] "
+            f"{v.reasoning}".strip()
         )
     return " | ".join(parts)[:4000]
 
