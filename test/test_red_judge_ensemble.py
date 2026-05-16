@@ -12,10 +12,20 @@ test_red_judge.py.
 from __future__ import annotations
 
 import json
+from dataclasses import fields
 
 from infra.mock_mcp import MockMCP
 from interfaces.llm import MockLLM
-from interfaces.types import FsDiff, LaneResult, MemoryDiff, Message
+from interfaces.types import (
+    AppealVerdict,
+    AttackElo,
+    FsDiff,
+    JudgeVoteInput,
+    LaneResult,
+    MemoryDiff,
+    Message,
+    PairwiseResult,
+)
 from red_team.judge_ensemble import JUDGE_ROLES, JudgeEnsemble
 
 
@@ -225,3 +235,51 @@ def test_ensemble_runs_without_mcp():
     )
     outcome = JudgeEnsemble(llm, mcp=None).run(_bare_lane(), "probe", "obj")
     assert outcome.verdict == "clean"
+
+
+def test_appeal_verdict_carries_authoritative_fields():
+    fnames = {f.name for f in fields(AppealVerdict)}
+    assert {"appeal_id", "lane_id", "ensemble_verdict", "appeal_verdict",
+            "disagreement", "ensemble_confidence", "appeal_confidence",
+            "failure_class", "severity", "sided_with_roles", "reasoning",
+            "model", "errored"} <= fnames
+
+
+def test_appeal_verdict_constructs_with_defaults():
+    v = AppealVerdict(
+        appeal_id="A1", lane_id="L1", ensemble_verdict="suspicious",
+        appeal_verdict="confirmed", disagreement=0.7,
+        ensemble_confidence=0.3, appeal_confidence=0.82,
+    )
+    assert v.failure_class == "none"
+    assert v.severity == "low"
+    assert v.sided_with_roles == []
+    assert v.errored is False
+
+
+def test_pairwise_result_has_winner_and_margin():
+    r = PairwiseResult(
+        zone_id="SBX-FS", winner_attack_id="F2", loser_attack_id="F1",
+        margin=0.4, reasoning="F2 is the more robust demonstration",
+    )
+    assert r.winner_attack_id == "F2"
+    assert 0.0 <= r.margin <= 1.0
+
+
+def test_attack_elo_starts_at_base_rating():
+    e = AttackElo(zone_id="SBX-FS", attack_id="F1")
+    assert e.rating == 1000.0
+    assert e.comparisons == 0
+    assert e.wins == 0 and e.losses == 0
+
+
+def test_judge_vote_input_has_optional_appeal_fields():
+    fnames = {f.name for f in fields(JudgeVoteInput)}
+    assert {"is_appeal", "weight", "model"} <= fnames
+    vote = JudgeVoteInput(
+        lane_id="L1", judge_role="safety", verdict="confirmed",
+        score=0.9, confidence=0.8, reasoning="r",
+    )
+    assert vote.is_appeal is False
+    assert vote.weight == 1.0
+    assert vote.model == ""
