@@ -22,6 +22,8 @@ class IdeationConfig(BaseModel):
     dedup_threshold: float = 0.92
     near_dup_threshold: float = 0.80
     retry_max: int = 3
+    taxonomy_mode: bool = True
+    taxonomy_gap_top_n: int = 4
 
 
 class LaneConfig(BaseModel):

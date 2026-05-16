@@ -131,6 +131,8 @@ class Pipeline:
             temperature=self.cfg.ideation.temperature,
             max_tokens_per_mode=self.cfg.ideation.max_tokens_per_mode,
             retry_max=self.cfg.ideation.retry_max,
+            taxonomy_mode=self.cfg.ideation.taxonomy_mode,
+            taxonomy_gap_top_n=self.cfg.ideation.taxonomy_gap_top_n,
         )
         execution_cfg = execution_cfg or ExecutionConfig(
             max_turns=self.cfg.lanes.max_turns,

@@ -11,6 +11,9 @@ ideation:
   dedup_threshold: 0.92
   near_dup_threshold: 0.80
   retry_max: 3
+  # Corpus-driven ideation — Mode D (systematic ATLAS technique walk).
+  taxonomy_mode: true
+  taxonomy_gap_top_n: 4
 
 # B9 — model tournament. When enabled, each listed entrant model also
 # ideates every targeted zone; their ideas join the shared dedup/priority

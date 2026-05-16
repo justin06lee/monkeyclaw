@@ -21,3 +21,9 @@ def test_defaults_load():
     assert cfg.lanes.lane_timeout_seconds == 1200
     assert cfg.nemoclaw.repo_path
     assert "PROMPT-INJ" in cfg.judgment.tier2_zones
+
+
+def test_ideation_taxonomy_config_defaults():
+    cfg = load_config()
+    assert cfg.ideation.taxonomy_mode is True
+    assert cfg.ideation.taxonomy_gap_top_n == 4
