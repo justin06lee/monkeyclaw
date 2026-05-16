@@ -627,6 +627,7 @@ class ArchiveCell:
     best_score: float
     occupancy: int
     updated_at: str
+    niche_descriptors: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -638,6 +639,7 @@ class ArchiveUpdateInput:
     response_movement: str
     idea_id: str
     score: float
+    niche_descriptors: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

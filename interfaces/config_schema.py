@@ -253,8 +253,23 @@ class PurpleConfig(BaseModel):
     self_governance_enabled: bool = True
 
 
+class ArchiveConfig(BaseModel):
+    """B5 — MAP-Elites archive tuning. See map-elites-archive spec §13."""
+
+    niche_gap_low: float = 0.5
+    niche_gap_high: float = 1.5
+    seed_cross_zone_count: int = 2
+
+
+class RedConfig(BaseModel):
+    """Red-team subsystem tuning."""
+
+    archive: ArchiveConfig = Field(default_factory=ArchiveConfig)
+
+
 class MonkeyClawConfig(BaseModel):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    red: RedConfig = Field(default_factory=RedConfig)
     ideation: IdeationConfig = Field(default_factory=IdeationConfig)
     lanes: LaneConfig = Field(default_factory=LaneConfig)
     judgment: JudgmentConfig = Field(default_factory=JudgmentConfig)

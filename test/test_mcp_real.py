@@ -169,12 +169,12 @@ def test_a3_tables_exist(db):
         assert t in names, f"missing table {t}"
 
 
-def test_a3_schema_version_is_6(db):
+def test_a3_schema_version_is_7(db):
     # schema_version tracks the highest applied migration ordinal (spec §13.3).
-    # Bumped to 6 by migration 0006 (real-provisioner tables).
+    # Bumped to 7 by migration 0007 (map-elites archive niche descriptors).
     row = db.fetchone(
         "SELECT value FROM schema_meta WHERE key='schema_version'")
-    assert row[0] == "6"
+    assert row[0] == "7"
 
 
 def _sample_finding_input() -> FindingInput:
@@ -261,7 +261,7 @@ def test_migration_upgrades_legacy_v1_db(tmp_path):
         "SELECT name FROM sqlite_master WHERE type='table'")}
     assert "telemetry_events" in names
     row = db.fetchone("SELECT value FROM schema_meta WHERE key='schema_version'")
-    assert row[0] == "6"
+    assert row[0] == "7"
     db.close()
 
 

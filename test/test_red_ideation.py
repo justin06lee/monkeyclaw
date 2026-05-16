@@ -175,3 +175,42 @@ def test_ideation_defaults_tactics_when_absent():
     assert t.target_defense == "identity"           # PROMPT-INJ zone fallback
     assert t.tactic_tags == []
     assert t.expected_observables == []
+
+
+def test_generate_for_zone_appends_seed_to_creative_and_history():
+    from interfaces.types import CoverageGap
+    from red_team.ideation import IdeationEngine
+
+    sent: list[str] = []
+
+    class _RecordingLLM:
+        def complete(self, messages, system, max_tokens, temperature):
+            sent.append(messages[-1].content)
+            from interfaces.llm import LLMResponse
+            return LLMResponse(text="[]")
+
+    eng = IdeationEngine(_RecordingLLM(), MockMCP(seed=0, verbose=False))
+    gap = _gap()
+    eng.generate_for_zone(gap, cycle_id=1, seed="SEED-MARKER-XYZ")
+    creative = [p for p in sent if "fundamentally different" in p]
+    code = [p for p in sent if "code" in p.lower() and "SEED-MARKER" not in p]
+    assert any("SEED-MARKER-XYZ" in p for p in creative)
+    assert code, "code-grounded mode must NOT receive the seed"
+
+
+def test_generate_for_zone_without_seed_is_unchanged():
+    from interfaces.types import CoverageGap
+    from red_team.ideation import IdeationEngine
+
+    sent: list[str] = []
+
+    class _RecordingLLM:
+        def complete(self, messages, system, max_tokens, temperature):
+            sent.append(messages[-1].content)
+            from interfaces.llm import LLMResponse
+            return LLMResponse(text="[]")
+
+    eng = IdeationEngine(_RecordingLLM(), MockMCP(seed=0, verbose=False))
+    gap = _gap()
+    eng.generate_for_zone(gap, cycle_id=1)
+    assert not any("# Archive — Diverse Elites" in p for p in sent)

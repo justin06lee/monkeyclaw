@@ -207,3 +207,10 @@ purple:
   enabled: true
   full_sweep_every: 10
   self_governance_enabled: true
+
+red:
+  archive:
+    # B5 MAP-Elites — niche_gap exploration multiplier band and seed breadth.
+    niche_gap_low: 0.5
+    niche_gap_high: 1.5
+    seed_cross_zone_count: 2

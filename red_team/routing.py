@@ -163,6 +163,12 @@ def _persist_archive(mcp: MonkeyClawMCP, entry: ArchiveEntry) -> None:
         response_movement=entry.response_movement,
         idea_id=entry.idea_id,
         score=entry.score,
+        niche_descriptors={
+            "turn_bucket": entry.turn_bucket,
+            "transfer_score": entry.transfer_score,
+            "tactic_tags": list(entry.tactic_tags),
+            "model": entry.model,
+        },
     ))
     components = [
         IdeaComponentInput(entry.idea_id, "interaction_style",

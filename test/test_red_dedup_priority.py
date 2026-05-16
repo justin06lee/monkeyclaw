@@ -192,3 +192,90 @@ def test_score_ideas_absent_detection_signal_is_unchanged():
     b = score_ideas([outcome], {"SBX-FS": zone},
                     detection_coverage_gap=None)[0].priority
     assert a == b
+
+
+# ---------------------------------------------------------------------------
+# niche_gap — archive-driven priority factor
+# ---------------------------------------------------------------------------
+
+
+def _priority_fixture():
+    """A simple kept-outcome + zone fixture for the archive-absent regression."""
+    from red_team.dedup import DedupOutcome
+    from interfaces.types import DupResult
+
+    outcomes = [
+        DedupOutcome(
+            idea=_idea("SBX-FS", "a", "[impact=high] x"),
+            dup=DupResult(False, 0.0, None),
+            keep=True, near_dup=False, novelty_score=1.0, logged_idea_id="A"),
+        DedupOutcome(
+            idea=_idea("SBX-FS", "b", "[impact=low] x"),
+            dup=DupResult(False, 0.0, None),
+            keep=True, near_dup=False, novelty_score=0.8, logged_idea_id="B"),
+    ]
+    zones = {"SBX-FS": _gap("SBX-FS", coverage=0.2, severity=1.0)}
+    return outcomes, zones
+
+
+def _priority_fixture_two_styles():
+    """Two kept ideas in SBX-FS — one 'direct', one 'roleplay', else identical."""
+    from red_team.dedup import DedupOutcome
+    from red_team.ideation import IdeaTactics
+    from interfaces.types import DupResult
+
+    direct = _idea("SBX-FS", "direct attack", "[impact=high] x")
+    direct.idea_id = "IDEA-DIRECT"
+    direct.tactics = IdeaTactics(interaction_style="direct")
+    roleplay = _idea("SBX-FS", "roleplay attack", "[impact=high] x")
+    roleplay.idea_id = "IDEA-ROLEPLAY"
+    roleplay.tactics = IdeaTactics(interaction_style="roleplay")
+    outcomes = [
+        DedupOutcome(idea=direct, dup=DupResult(False, 0.0, None),
+                     keep=True, near_dup=False, novelty_score=1.0,
+                     logged_idea_id="A"),
+        DedupOutcome(idea=roleplay, dup=DupResult(False, 0.0, None),
+                     keep=True, near_dup=False, novelty_score=1.0,
+                     logged_idea_id="B"),
+    ]
+    zones = {"SBX-FS": _gap("SBX-FS", coverage=0.2, severity=1.0)}
+    return outcomes, zones
+
+
+def test_score_ideas_without_archive_is_byte_identical():
+    """Regression guard — absent an archive, scores are exactly today's."""
+    outcomes, zones = _priority_fixture()
+
+    baseline = score_ideas(outcomes, zones)
+    with_none = score_ideas(outcomes, zones, archive=None)
+    assert [p.priority for p in baseline] == [p.priority for p in with_none]
+    assert all("niche_gap" not in p.components for p in with_none)
+
+
+def test_niche_gap_boosts_idea_in_empty_style_column():
+    from red_team.archive import RESPONSE_MOVEMENTS, ArchiveEntry, EliteArchive
+
+    outcomes, zones = _priority_fixture_two_styles()
+    arch = EliteArchive()
+    # Saturate the 'direct' column of SBX-FS — every response_movement filled
+    # so the column's empty fraction is 0 and niche_gap is damped below 1.0.
+    for movement in RESPONSE_MOVEMENTS:
+        arch.consider(ArchiveEntry(
+            zone="SBX-FS", interaction_style="direct",
+            response_movement=movement, score=9.0, idea_id=f"E-{movement}"))
+    scored = {p.idea.idea_id: p for p in score_ideas(outcomes, zones,
+                                                     archive=arch)}
+    direct = scored["IDEA-DIRECT"]
+    roleplay = scored["IDEA-ROLEPLAY"]
+    assert roleplay.components["niche_gap"] > 1.0
+    assert direct.components["niche_gap"] < 1.0
+    assert roleplay.priority > direct.priority
+
+
+def test_niche_gap_stays_within_bounds():
+    from red_team.archive import EliteArchive
+
+    outcomes, zones = _priority_fixture_two_styles()
+    scored = score_ideas(outcomes, zones, archive=EliteArchive())
+    for p in scored:
+        assert 0.5 <= p.components["niche_gap"] <= 1.5

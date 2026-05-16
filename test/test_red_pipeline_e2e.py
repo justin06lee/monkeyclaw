@@ -254,3 +254,64 @@ def test_generate_ideas_produces_prioritized_top_n():
     # Priority sort descending
     if len(ideas) >= 2:
         assert ideas[0].priority_score >= ideas[1].priority_score
+
+
+def test_pipeline_rehydrates_archive_from_db():
+    from interfaces.types import ArchiveUpdateInput
+
+    mcp = MockMCP(seed=0, verbose=False)
+    mcp.update_archive_cell(ArchiveUpdateInput(
+        zone_id="SBX-FS", interaction_style="direct",
+        response_movement="refusal", idea_id="I1", score=5.0,
+    ))
+    pipe = Pipeline(mcp=mcp, llm=MockLLM())
+    assert pipe._archive.cell_count() == 1
+    assert pipe._archive.get_elite("SBX-FS", "direct", "refusal") is not None
+
+
+def test_pipeline_rehydration_failure_is_cold_not_crash(monkeypatch):
+    mcp = MockMCP(seed=0, verbose=False)
+    monkeypatch.setattr(
+        mcp, "get_archive_cells",
+        lambda zone: (_ for _ in ()).throw(RuntimeError("db down")))
+    pipe = Pipeline(mcp=mcp, llm=MockLLM())
+    assert pipe._archive.cell_count() == 0
+
+
+def test_pipeline_passes_archive_seed_into_ideation():
+    """Cycle 2's ideation prompt must contain the archive seed block."""
+    from interfaces.types import ArchiveUpdateInput
+
+    mcp = MockMCP(seed=0, verbose=False)
+    # Pre-seed a cell so build_seed has an elite to surface.
+    mcp.update_archive_cell(ArchiveUpdateInput(
+        zone_id="SBX-FS", interaction_style="roleplay",
+        response_movement="partial_compliance", idea_id="ELITE-1",
+        score=8.0, niche_descriptors={"turn_bucket": "3-7"},
+    ))
+    pipe = Pipeline(mcp=mcp, llm=MockLLM())
+    captured: list[str] = []
+    real = pipe.ideation.generate_for_zone
+
+    def _spy(zone, cycle_id, **kw):
+        captured.append(kw.get("seed", ""))
+        return real(zone, cycle_id, **kw)
+
+    pipe.ideation.generate_for_zone = _spy
+    pipe.generate_ideas(cycle_id=2, n_lanes=2)
+    assert any("# Archive — Diverse Elites" in s for s in captured)
+
+
+def test_pipeline_passes_archive_into_priority(monkeypatch):
+    captured = {}
+    import red_team.pipeline as pipeline_mod
+    real_score = pipeline_mod.score_ideas
+
+    def _spy(outcomes, zones_by_id, archive=None):
+        captured["archive"] = archive
+        return real_score(outcomes, zones_by_id, archive=archive)
+
+    monkeypatch.setattr(pipeline_mod, "score_ideas", _spy)
+    pipe = Pipeline(mcp=MockMCP(seed=0, verbose=False), llm=MockLLM())
+    pipe.generate_ideas(cycle_id=1, n_lanes=2)
+    assert captured["archive"] is pipe._archive

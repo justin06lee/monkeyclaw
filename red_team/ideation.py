@@ -183,12 +183,18 @@ class IdeationEngine:
         zone: CoverageGap,
         cycle_id: int,
         modes: tuple[str, ...] = ("creative", "code_grounded", "history_informed"),
+        seed: str = "",
     ) -> list[IdeaObject]:
-        """Run every requested mode for a single zone, aggregate ideas."""
+        """Run every requested mode for a single zone, aggregate ideas.
+
+        ``seed`` is the optional MAP-Elites archive seed block (built by
+        red_team.archive_seed). It is appended to Mode A and Mode C prompts;
+        Mode B is grounded in source, not history, and ignores it.
+        """
         all_ideas: list[IdeaObject] = []
         for mode in modes:
             try:
-                ideas = self._run_mode(mode, zone, cycle_id)
+                ideas = self._run_mode(mode, zone, cycle_id, seed)
                 LOG.info("ideation mode=%s zone=%s produced %d ideas",
                           mode, zone.zone_id, len(ideas))
                 all_ideas.extend(ideas)
@@ -199,19 +205,23 @@ class IdeationEngine:
     # ------------------------------------------------------------------
     # Mode dispatch
     # ------------------------------------------------------------------
-    def _run_mode(self, mode: str, zone: CoverageGap, cycle_id: int) -> list[IdeaObject]:
+    def _run_mode(
+        self, mode: str, zone: CoverageGap, cycle_id: int, seed: str = "",
+    ) -> list[IdeaObject]:
         if mode == "creative":
-            return self._mode_creative(zone, cycle_id)
+            return self._mode_creative(zone, cycle_id, seed)
         if mode == "code_grounded":
             return self._mode_code_grounded(zone, cycle_id)
         if mode == "history_informed":
-            return self._mode_history_informed(zone, cycle_id)
+            return self._mode_history_informed(zone, cycle_id, seed)
         raise ValueError(f"unknown ideation mode: {mode!r}")
 
     # ------------------------------------------------------------------
     # Mode A — Creative Divergence
     # ------------------------------------------------------------------
-    def _mode_creative(self, zone: CoverageGap, cycle_id: int) -> list[IdeaObject]:
+    def _mode_creative(
+        self, zone: CoverageGap, cycle_id: int, seed: str = "",
+    ) -> list[IdeaObject]:
         recent = self.mcp.get_recent_summaries(self.cfg.recent_summaries)
         recent_block = "\n".join(
             f"- Cycle {s.cycle_id}: {s.summary}" for s in recent
@@ -226,6 +236,7 @@ class IdeationEngine:
             "NOT enumerate textbook attack categories — propose specific, "
             "concrete attacks tailored to this zone."
         )
+        seed_block = f"\n{seed}\n" if seed.strip() else ""
         user = (
             f"# Target Zone\n"
             f"zone_id: {zone.zone_id}\n"
@@ -238,7 +249,8 @@ class IdeationEngine:
             f"Propose attack approaches that are fundamentally different "
             f"from anything in the recent cycles above. Focus on unexpected "
             f"interaction patterns, edge cases in the specification, and "
-            f"assumptions the defense might make about attacker behavior.\n\n"
+            f"assumptions the defense might make about attacker behavior.\n"
+            f"{seed_block}\n"
             f"{_JSON_SCHEMA_BLURB}"
         )
         raw = self._ask(system, user)
@@ -300,7 +312,7 @@ class IdeationEngine:
     # Mode C — History-Informed
     # ------------------------------------------------------------------
     def _mode_history_informed(
-        self, zone: CoverageGap, cycle_id: int
+        self, zone: CoverageGap, cycle_id: int, seed: str = "",
     ) -> list[IdeaObject]:
         # Useful past findings — confirmed, highest-reusability.
         confirmed = self.mcp.search_findings(
@@ -340,6 +352,7 @@ class IdeationEngine:
             "exact repeats of prior approaches — every idea must be a real "
             "variation."
         )
+        seed_block = f"\n{seed}\n" if seed.strip() else ""
         user = (
             f"# Target Zone\n"
             f"zone_id: {zone.zone_id}\n"
@@ -350,7 +363,8 @@ class IdeationEngine:
             f"Propose variations, combinations, and extensions of the above. "
             f"Each idea MUST cite the finding_id(s) it builds on in the "
             f"`builds_on` field, and describe how it differs in "
-            f"`variation_notes`.\n\n"
+            f"`variation_notes`.\n"
+            f"{seed_block}\n"
             f"{_JSON_SCHEMA_BLURB}"
         )
         raw = self._ask(system, user)

@@ -43,6 +43,7 @@ from interfaces.types import (
     PolicyConfig,
 )
 
+from red_team import archive_seed
 from red_team.archive import EliteArchive
 from red_team.dedup import deduplicate_and_log
 from red_team.execution_agent import ExecutionAgent, ExecutionConfig
@@ -157,7 +158,17 @@ class Pipeline:
         self._book_lock = threading.Lock()
         # MAP-Elites archive of diverse high-performing attempts (spec B5/B8);
         # routing maps every judged attempt into a niche cell.
-        self._archive = EliteArchive()
+        # B5 — rehydrate the MAP-Elites grid from the persistent store so the
+        # niche archive survives process restarts. A failure here is a cold
+        # archive for this run, never a crash (spec §10).
+        try:
+            cells = self.mcp.get_archive_cells(zone=None)
+            self._archive = EliteArchive.load_from_cells(cells)
+            LOG.info("rehydrated MAP-Elites archive: %d cell(s)",
+                     self._archive.cell_count())
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("archive rehydration failed (%s) — starting cold", e)
+            self._archive = EliteArchive()
 
         # Cycle accounting for log_cycle_summary on the next generate_ideas
         # call (orchestrator updates the summary itself, but Person 2 owns
@@ -196,7 +207,16 @@ class Pipeline:
 
         for gap in gaps:
             zones_targeted.append(gap.zone_id)
-            new_ideas = self.ideation.generate_for_zone(gap, cycle_id)
+            try:
+                seed = archive_seed.render_seed(
+                    archive_seed.build_seed(
+                        self._archive, gap.zone_id, cfg=self.cfg.red.archive))
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("archive seed build failed for %s (%s) — "
+                            "ideation runs unseeded", gap.zone_id, e)
+                seed = ""
+            new_ideas = self.ideation.generate_for_zone(
+                gap, cycle_id, seed=seed)
             ideas_generated += len(new_ideas)
             candidates.extend(new_ideas)
             # B9 — when the model tournament is enabled, extra entrant models
@@ -232,7 +252,17 @@ class Pipeline:
         ):
             attempts += 1
             unlike_zone = gaps[0]
-            extra = self.ideation.generate_for_zone(unlike_zone, cycle_id)
+            try:
+                seed = archive_seed.render_seed(
+                    archive_seed.build_seed(
+                        self._archive, unlike_zone.zone_id,
+                        cfg=self.cfg.red.archive))
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("archive seed build failed for %s (%s) — "
+                            "ideation runs unseeded", unlike_zone.zone_id, e)
+                seed = ""
+            extra = self.ideation.generate_for_zone(
+                unlike_zone, cycle_id, seed=seed)
             ideas_generated += len(extra)
             if not extra:
                 break
@@ -248,7 +278,7 @@ class Pipeline:
         # Score every kept idea, then hand the whole batch to the strategist.
         # It synthesizes the raw ideas into `n_lanes` distinct deep-dive
         # attack chains — one chain per lane.
-        prioritized = score_ideas(outcomes, zones_by_id)
+        prioritized = score_ideas(outcomes, zones_by_id, archive=self._archive)
         kept_ideas = [p.idea for p in prioritized]
         if not kept_ideas:
             return []

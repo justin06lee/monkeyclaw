@@ -28,3 +28,13 @@ def test_purple_config_defaults():
     assert cfg.purple.enabled is True
     assert cfg.purple.full_sweep_every == 10
     assert cfg.purple.self_governance_enabled is True
+
+
+def test_red_archive_config_defaults():
+    from infra.config import load_config
+
+    cfg = load_config()
+    arch = cfg.red.archive
+    assert arch.niche_gap_low == 0.5
+    assert arch.niche_gap_high == 1.5
+    assert arch.seed_cross_zone_count == 2
