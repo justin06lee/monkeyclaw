@@ -16,8 +16,10 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from interfaces.types import (
+    AppealVerdict,
     ArchiveCell,
     ArchiveUpdateInput,
+    AttackElo,
     CodeChunk,
     CoverageGap,
     CycleSummary,
@@ -204,6 +206,27 @@ class MonkeyClawMCP(Protocol):
     # ------------------------------------------------------------------
     def log_judge_vote(self, vote: JudgeVoteInput) -> str:
         """Record one judge's vote on a lane. Returns vote_id."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Judge ensemble — appeal verdicts + attack Elo
+    # ------------------------------------------------------------------
+    def log_appeal_verdict(self, verdict: AppealVerdict) -> str:
+        """Record one frontier-model appeal verdict. Returns appeal_id."""
+        ...
+
+    def get_appeal_verdicts(
+        self, lane_id: str | None = None,
+    ) -> list[AppealVerdict]:
+        """All appeal verdicts, or one lane's, for the dashboard / analysis."""
+        ...
+
+    def get_attack_elo(self, zone_id: str) -> list[AttackElo]:
+        """The per-zone attack Elo ranking, rating-sorted descending."""
+        ...
+
+    def update_attack_elo(self, elo: AttackElo) -> None:
+        """Upsert one (zone_id, attack_id) Elo row."""
         ...
 
     # ------------------------------------------------------------------

@@ -90,8 +90,21 @@ def test_protocol_declares_new_methods():
         "log_judge_vote", "log_policy_corpus_result", "get_policy_corpus_results",
         "mark_repro_queue_status", "mark_repro_package_status",
         "log_patch_candidate", "mark_patch_status",
+        "log_appeal_verdict", "get_appeal_verdicts",
+        "get_attack_elo", "update_attack_elo",
     ):
         assert hasattr(MonkeyClawMCP, name), f"protocol missing {name}"
+
+
+def test_both_implementations_expose_judge_ensemble_methods(real_mcp):
+    from infra.mock_mcp import MockMCP
+    mock = MockMCP(verbose=False)
+    for name in (
+        "log_appeal_verdict", "get_appeal_verdicts",
+        "get_attack_elo", "update_attack_elo",
+    ):
+        assert hasattr(mock, name), f"MockMCP missing {name}"
+        assert hasattr(real_mcp, name), f"MCPServer missing {name}"
 
 
 def test_protocol_declares_archive_methods():

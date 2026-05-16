@@ -23,8 +23,10 @@ from interfaces.mcp_tools import MonkeyClawMCP
 if TYPE_CHECKING:
     from infra.state_machine import TransitionEngine
 from interfaces.types import (
+    AppealVerdict,
     ArchiveCell,
     ArchiveUpdateInput,
+    AttackElo,
     CodeChunk,
     CoverageGap,
     CycleSummary,
@@ -604,13 +606,83 @@ class MCPServer(MonkeyClawMCP):
         with self.db.lock():
             self.db.execute(
                 "INSERT INTO judge_votes(vote_id, lane_id, judge_role, verdict, "
-                "score, confidence, reasoning, evidence_turns, created_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?)",
+                "score, confidence, reasoning, evidence_turns, is_appeal, "
+                "weight, model, created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 (vid, vote.lane_id, vote.judge_role, vote.verdict, vote.score,
                  vote.confidence, vote.reasoning,
-                 json.dumps(list(vote.evidence_turns)), _now()),
+                 json.dumps(list(vote.evidence_turns)),
+                 1 if vote.is_appeal else 0, vote.weight, vote.model, _now()),
             )
         return vid
+
+    # ------------------------------------------------------------------
+    # Judge ensemble — appeal verdicts + attack Elo
+    # ------------------------------------------------------------------
+    def log_appeal_verdict(self, verdict: AppealVerdict) -> str:
+        appeal_id = verdict.appeal_id or f"appeal-{uuid.uuid4().hex[:12]}"
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO appeal_verdicts"
+                "(appeal_id, lane_id, ensemble_verdict, appeal_verdict, "
+                "disagreement, ensemble_confidence, appeal_confidence, "
+                "failure_class, severity, sided_with_roles, reasoning, "
+                "model, errored, created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (appeal_id, verdict.lane_id, verdict.ensemble_verdict,
+                 verdict.appeal_verdict, verdict.disagreement,
+                 verdict.ensemble_confidence, verdict.appeal_confidence,
+                 verdict.failure_class, verdict.severity,
+                 json.dumps(list(verdict.sided_with_roles)), verdict.reasoning,
+                 verdict.model, 1 if verdict.errored else 0, _now()),
+            )
+        return appeal_id
+
+    def get_appeal_verdicts(
+        self, lane_id: str | None = None,
+    ) -> list[AppealVerdict]:
+        if lane_id is None:
+            rows = self.db.fetchall(
+                "SELECT * FROM appeal_verdicts ORDER BY created_at DESC")
+        else:
+            rows = self.db.fetchall(
+                "SELECT * FROM appeal_verdicts WHERE lane_id=? "
+                "ORDER BY created_at DESC", (lane_id,))
+        return [AppealVerdict(
+            appeal_id=r["appeal_id"], lane_id=r["lane_id"],
+            ensemble_verdict=r["ensemble_verdict"],
+            appeal_verdict=r["appeal_verdict"], disagreement=r["disagreement"],
+            ensemble_confidence=r["ensemble_confidence"],
+            appeal_confidence=r["appeal_confidence"],
+            failure_class=r["failure_class"], severity=r["severity"],
+            sided_with_roles=json.loads(r["sided_with_roles"] or "[]"),
+            reasoning=r["reasoning"], model=r["model"],
+            errored=bool(r["errored"]), created_at=r["created_at"],
+        ) for r in rows]
+
+    def get_attack_elo(self, zone_id: str) -> list[AttackElo]:
+        rows = self.db.fetchall(
+            "SELECT * FROM attack_elo WHERE zone_id=? ORDER BY rating DESC",
+            (zone_id,))
+        return [AttackElo(
+            zone_id=r["zone_id"], attack_id=r["attack_id"],
+            rating=r["rating"], comparisons=r["comparisons"],
+            wins=r["wins"], losses=r["losses"], updated_at=r["updated_at"],
+        ) for r in rows]
+
+    def update_attack_elo(self, elo: AttackElo) -> None:
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO attack_elo"
+                "(zone_id, attack_id, rating, comparisons, wins, losses, "
+                "updated_at) VALUES(?,?,?,?,?,?, datetime('now')) "
+                "ON CONFLICT(zone_id, attack_id) DO UPDATE SET "
+                "rating=excluded.rating, comparisons=excluded.comparisons, "
+                "wins=excluded.wins, losses=excluded.losses, "
+                "updated_at=excluded.updated_at",
+                (elo.zone_id, elo.attack_id, elo.rating, elo.comparisons,
+                 elo.wins, elo.losses),
+            )
 
     # ------------------------------------------------------------------
     # Policy corpus
