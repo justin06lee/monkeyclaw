@@ -175,3 +175,20 @@ def test_ideation_defaults_tactics_when_absent():
     assert t.target_defense == "identity"           # PROMPT-INJ zone fallback
     assert t.tactic_tags == []
     assert t.expected_observables == []
+
+
+def test_mode_c_prompt_includes_persisted_near_misses():
+    from interfaces.types import NearMissInput
+    from red_team.ideation import build_mode_c_prompt
+
+    mcp = MockMCP(seed=0, verbose=False)
+    mcp.log_near_miss(NearMissInput(
+        idea_id="IDEA1", lane_id="L1", zone_id="PROMPT-INJ",
+        max_stage=3, stalled_at_turn=2,
+        erosion_excerpt="the victim started disclosing on turn 3",
+        useful_components=["multi_turn_drift"],
+        mutation_seeds=["concretize_final_request"]))
+    prompt = build_mode_c_prompt(mcp, zone_id="PROMPT-INJ")
+    assert "Near Misses" in prompt
+    assert "the victim started disclosing on turn 3" in prompt
+    assert "concretize_final_request" in prompt
