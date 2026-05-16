@@ -30,6 +30,8 @@ from interfaces.types import (
     IdeaInput,
     JudgeVoteInput,
     ModelRunInput,
+    MutationAttempt,
+    MutationOperatorStat,
     PatchCandidateInput,
     PolicyCorpusResult,
     PolicyCorpusResultInput,
@@ -268,6 +270,26 @@ class MonkeyClawMCP(Protocol):
 
     def get_idea_components(self, idea_id: str) -> list[IdeaComponent]:
         """All component rows for an idea, oldest first."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Mutation operator learning (mutation-operator-learning spec §8)
+    # ------------------------------------------------------------------
+    def get_mutation_operator_stats(
+        self, zone_id: str | None = None
+    ) -> list[MutationOperatorStat]:
+        """Global rollup rows (zone_id=None) or one zone's per-zone rows."""
+        ...
+
+    def update_mutation_operator_stats(
+        self, stat: MutationOperatorStat
+    ) -> None:
+        """Upsert one operator stat row. zone_id="" -> global table;
+        a non-empty zone_id -> the per-zone table."""
+        ...
+
+    def log_mutation_attempt(self, attempt: MutationAttempt) -> str:
+        """Insert one mutation_attempts row; return attempt_id."""
         ...
 
 
