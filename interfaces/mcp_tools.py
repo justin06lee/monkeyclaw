@@ -17,6 +17,9 @@ from typing import Protocol, runtime_checkable
 
 from interfaces.types import (
     AppealVerdict,
+    ApprovalEvent,
+    ApprovalEventInput,
+    ApprovalRequest,
     ArchiveCell,
     ArchiveUpdateInput,
     AttackChain,
@@ -45,6 +48,7 @@ from interfaces.types import (
     MutationOperatorStat,
     NearMiss,
     NearMissInput,
+    PatchCandidate,
     PatchCandidateInput,
     PolicyCorpusResult,
     PolicyCorpusResultInput,
@@ -358,6 +362,27 @@ class MonkeyClawMCP(Protocol):
 
     def mark_finding_patched(self, finding_id: str) -> None:
         """Advance a finding in_progress->patched->verified after approval."""
+        ...
+
+    def log_approval_event(self, event: ApprovalEventInput) -> str:
+        """Append one row to the approval_events audit log; returns event_id."""
+        ...
+
+    def get_pending_approvals(self) -> list[ApprovalRequest]:
+        """Every request_id with an `ask` row and no allow/deny/expired row."""
+        ...
+
+    def get_approval_events(self, patch_id: str) -> list[ApprovalEvent]:
+        """Every approval_events row for one patch, oldest first."""
+        ...
+
+    def get_resolved_allows(self) -> list[ApprovalEvent]:
+        """Every `allow` event with a non-null grant_expiry and no later
+        `expired` row for the same request_id."""
+        ...
+
+    def get_patches_by_status(self, status: str) -> list[PatchCandidate]:
+        """Every patch row in the given status."""
         ...
 
     def log_patch_variant_results(

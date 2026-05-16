@@ -25,6 +25,9 @@ from datetime import UTC, datetime, timedelta
 from interfaces.mcp_tools import MonkeyClawMCP
 from interfaces.types import (
     AppealVerdict,
+    ApprovalEvent,
+    ApprovalEventInput,
+    ApprovalRequest,
     ArchiveCell,
     ArchiveUpdateInput,
     AttackChain,
@@ -56,6 +59,7 @@ from interfaces.types import (
     MutationOperatorStat,
     NearMiss,
     NearMissInput,
+    PatchCandidate,
     PatchCandidateInput,
     PolicyCorpusResult,
     PolicyCorpusResultInput,
@@ -141,6 +145,7 @@ class MockMCP(MonkeyClawMCP):
         self._patch_statuses: dict[str, dict] = {}
         self._patch_variant_results: list[dict] = []
         self._patch_detection_results: list[dict] = []
+        self._approval_events: list[ApprovalEvent] = []
         self._archive_cells: dict[str, ArchiveCell] = {}
         self._idea_components: dict[str, list[IdeaComponent]] = {}
         # Purple-team stores (purple-team spec §8)
@@ -815,6 +820,69 @@ class MockMCP(MonkeyClawMCP):
         Mock mode never enforces the FSM — it records the call.
         """
         self._log("mark_finding_patched", {"finding_id": finding_id})
+
+    # ------------------------------------------------------------------
+    # Approval service — severity-gated authorization audit log (spec §9)
+    # ------------------------------------------------------------------
+    def log_approval_event(self, event: ApprovalEventInput) -> str:
+        event_id = f"APE-{uuid.uuid4().hex[:14]}"
+        self._approval_events.append(ApprovalEvent(
+            event_id=event_id, request_id=event.request_id,
+            patch_id=event.patch_id, vuln_ids=list(event.vuln_ids),
+            zone_id=event.zone_id, severity=event.severity,
+            decision=event.decision, posture=event.posture,
+            approver=event.approver, reason=event.reason,
+            ask_expiry=event.ask_expiry, grant_expiry=event.grant_expiry,
+            generalization_status=event.generalization_status,
+            pr_url=event.pr_url,
+            created_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        ))
+        self._log("log_approval_event", {"event_id": event_id,
+                                         "patch_id": event.patch_id})
+        return event_id
+
+    def get_approval_events(self, patch_id: str) -> list[ApprovalEvent]:
+        return sorted(
+            (e for e in self._approval_events if e.patch_id == patch_id),
+            key=lambda e: e.created_at)
+
+    def get_pending_approvals(self) -> list[ApprovalRequest]:
+        resolved = {e.request_id for e in self._approval_events
+                    if e.decision in ("allow", "deny", "expired")}
+        out: list[ApprovalRequest] = []
+        for e in sorted(self._approval_events, key=lambda x: x.created_at):
+            if e.decision != "ask" or e.request_id in resolved:
+                continue
+            out.append(ApprovalRequest(
+                request_id=e.request_id, patch_id=e.patch_id,
+                vuln_ids=list(e.vuln_ids), zone_id=e.zone_id,
+                severity=e.severity, posture=e.posture,
+                ask_expiry=e.ask_expiry,
+                generalization_status=e.generalization_status,
+                created_at=e.created_at, status="pending"))
+        return out
+
+    def get_resolved_allows(self) -> list[ApprovalEvent]:
+        expired = {e.request_id for e in self._approval_events
+                   if e.decision == "expired"}
+        return [e for e in sorted(self._approval_events,
+                                  key=lambda x: x.created_at)
+                if e.decision == "allow" and e.grant_expiry is not None
+                and e.request_id not in expired]
+
+    def get_patches_by_status(self, status: str) -> list[PatchCandidate]:
+        out: list[PatchCandidate] = []
+        for pid, patch in self._patch_candidates.items():
+            st = self._patch_statuses.get(pid, {}).get("status", "proposed")
+            if st != status:
+                continue
+            out.append(PatchCandidate(
+                patch_id=pid, vuln_ids=list(patch.vuln_ids),
+                zone_id=patch.zone_id, approach=patch.approach,
+                invasiveness=patch.invasiveness, diff=patch.diff,
+                explanation=patch.explanation,
+                side_effects=patch.side_effects, status=st))
+        return out
 
     # ------------------------------------------------------------------
     # Verifier gate hardening — variant + detection results (spec §7)
