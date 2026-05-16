@@ -8,7 +8,7 @@ OpenAI-compatible NVIDIA inference API. Three backends:
 
 1. `NemotronLLM` — production. Talks to an OpenAI-compatible endpoint:
    - default `https://integrate.api.nvidia.com/v1` (NVIDIA-hosted), auth via
-     `NVIDIA_API_KEY` (or `NIM_API_KEY`).
+     `MC_NVIDIA_API_KEY` (falls back to `NVIDIA_API_KEY` / `NIM_API_KEY`).
    - or the in-sandbox managed route `https://inference.local/v1`, where the
      NemoClaw gateway injects the credential — set `MC_NEMOTRON_BASE_URL` and
      no key is needed.
@@ -128,14 +128,20 @@ class NemotronLLM(LLMClient):
         # A real key is required for integrate.api.nvidia.com; the in-sandbox
         # managed route (inference.local) has the gateway inject auth, so a
         # placeholder is accepted there.
+        # MC_NVIDIA_API_KEY is MonkeyClaw's own inference key, kept distinct
+        # from the victim sandbox's NVIDIA_API_KEY (separate rate-limit/quota).
+        # It is read first; NVIDIA_API_KEY / NIM_API_KEY remain as fallbacks so
+        # a single shared key still works.
         key = (
             api_key
+            or os.environ.get("MC_NVIDIA_API_KEY")
             or os.environ.get("NVIDIA_API_KEY")
             or os.environ.get("NIM_API_KEY")
         )
         if not key and "inference.local" not in self.base_url:
             raise RuntimeError(
-                "No NVIDIA API key found. Set NVIDIA_API_KEY (or NIM_API_KEY), "
+                "No NVIDIA API key found. Set MC_NVIDIA_API_KEY (or "
+                "NVIDIA_API_KEY / NIM_API_KEY), "
                 "or point MC_NEMOTRON_BASE_URL at the in-sandbox managed route "
                 "(inference.local)."
             )
@@ -192,7 +198,7 @@ class ClaudeCLILLM(LLMClient):
         if not (shutil.which(binary) or os.path.exists(binary)):
             raise RuntimeError(
                 f"claude CLI not found on PATH (looked for {binary!r}). "
-                f"Set NVIDIA_API_KEY to use the Nemotron backend instead."
+                f"Set MC_NVIDIA_API_KEY to use the Nemotron backend instead."
             )
         self.binary = path
         self.timeout_s = timeout_s
@@ -325,7 +331,11 @@ class MockLLM(LLMClient):
 
 
 def _have_nvidia_key() -> bool:
-    return bool(os.environ.get("NVIDIA_API_KEY") or os.environ.get("NIM_API_KEY"))
+    return bool(
+        os.environ.get("MC_NVIDIA_API_KEY")
+        or os.environ.get("NVIDIA_API_KEY")
+        or os.environ.get("NIM_API_KEY")
+    )
 
 
 def make_llm(
