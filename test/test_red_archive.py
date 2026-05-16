@@ -220,3 +220,22 @@ def test_secondary_descriptors_preserved():
     assert got.severity == "high"
     assert got.transfer_score == 0.72
     assert got.idea_title == "probe X"
+
+
+def test_archive_cell_carries_niche_descriptors():
+    from dataclasses import fields
+
+    from interfaces.types import ArchiveCell
+
+    fnames = {f.name for f in fields(ArchiveCell)}
+    assert "niche_descriptors" in fnames
+
+
+def test_archive_update_input_niche_descriptors_defaults_empty():
+    from interfaces.types import ArchiveUpdateInput
+
+    upd = ArchiveUpdateInput(
+        zone_id="SBX-FS", interaction_style="direct",
+        response_movement="refusal", idea_id="I1", score=4.0,
+    )
+    assert upd.niche_descriptors == {}
