@@ -560,3 +560,132 @@ def test_verify_reports_live_isolation_mode_with_backend(real_mcp, tmp_path):
     v = PatchVerifier(mcp=real_mcp, provisioner=MockProvisioner(),
                       isolation=iso)
     assert v._isolation_mode() == "live"
+
+
+def _always_passing_pair() -> RegressionTestPair:
+    script = "RESULT = {'passed': True, 'expected': 'x', 'actual': 'x'}\n"
+    return RegressionTestPair(
+        vuln_id="MC-2026-0001",
+        zone_id="SBX-FS",
+        positive_test=RegressionTestInput(
+            vuln_id="MC-2026-0001",
+            zone_id="SBX-FS",
+            test_script=script,
+            expected_result="vulnerability_blocked",
+        ),
+        negative_test_script=script,
+        policy_regression_test_script=script,
+    )
+
+
+def test_verifier_uses_actual_factory_mode_when_live_build_falls_back(real_mcp):
+    from interfaces.types import DiffApplyResult
+
+    class _ConfiguredIsolation:
+        class cfg:
+            nemoclaw_repo_path = "/configured/repo"
+
+        def diff_applies(self, patch):  # noqa: ANN001
+            return DiffApplyResult(True, True, [], "")
+
+    def _factory(patch):  # noqa: ANN001
+        _factory._last_mode = "mock"
+        return make_blocking_replay_factory()(patch)
+
+    _factory._last_mode = "mock"
+    _factory._active_cm = None
+    verifier = PatchVerifier(
+        real_mcp, MockProvisioner(),
+        patched_replay_factory=_factory,
+        isolation=_ConfiguredIsolation(),
+        cfg=PatchVerifierConfig(
+            mutation_gate_enabled=False,
+            detection_gate_enabled=False,
+        ),
+    )
+
+    outcome = verifier.verify(
+        patch=make_patch(),
+        package=make_repro_package(),
+        test_pair=_always_passing_pair(),
+    )
+
+    assert outcome.approved is True
+    assert outcome.isolation_mode == "mock"
+
+
+def test_verifier_closes_active_patch_build_context(real_mcp):
+    class _Context:
+        closed = False
+
+        def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+            self.closed = True
+
+    cm = _Context()
+
+    def _factory(patch):  # noqa: ANN001
+        _factory._last_mode = "live"
+        _factory._active_cm = cm
+        return make_blocking_replay_factory()(patch)
+
+    _factory._last_mode = "live"
+    _factory._active_cm = None
+    verifier = PatchVerifier(
+        real_mcp, MockProvisioner(),
+        patched_replay_factory=_factory,
+        cfg=PatchVerifierConfig(
+            mutation_gate_enabled=False,
+            detection_gate_enabled=False,
+        ),
+    )
+
+    outcome = verifier.verify(
+        patch=make_patch(),
+        package=make_repro_package(),
+        test_pair=_always_passing_pair(),
+    )
+
+    assert outcome.approved is True
+    assert cm.closed is True
+    assert _factory._active_cm is None
+
+
+def test_gate1b_rejection_preserves_actual_mode(real_mcp):
+    verifier = PatchVerifier(
+        real_mcp, MockProvisioner(),
+        patched_replay_factory=make_overfitted_replay_factory(),
+        cfg=PatchVerifierConfig(detection_gate_enabled=False),
+    )
+    verifier.patched_replay_factory._last_mode = "live"  # type: ignore[attr-defined]
+    verifier.patched_replay_factory._active_cm = None  # type: ignore[attr-defined]
+
+    pkg = make_repro_package()
+    outcome = verifier.verify(
+        patch=make_patch(), package=pkg, test_pair=make_test_pair(pkg))
+
+    assert outcome.approved is False
+    assert outcome.failed_gate == "gate1b_mutation_robustness"
+    assert outcome.isolation_mode == "live"
+    assert outcome.variant_results
+
+
+def test_later_rejection_preserves_variant_results(real_mcp):
+    real_mcp.add_regression_test(RegressionTestInput(
+        vuln_id="MC-PRIOR",
+        zone_id="SBX-FS",
+        test_script="RESULT = {'passed': False, 'expected': 'x', 'actual': 'y'}\n",
+        expected_result="vulnerability_blocked",
+    ))
+    verifier = PatchVerifier(
+        real_mcp, MockProvisioner(),
+        patched_replay_factory=make_blocking_replay_factory(),
+        cfg=PatchVerifierConfig(detection_gate_enabled=False),
+    )
+    pkg = make_repro_package()
+
+    outcome = verifier.verify(
+        patch=make_patch(), package=pkg, test_pair=make_test_pair(pkg))
+
+    assert outcome.approved is False
+    assert outcome.failed_gate == "gate3_full_suite"
+    assert outcome.variant_results

@@ -44,6 +44,7 @@ reset coverage to 0.3, send_alert, etc.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 from collections.abc import Callable
@@ -484,8 +485,30 @@ class PatchVerifier:
         test_pair: RegressionTestPair,
     ) -> VerifyOutcome:
         gates: list[GateResult] = []
-        mode = self._isolation_mode()
         replay_fn = self.patched_replay_factory(patch)
+        mode = self._actual_isolation_mode()
+        try:
+            return self._run_gates_with_replay(
+                patch=patch,
+                package=package,
+                test_pair=test_pair,
+                replay_fn=replay_fn,
+                gates=gates,
+                mode=mode,
+            )
+        finally:
+            self._close_active_patch_build()
+
+    def _run_gates_with_replay(
+        self,
+        *,
+        patch: PatchCandidate,
+        package: ReproPackage,
+        test_pair: RegressionTestPair,
+        replay_fn: ReplayFn,
+        gates: list[GateResult],
+        mode: str,
+    ) -> VerifyOutcome:
 
         # ---- Gate: patch applies cleanly ----
         g0 = run_gate_diff_applies(patch, isolation=self.isolation)
@@ -518,6 +541,7 @@ class PatchVerifier:
                 "gate1b_mutation_robustness", patch, gates,
                 f"patch over-fits the recorded payload — mutated variants "
                 f"still succeed via: {leaking}",
+                isolation_mode=mode,
                 variant_results=_collect_variant_results(gates))
 
         # ---- Gate 2: functionality ----
@@ -591,6 +615,7 @@ class PatchVerifier:
             return self._reject(
                 "gate_detection", patch, gates,
                 f"patch blinds detection on {surfaces}",
+                isolation_mode=mode,
                 variant_results=_collect_variant_results(gates),
                 detection_verdicts=_collect_detection_verdicts(gates))
 
@@ -830,6 +855,28 @@ class PatchVerifier:
             return "live"
         return "mock"
 
+    def _actual_isolation_mode(self) -> str:
+        """Return the mode the replay factory actually produced."""
+        mode = getattr(self.patched_replay_factory, "_last_mode", None)
+        if mode in ("live", "mock"):
+            return mode
+        return self._isolation_mode()
+
+    def _close_active_patch_build(self) -> None:
+        """Close a factory-held PatchIsolation context after candidate gates."""
+        cm = getattr(self.patched_replay_factory, "_active_cm", None)
+        if cm is None:
+            return
+        try:
+            cm.__exit__(None, None, None)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("patch isolation cleanup failed: %s", e)
+        finally:
+            with contextlib.suppress(Exception):
+                self.patched_replay_factory._active_cm = None  # type: ignore[attr-defined]  # noqa: SLF001,E501
+            with contextlib.suppress(Exception):
+                self.patched_replay_factory._active_build = None  # type: ignore[attr-defined]  # noqa: SLF001,E501
+
     @staticmethod
     def _reject(
         gate: str, patch: PatchCandidate, gates: list[GateResult],
@@ -842,8 +889,14 @@ class PatchVerifier:
             approved=False, failed_gate=gate, gates=gates,
             patch_id=patch.patch_id, notes=notes,
             isolation_mode=isolation_mode,
-            variant_results=variant_results or [],
-            detection_verdicts=detection_verdicts or [],
+            variant_results=(
+                variant_results if variant_results is not None
+                else _collect_variant_results(gates)
+            ),
+            detection_verdicts=(
+                detection_verdicts if detection_verdicts is not None
+                else _collect_detection_verdicts(gates)
+            ),
         )
 
 

@@ -199,6 +199,7 @@ def build_patched_replay_factory(isolation: PatchIsolation):
     def factory(patch: PatchCandidate) -> ReplayFn:
         if (isolation.cfg.nemoclaw_repo_path is None
                 or isolation.provisioner is None):
+            factory._last_mode = "mock"  # noqa: SLF001
             return make_mock_replay_fn()
         # Build once per candidate; all gates of the candidate share it.
         cm = isolation.prepare(patch)
@@ -207,15 +208,20 @@ def build_patched_replay_factory(isolation: PatchIsolation):
         factory._active_build = build  # noqa: SLF001
         if build.victim is None:
             cm.__exit__(None, None, None)
+            factory._active_cm = None  # noqa: SLF001
+            factory._active_build = None  # noqa: SLF001
+            factory._last_mode = "mock"  # noqa: SLF001
             return make_mock_replay_fn()
         from blue_team.replay_minimizer import (  # noqa: PLC0415
             make_victim_replay_fn,
         )
 
+        factory._last_mode = "live"  # noqa: SLF001
         return make_victim_replay_fn(build.victim)
 
     factory._active_cm = None  # noqa: SLF001
     factory._active_build = None  # noqa: SLF001
+    factory._last_mode = "mock"  # noqa: SLF001
     return factory
 
 
