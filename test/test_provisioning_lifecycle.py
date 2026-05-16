@@ -103,3 +103,12 @@ def test_sandbox_runs_store_records_a_snapshot(db):
     assert len(rows) == 1
     assert rows[0]["name"] == "clean-baseline"
     assert rows[0]["deterministic"] == 1
+
+
+def test_nemoclaw_config_has_work_area_fields():
+    from interfaces.config_schema import NemoClawConfig
+
+    c = NemoClawConfig()
+    assert hasattr(c, "baseline_snapshot")
+    assert hasattr(c, "work_area_dir")
+    assert c.patch_build_timeout_s > 0

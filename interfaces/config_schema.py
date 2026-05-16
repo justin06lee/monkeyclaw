@@ -104,6 +104,14 @@ class NemoClawConfig(BaseModel):
     sandbox_name: str = "monkey-victim"
     sandbox_namespace: str = "openshell"
     clean_snapshot: str = "clean-baseline"
+    # The immutable clean image name — distinct from clean_snapshot, which is
+    # the per-lane restore target. Defaults to the same name; an operator
+    # points it at a separate baseline once snapshots are buildable.
+    baseline_snapshot: str = "clean-baseline"
+    # Disposable per-lane clone location. teardown_victim discards under here.
+    work_area_dir: str = "/tmp/monkeyclaw-work"
+    # Upper bound on a per-candidate patch rebuild.
+    patch_build_timeout_s: int = 900
     gateway_endpoint: str = "ws://localhost:18789/"
     gateway_container: str = "openshell-cluster-nemoclaw"
     snapshot_restore_timeout_s: int = 180
