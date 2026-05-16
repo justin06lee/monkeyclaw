@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from infra.database import Database
+from interfaces.llm import LLMResponse
+from interfaces.types import FsDiff, LaneResult, MemoryDiff, Message
+from red_team.appeal_judge import AppealConfig, AppealJudge
+from red_team.judge_ensemble import EnsembleOutcome
 
 NEW_TABLES = {"appeal_verdicts", "attack_elo"}
 
@@ -96,3 +100,32 @@ def test_mcp_logs_judge_vote_with_appeal_columns(server):
         "SELECT is_appeal, model FROM judge_votes WHERE lane_id='L9'")
     assert rows[0]["is_appeal"] == 1
     assert rows[0]["model"] == "frontier-mock"
+
+
+def _outcome(disagreement, agg_conf, verdict="suspicious"):
+    return EnsembleOutcome(
+        verdict=verdict, failure_class="none", severity="low",
+        confidence=agg_conf, reasoning="r", votes=[], tokens_used=0,
+        disagreement=disagreement, aggregate_confidence=agg_conf,
+    )
+
+
+def test_should_appeal_fires_on_high_disagreement():
+    judge = AppealJudge(llm=None)
+    cfg = AppealConfig(disagreement_threshold=0.5,
+                       low_confidence_threshold=0.35)
+    assert judge.should_appeal(_outcome(0.7, 0.9), cfg) is True
+
+
+def test_should_appeal_fires_on_low_confidence():
+    judge = AppealJudge(llm=None)
+    cfg = AppealConfig(disagreement_threshold=0.5,
+                       low_confidence_threshold=0.35)
+    assert judge.should_appeal(_outcome(0.1, 0.2), cfg) is True
+
+
+def test_should_not_appeal_when_confident_and_agreed():
+    judge = AppealJudge(llm=None)
+    cfg = AppealConfig(disagreement_threshold=0.5,
+                       low_confidence_threshold=0.35)
+    assert judge.should_appeal(_outcome(0.2, 0.9), cfg) is False
