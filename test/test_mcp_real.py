@@ -254,3 +254,42 @@ def test_migration_upgrades_legacy_v1_db(tmp_path):
     row = db.fetchone("SELECT value FROM schema_meta WHERE key='schema_version'")
     assert row[0] == "2"
     db.close()
+
+
+def test_archive_cell_elitism(server):
+    from interfaces.types import ArchiveUpdateInput
+    c1 = server.update_archive_cell(ArchiveUpdateInput(
+        zone_id="SBX-FS", interaction_style="tool_use",
+        response_movement="strong_compliance", idea_id="IDEA-A", score=0.5))
+    assert c1.occupancy == 1 and c1.best_idea_id == "IDEA-A"
+    # Lower score: occupancy grows, elite unchanged.
+    c2 = server.update_archive_cell(ArchiveUpdateInput(
+        zone_id="SBX-FS", interaction_style="tool_use",
+        response_movement="strong_compliance", idea_id="IDEA-B", score=0.2))
+    assert c2.occupancy == 2 and c2.best_idea_id == "IDEA-A"
+    # Higher score: elite replaced.
+    c3 = server.update_archive_cell(ArchiveUpdateInput(
+        zone_id="SBX-FS", interaction_style="tool_use",
+        response_movement="strong_compliance", idea_id="IDEA-C", score=0.8))
+    assert c3.occupancy == 3 and c3.best_idea_id == "IDEA-C"
+    assert c3.best_score == 0.8
+    # A different niche in the same zone is a separate cell.
+    server.update_archive_cell(ArchiveUpdateInput(
+        zone_id="SBX-FS", interaction_style="multi_turn",
+        response_movement="refusal", idea_id="IDEA-D", score=0.3))
+    sbx = server.get_archive_cells("SBX-FS")
+    assert len(sbx) == 2
+    assert server.get_archive_cells(None)  # unfiltered returns all
+
+
+def test_idea_components_roundtrip(server):
+    from interfaces.types import IdeaComponentInput
+    ids = server.store_idea_components("IDEA-X", [
+        IdeaComponentInput("IDEA-X", "interaction_style", "roleplay"),
+        IdeaComponentInput("IDEA-X", "response_movement", "partial_compliance"),
+    ])
+    assert len(ids) == 2
+    comps = server.get_idea_components("IDEA-X")
+    assert [c.component_type for c in comps] == [
+        "interaction_style", "response_movement"]
+    assert server.get_idea_components("nope") == []

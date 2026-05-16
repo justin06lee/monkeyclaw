@@ -595,6 +595,26 @@ class ArchiveCell:
     updated_at: str
 
 
+@dataclass
+class ArchiveUpdateInput:
+    """Write-side payload for update_archive_cell."""
+
+    zone_id: str
+    interaction_style: str
+    response_movement: str
+    idea_id: str
+    score: float
+
+
+@dataclass
+class IdeaComponentInput:
+    """Write-side payload for store_idea_components — server fills component_id."""
+
+    idea_id: str
+    component_type: str
+    content: str
+
+
 # ---------------------------------------------------------------------------
 # Judge votes (Person B — multi-judge ensemble)
 # ---------------------------------------------------------------------------
@@ -682,6 +702,7 @@ class PatchCandidateInput:
 __all__ = [
     "AgentPolicy",
     "ArchiveCell",
+    "ArchiveUpdateInput",
     "CheckResult",
     "CodeChunk",
     "CoverageGap",
@@ -693,6 +714,7 @@ __all__ = [
     "FixSite",
     "FsDiff",
     "IdeaComponent",
+    "IdeaComponentInput",
     "IdeaInput",
     "IdeaObject",
     "InferenceEvent",

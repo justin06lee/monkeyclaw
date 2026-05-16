@@ -16,6 +16,8 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from interfaces.types import (
+    ArchiveCell,
+    ArchiveUpdateInput,
     CodeChunk,
     CoverageGap,
     CycleSummary,
@@ -23,6 +25,8 @@ from interfaces.types import (
     DupResult,
     FindingInput,
     FindingRecord,
+    IdeaComponent,
+    IdeaComponentInput,
     IdeaInput,
     JudgeVoteInput,
     ModelRunInput,
@@ -214,6 +218,29 @@ class MonkeyClawMCP(Protocol):
         verification_results: dict | None = None,
     ) -> None:
         """Transition a patch's status and optionally store verification results."""
+        ...
+
+    # ------------------------------------------------------------------
+    # MAP-Elites archive
+    # ------------------------------------------------------------------
+    def update_archive_cell(self, update: ArchiveUpdateInput) -> ArchiveCell:
+        """Upsert a MAP-Elites cell. occupancy increments on every call; the
+        idea becomes the cell's elite iff the cell was empty or
+        update.score > best_score. Returns the resulting cell."""
+        ...
+
+    def get_archive_cells(self, zone: str | None) -> list[ArchiveCell]:
+        """All archive cells, optionally filtered to a single zone."""
+        ...
+
+    def store_idea_components(
+        self, idea_id: str, components: list[IdeaComponentInput]
+    ) -> list[str]:
+        """Persist building-block rows for an idea. Returns generated component_ids."""
+        ...
+
+    def get_idea_components(self, idea_id: str) -> list[IdeaComponent]:
+        """All component rows for an idea, oldest first."""
         ...
 
 

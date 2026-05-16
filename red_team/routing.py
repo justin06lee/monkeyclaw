@@ -23,7 +23,13 @@ import logging
 from dataclasses import asdict
 
 from interfaces.mcp_tools import MonkeyClawMCP
-from interfaces.types import FindingInput, IdeaObject, JudgmentResult
+from interfaces.types import (
+    ArchiveUpdateInput,
+    FindingInput,
+    IdeaComponentInput,
+    IdeaObject,
+    JudgmentResult,
+)
 
 from red_team.archive import (
     INTERACTION_STYLES,
@@ -144,6 +150,37 @@ def _archive_entry(
     )
 
 
+def _persist_archive(mcp: MonkeyClawMCP, entry: ArchiveEntry) -> None:
+    """Mirror an in-memory archive entry into the persistent MCP archive.
+
+    The `EliteArchive` is rebuilt per process; persisting each entry into
+    `idea_archive_cells` / `idea_components` lets the niche grid survive
+    across runs and feed the dashboard's search-intelligence view.
+    """
+    mcp.update_archive_cell(ArchiveUpdateInput(
+        zone_id=entry.zone,
+        interaction_style=entry.interaction_style,
+        response_movement=entry.response_movement,
+        idea_id=entry.idea_id,
+        score=entry.score,
+    ))
+    components = [
+        IdeaComponentInput(entry.idea_id, "interaction_style",
+                           entry.interaction_style),
+        IdeaComponentInput(entry.idea_id, "response_movement",
+                           entry.response_movement),
+        IdeaComponentInput(entry.idea_id, "zone", entry.zone),
+    ]
+    components += [
+        IdeaComponentInput(entry.idea_id, "tactic_tag", tag)
+        for tag in entry.tactic_tags
+    ]
+    if entry.approach:
+        components.append(
+            IdeaComponentInput(entry.idea_id, "approach", entry.approach))
+    mcp.store_idea_components(entry.idea_id, components)
+
+
 def route_judgment(
     judgment: JudgmentResult,
     idea: IdeaObject,
@@ -176,7 +213,9 @@ def route_judgment(
     # high-performing niches (including clean near-misses) are preserved.
     if archive is not None:
         try:
-            archive.consider(_archive_entry(idea, judgment, progress))
+            entry = _archive_entry(idea, judgment, progress)
+            archive.consider(entry)
+            _persist_archive(mcp, entry)
         except Exception as e:  # noqa: BLE001
             LOG.warning("archive update failed for %s: %s", finding_id, e)
 

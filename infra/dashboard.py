@@ -316,6 +316,14 @@ def _search_intel(db_path: str) -> dict[str, Any]:
     }
     total_zones = _scalar(
         db_path, "SELECT COUNT(*) FROM surface_zones", default=18)
+    # MAP-Elites archive — the (zone, interaction_style, response_movement)
+    # niche grid. Each occupied cell holds the best-scoring attempt seen.
+    archive = _query(
+        db_path,
+        "SELECT zone_id, interaction_style, response_movement, "
+        "best_score, occupancy FROM idea_archive_cells "
+        "ORDER BY best_score DESC",
+    )
     return {
         "cells_explored": len(cells),
         "cells_total": total_zones,
@@ -323,6 +331,18 @@ def _search_intel(db_path: str) -> dict[str, Any]:
         "source_modes": source_modes,
         "dedup_rate": round(deduped / len(ideas), 4) if ideas else 0.0,
         "tier_breakdown": tiers,
+        "archive_niches_filled": len(archive),
+        "archive_total_attempts": sum(c["occupancy"] for c in archive),
+        "archive_top_niches": [
+            {
+                "zone": c["zone_id"],
+                "interaction_style": c["interaction_style"],
+                "response_movement": c["response_movement"],
+                "best_score": round(c["best_score"], 3),
+                "occupancy": c["occupancy"],
+            }
+            for c in archive[:8]
+        ],
     }
 
 
@@ -567,13 +587,20 @@ async function tick(){
       .map(([k,v]) => `${k}: ${v}`).join('  ·  ') || 'none';
     const tiers = Object.entries(si.tier_breakdown||{})
       .map(([k,v]) => `${k}: ${v}`).join('  ·  ') || 'none';
+    const niches = (si.archive_top_niches||[])
+      .map(n => `${n.zone}/${n.interaction_style}/${n.response_movement} `
+        + `(${n.best_score})`).join('  ·  ') || 'none';
     mount('search', h('div', null, [
       h('div', {cls:'line', text:
         `cells explored: ${si.cells_explored}/${si.cells_total}`}),
       h('div', {cls:'line', text:
         `ideas generated: ${si.ideas_total}  ·  dedup rate: ${(si.dedup_rate*100).toFixed(0)}%`}),
       h('div', {cls:'line pill', text:`mutation operators (source modes): ${modes}`}),
-      h('div', {cls:'line pill', text:`judge tiers: ${tiers}`})]));
+      h('div', {cls:'line pill', text:`judge tiers: ${tiers}`}),
+      h('div', {cls:'line', text:
+        `MAP-Elites archive: ${si.archive_niches_filled||0} niches filled  ·  `
+        + `${si.archive_total_attempts||0} attempts archived`}),
+      h('div', {cls:'line pill', text:`top niches: ${niches}`})]));
   }
 
   const cs = await j('/api/cost-stats');

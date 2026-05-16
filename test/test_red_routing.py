@@ -100,3 +100,29 @@ def test_alert_floor_suppresses_low_severity_confirms():
     names = [c[0] for c in mcp.calls]
     # log_finding + push_to_repro_queue + update_zone_coverage, but NO send_alert
     assert "send_alert" not in names
+
+
+def test_route_judgment_persists_archive_to_mcp():
+    """With an EliteArchive supplied, route_judgment mirrors the attempt into
+    the persistent MCP archive (idea_archive_cells / idea_components)."""
+    from red_team.archive import EliteArchive
+
+    mcp = MockMCP(verbose=False)
+    route_judgment(_judgment("confirmed", "critical"), _idea(), mcp,
+                   archive=EliteArchive())
+
+    cells = mcp.get_archive_cells("PROMPT-INJ")
+    assert len(cells) == 1
+    assert cells[0].best_idea_id == "IDEA-1"
+    assert cells[0].occupancy == 1
+
+    comps = mcp.get_idea_components("IDEA-1")
+    types_seen = {c.component_type for c in comps}
+    assert {"interaction_style", "response_movement", "zone"} <= types_seen
+
+
+def test_route_judgment_without_archive_skips_persistence():
+    """No archive supplied → nothing written to the MCP archive."""
+    mcp = MockMCP(verbose=False)
+    route_judgment(_judgment("confirmed", "critical"), _idea(), mcp)
+    assert mcp.get_archive_cells(None) == []
