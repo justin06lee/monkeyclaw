@@ -60,9 +60,10 @@ def test_provisioner_protocol():
 
 def test_new_dataclasses_importable_and_constructible():
     from interfaces.types import (
-        ArchiveCell, IdeaComponent, JudgeVote, JudgeVoteInput, ModelRunInput,
-        ModelRunRecord, PatchCandidateInput, PolicyCorpusCase, PolicyCorpusResult,
-        PolicyCorpusResultInput, PolicyDecision, QueueState, TelemetryEvent,
+        AgentEventInput, ArchiveCell, IdeaComponent, JudgeVote, JudgeVoteInput,
+        ModelRunInput, ModelRunRecord, PatchCandidateInput, PolicyCorpusCase,
+        PolicyCorpusResult, PolicyCorpusResultInput, PolicyDecision, QueueState,
+        TelemetryEvent,
         TelemetryEventInput,
     )
     ev = TelemetryEventInput(
@@ -81,13 +82,18 @@ def test_new_dataclasses_importable_and_constructible():
         output_tokens=20, latency_ms=100, cost_usd=None, success=True, error=None,
     )
     assert run.success is True
+    age = AgentEventInput(
+        session_id="S1", agent_id="red-ideation", agent_kind="llm",
+        event_type="llm.response", text="idea text")
+    assert age.agent_id == "red-ideation"
 
 
 def test_protocol_declares_new_methods():
     from interfaces.mcp_tools import MonkeyClawMCP
     for name in (
         "log_telemetry_event", "get_session_timeline", "log_model_run",
-        "log_judge_vote", "log_policy_corpus_result", "get_policy_corpus_results",
+        "log_agent_event", "log_judge_vote", "log_policy_corpus_result",
+        "get_policy_corpus_results",
         "mark_repro_queue_status", "mark_repro_package_status",
         "log_patch_candidate", "mark_patch_status",
     ):
@@ -136,12 +142,16 @@ def test_mock_mcp_archive_roundtrip():
 
 def test_mock_mcp_model_run_and_judge_vote_roundtrip():
     from infra.mock_mcp import MockMCP
-    from interfaces.types import JudgeVoteInput, ModelRunInput
+    from interfaces.types import AgentEventInput, JudgeVoteInput, ModelRunInput
     m = MockMCP(verbose=False)
     rid = m.log_model_run(ModelRunInput(
         role="red_ideation", model="m", provider="nvidia",
         input_tokens=5, output_tokens=7, latency_ms=42))
     assert isinstance(rid, str) and rid
+    aid = m.log_agent_event(AgentEventInput(
+        session_id="S1", agent_id="red-ideation", agent_kind="llm",
+        event_type="llm.response", text="hello"))
+    assert isinstance(aid, str) and aid
     vid = m.log_judge_vote(JudgeVoteInput(
         lane_id="L1", judge_role="semantic", verdict="confirmed",
         score=0.9, confidence=0.8, reasoning="r", evidence_turns=[3]))

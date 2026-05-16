@@ -280,6 +280,32 @@ CREATE INDEX IF NOT EXISTS idx_model_runs_role
     ON model_runs(role, model, created_at);
 
 --------------------------------------------------------------------------------
+-- agent_events — live LLM / deployed-agent activity stream for the dashboard
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS agent_events (
+    event_id      TEXT PRIMARY KEY,
+    session_id    TEXT NOT NULL,
+    agent_id      TEXT NOT NULL,
+    agent_kind    TEXT NOT NULL,
+    event_type    TEXT NOT NULL,
+    role          TEXT,
+    cycle_id      INTEGER,
+    lane_id       TEXT,
+    idea_id       TEXT,
+    model         TEXT,
+    provider      TEXT,
+    text          TEXT,
+    tool_name     TEXT,
+    status        TEXT,
+    metadata      TEXT NOT NULL DEFAULT '{}',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_agent_events_session
+    ON agent_events(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_events_agent
+    ON agent_events(agent_id, created_at);
+
+--------------------------------------------------------------------------------
 -- judge_votes — A2 multi-judge ensemble
 --------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS judge_votes (
@@ -401,7 +427,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 
 INSERT OR IGNORE INTO schema_meta(key, value) VALUES
-    ('schema_version', '2'),
+    ('schema_version', '3'),
     ('embedding_model', 'sentence-transformers/all-MiniLM-L6-v2'),
     ('embedding_dim',   '384');
 

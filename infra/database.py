@@ -22,7 +22,7 @@ LOG = logging.getLogger("monkeyclaw.db")
 
 EMBEDDING_DIM = 384
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "interfaces" / "schema.sql"
 
 # Identifiers for the vec0 virtual tables. `table`/`key_col` are interpolated
@@ -187,6 +187,32 @@ class Database:
             conn.execute(
                 "ALTER TABLE regression_tests "
                 "ADD COLUMN policy_regression_test_script TEXT")
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS agent_events (
+                event_id      TEXT PRIMARY KEY,
+                session_id    TEXT NOT NULL,
+                agent_id      TEXT NOT NULL,
+                agent_kind    TEXT NOT NULL,
+                event_type    TEXT NOT NULL,
+                role          TEXT,
+                cycle_id      INTEGER,
+                lane_id       TEXT,
+                idea_id       TEXT,
+                model         TEXT,
+                provider      TEXT,
+                text          TEXT,
+                tool_name     TEXT,
+                status        TEXT,
+                metadata      TEXT NOT NULL DEFAULT '{}',
+                created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_agent_events_session
+                ON agent_events(session_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_agent_events_agent
+                ON agent_events(agent_id, created_at);
+            """
+        )
         conn.execute(
             "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",

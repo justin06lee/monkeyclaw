@@ -14,7 +14,11 @@ from interfaces.llm import MockLLM
 from interfaces.provisioning import VictimInstance
 from interfaces.types import IdeaObject
 from red_team import mock_victim
-from red_team.execution_agent import ExecutionAgent, ExecutionConfig
+from red_team.execution_agent import (
+    ExecutionAgent,
+    ExecutionConfig,
+    attacker_system_prompt,
+)
 
 
 def _idea(zone: str, approach: str, success: str) -> IdeaObject:
@@ -81,6 +85,18 @@ def test_execution_triggers_prompt_leak(tmp_path: Path):
     assert any(mock_victim.PLANTED_SYSTEM_PROMPT in c for c in contents)
     assert "succeeded" in result.attacker_self_assessment.lower() or \
            "failed" not in result.attacker_self_assessment.lower()
+
+
+def test_execution_prompt_is_lab_safe():
+    prompt = attacker_system_prompt(
+        _idea("PROMPT-INJ", "Use a synthetic prompt-injection fixture.", "policy decision"),
+        LaneConfig(max_turns=3),
+    )
+
+    assert "authorized security validation agent" in prompt
+    assert "controlled offline lab" in prompt
+    assert "Do not ask for real credentials" in prompt
+    assert "Real attackers" not in prompt
 
 
 # ---------------------------------------------------------------------------

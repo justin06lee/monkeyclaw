@@ -66,6 +66,11 @@ uv run monkeyclaw blue-team
 uv run monkeyclaw dashboard
 ```
 
+NVIDIA/Nemotron is the default LLM provider. For local agent-harness runs,
+commands that invoke the pipeline also accept `--claude`, `--codex`, or
+`--opencode`, mapping to `claude --print`, `codex exec`, and `opencode run`
+respectively. The same selection can be made with `MC_LLM_BACKEND`.
+
 No live NemoClaw sandbox handy? Add `--mock` to `run` / `repro` to drive the
 in-memory mock provisioner and planted-vulnerability victim instead.
 

@@ -13,7 +13,7 @@ import logging
 from typing import Any
 
 from interfaces.mcp_tools import MonkeyClawMCP
-from interfaces.types import TelemetryEventInput
+from interfaces.types import AgentEventInput, TelemetryEventInput
 
 LOG = logging.getLogger("monkeyclaw.telemetry")
 
@@ -145,6 +145,52 @@ class TelemetryEmitter:
                           **meta: Any) -> str:
         return self._emit("agent.session.finished", actor, "session",
                            decision=final_status, metadata=meta)
+
+    def agent_event(
+        self,
+        *,
+        agent_id: str,
+        agent_kind: str,
+        event_type: str,
+        role: str | None = None,
+        cycle_id: int | None = None,
+        lane_id: str | None = None,
+        idea_id: str | None = None,
+        model: str | None = None,
+        provider: str | None = None,
+        text: str | None = None,
+        tool_name: str | None = None,
+        status: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        logger = getattr(self.mcp, "log_agent_event", None)
+        if logger is None:
+            return ""
+        try:
+            return logger(AgentEventInput(
+                session_id=self.session_id,
+                agent_id=agent_id,
+                agent_kind=agent_kind,
+                event_type=event_type,
+                role=role,
+                cycle_id=cycle_id,
+                lane_id=lane_id,
+                idea_id=idea_id,
+                model=model,
+                provider=provider,
+                text=text,
+                tool_name=tool_name,
+                status=status,
+                metadata=metadata or {},
+            ))
+        except Exception as e:  # noqa: BLE001 - observability must not break lanes
+            self._emit_failures += 1
+            if self._emit_failures == 1:
+                LOG.exception("agent event emit failed for %s", event_type)
+            else:
+                LOG.warning("agent event emit failed for %s (%d failures): %s",
+                            event_type, self._emit_failures, e)
+            return ""
 
 
 __all__ = ["TelemetryEmitter", "bounded_excerpt", "content_hash"]

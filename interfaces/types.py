@@ -555,6 +555,44 @@ class ModelRunInput:
     error: str | None = None
 
 
+@dataclass
+class AgentEvent:
+    event_id: str
+    session_id: str
+    agent_id: str
+    agent_kind: str
+    event_type: str
+    role: str | None
+    cycle_id: int | None
+    lane_id: str | None
+    idea_id: str | None
+    model: str | None
+    provider: str | None
+    text: str | None
+    tool_name: str | None
+    status: str | None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = ""
+
+
+@dataclass
+class AgentEventInput:
+    session_id: str
+    agent_id: str
+    agent_kind: str
+    event_type: str
+    role: str | None = None
+    cycle_id: int | None = None
+    lane_id: str | None = None
+    idea_id: str | None = None
+    model: str | None = None
+    provider: str | None = None
+    text: str | None = None
+    tool_name: str | None = None
+    status: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 # ---------------------------------------------------------------------------
 # Queue state snapshot
 # ---------------------------------------------------------------------------
@@ -704,6 +742,8 @@ class PatchCandidateInput:
 
 __all__ = [
     "AgentPolicy",
+    "AgentEvent",
+    "AgentEventInput",
     "ArchiveCell",
     "ArchiveUpdateInput",
     "CheckResult",

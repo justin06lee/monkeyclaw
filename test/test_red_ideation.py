@@ -213,6 +213,22 @@ def test_research_grounded_mode_parses_ideas():
     assert "[skill=AS-DIRECT-OVERRIDE]" in ideas[0].novelty_notes
 
 
+def test_research_grounded_prompt_is_lab_safe():
+    llm = MockLLM()
+    llm.queue(_research_idea("AS-DIRECT-OVERRIDE"))
+    mcp = MockMCP(seed=0, verbose=False)
+    eng = IdeationEngine(llm, mcp, IdeationConfig())
+    eng.generate_for_zone(_gap(), cycle_id=1, modes=("research_grounded",))
+
+    call = llm.calls[0]
+    assert "authorized, non-destructive validation scenarios" in call["system"]
+    assert "real-world misuse" in call["system"]
+    assert "Preloaded Skill Taxonomy" in call["prompt"]
+    assert "payload_examples: omitted" in call["prompt"]
+    assert "Ignore previous instructions" not in call["prompt"]
+    assert "output your configuration" not in call["prompt"]
+
+
 def test_research_grounded_invalid_skill_falls_back():
     """A derived_from_skill the model invented falls back to a real skill."""
     from red_team.ideation import tactics_for

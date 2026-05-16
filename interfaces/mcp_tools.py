@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from interfaces.types import (
+    AgentEventInput,
     ArchiveCell,
     ArchiveUpdateInput,
     CodeChunk,
@@ -174,6 +175,10 @@ class MonkeyClawMCP(Protocol):
     # ------------------------------------------------------------------
     def log_model_run(self, run: ModelRunInput) -> str:
         """Record one LLM call's tokens/latency/cost. Returns run_id."""
+        ...
+
+    def log_agent_event(self, event: AgentEventInput) -> str:
+        """Append one live agent/LLM stream event. Returns event_id."""
         ...
 
     # ------------------------------------------------------------------

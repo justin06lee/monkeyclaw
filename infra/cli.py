@@ -20,6 +20,38 @@ import time
 from infra.config import load_config
 
 # ---------------------------------------------------------------------------
+# LLM backend flags
+# ---------------------------------------------------------------------------
+
+
+_LLM_BACKENDS = ("nemotron", "claude_code", "claude_cli", "codex", "opencode", "mock")
+
+
+def _add_llm_flags(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--claude", action="store_true",
+                       help="use Claude Code (`claude --print`) as the LLM provider")
+    group.add_argument("--codex", action="store_true",
+                       help="use Codex CLI (`codex exec`) as the LLM provider")
+    group.add_argument("--opencode", action="store_true",
+                       help="use OpenCode (`opencode run`) as the LLM provider")
+    group.add_argument("--llm-backend", choices=_LLM_BACKENDS, default=None,
+                       help="explicit LLM backend (default: nemotron/NVIDIA)")
+
+
+def _apply_llm_flags(args: argparse.Namespace) -> None:
+    backend = getattr(args, "llm_backend", None)
+    if getattr(args, "claude", False):
+        backend = "claude_code"
+    elif getattr(args, "codex", False):
+        backend = "codex"
+    elif getattr(args, "opencode", False):
+        backend = "opencode"
+    if backend:
+        os.environ["MC_LLM_BACKEND"] = backend
+
+
+# ---------------------------------------------------------------------------
 # run — red/blue cycles via the orchestrator
 # ---------------------------------------------------------------------------
 
@@ -27,6 +59,7 @@ from infra.config import load_config
 def _cmd_run(args: argparse.Namespace) -> int:
     # --target plumbs through the layered config's env-override mechanism.
     os.environ["MC_NEMOCLAW__SANDBOX_NAME"] = args.target
+    _apply_llm_flags(args)
     from infra import orchestrator
 
     argv = [
@@ -124,6 +157,7 @@ def _cmd_findings(args: argparse.Namespace) -> int:
 
 
 def _cmd_repro(args: argparse.Namespace) -> int:
+    _apply_llm_flags(args)
     from infra.bootstrap import boot
     from infra.mcp_server import _finding_row_to_record
 
@@ -236,6 +270,7 @@ def _indent(text: str, pad: str = "      ") -> str:
 
 
 def _cmd_blueteam(args: argparse.Namespace) -> int:
+    _apply_llm_flags(args)
     from infra.bootstrap import boot
 
     # The blue triage/patch/test stages never provision a victim (only the
@@ -286,6 +321,7 @@ def _cmd_blueteam(args: argparse.Namespace) -> int:
 def _cmd_demo(args: argparse.Namespace) -> int:
     """Demo entry point. With --profile, run a planted-profile mock cycle;
     otherwise run the full end-to-end pipeline demo."""
+    _apply_llm_flags(args)
     if getattr(args, "profile", None):
         return _cmd_demo_profile(args)
     return _cmd_demo_pipeline(args)
@@ -317,6 +353,10 @@ def _cmd_demo_profile(args: argparse.Namespace) -> int:
         # Reuse the run path verbatim: build a Namespace matching `run`'s args.
         run_args = argparse.Namespace(
             cycles=1, perpetual=False, target=args.profile, mock=True,
+            llm_backend=getattr(args, "llm_backend", None),
+            claude=getattr(args, "claude", False),
+            codex=getattr(args, "codex", False),
+            opencode=getattr(args, "opencode", False),
         )
         rc = _cmd_run(run_args)
     finally:
@@ -550,6 +590,7 @@ def _cmd_tg_attack(args: argparse.Namespace) -> int:
     Confirmed/suspicious findings are logged, pushed to the dashboard, and
     alerted over the Telegram feed like any other finding.
     """
+    _apply_llm_flags(args)
     import uuid
 
     from infra.bootstrap import boot
@@ -702,6 +743,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--target", default="monkey-victim", help="target sandbox name")
     run.add_argument("--mock", action="store_true",
                      help="use the in-memory mock provisioner (no live sandbox)")
+    _add_llm_flags(run)
     run.set_defaults(func=_cmd_run)
 
     st = sub.add_parser("status", help="print coverage + findings summary")
@@ -713,6 +755,7 @@ def build_parser() -> argparse.ArgumentParser:
     rp = sub.add_parser("repro", help="run the repro pipeline on a finding")
     rp.add_argument("vuln_id", help="finding_id to reproduce")
     rp.add_argument("--mock", action="store_true", help="use the mock provisioner")
+    _add_llm_flags(rp)
     rp.set_defaults(func=_cmd_repro)
 
     pr = sub.add_parser("probe",
@@ -745,6 +788,7 @@ def build_parser() -> argparse.ArgumentParser:
     tga.add_argument("--no-reset", action="store_true",
                      help="skip the pre-attack `nemoclaw recover` "
                           "(faster, but prior-attack state may carry over)")
+    _add_llm_flags(tga)
     tga.set_defaults(func=_cmd_tg_attack)
 
     bt = sub.add_parser("blue-team",
@@ -753,6 +797,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="optional: limit to one vuln_id / finding_id")
     bt.add_argument("--mock", action="store_true",
                     help="use the mock provisioner (default for demo mode)")
+    _add_llm_flags(bt)
     bt.set_defaults(func=_cmd_blueteam)
 
     dm = sub.add_parser(
@@ -761,6 +806,7 @@ def build_parser() -> argparse.ArgumentParser:
              "omit it for the full end-to-end pipeline demo")
     dm.add_argument("--profile", default=None,
                     help="planted victim profile; omit for the full-pipeline demo")
+    _add_llm_flags(dm)
     dm.set_defaults(func=_cmd_demo)
 
     ts = sub.add_parser("test", help="self-checks (e.g. notification delivery)")
