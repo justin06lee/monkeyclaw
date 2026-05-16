@@ -56,3 +56,32 @@ def test_individual_endpoints_respond(tmp_path: Path):
     for path in ("/api/status", "/api/zones", "/api/findings", "/api/telemetry",
                  "/api/judges", "/api/patches", "/api/packages"):
         assert client.get(path).status_code == 200, path
+
+
+def test_dashboard_renders_trajectory_ribbon(server):
+    from interfaces.types import Trajectory, TurnScore
+    from infra.dashboard import render_trajectory_ribbon
+
+    server.log_trajectory(Trajectory(
+        lane_id="L1", idea_id="IDEA1", zone_id="PROMPT-INJ",
+        turn_scores=[TurnScore(turn_index=0, stage=0, stage_delta=0),
+                     TurnScore(turn_index=1, stage=3, stage_delta=3)],
+        max_stage=3, final_stage=3, erosion_slope=1.5,
+        stalled_at_turn=1, monotonic=True))
+    html = render_trajectory_ribbon(server)
+    assert "PROMPT-INJ" in html
+    assert "stage" in html.lower()
+
+
+def test_dashboard_renders_near_miss_queue(server):
+    from interfaces.types import NearMissInput
+    from infra.dashboard import render_near_miss_queue
+
+    server.log_near_miss(NearMissInput(
+        idea_id="IDEA1", lane_id="L1", zone_id="SBX-FS",
+        max_stage=4, stalled_at_turn=3, erosion_excerpt="leaked path",
+        useful_components=["partial_lead"],
+        mutation_seeds=["concretize_final_request"]))
+    html = render_near_miss_queue(server)
+    assert "SBX-FS" in html
+    assert "leaked path" in html

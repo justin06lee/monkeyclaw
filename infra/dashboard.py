@@ -282,6 +282,76 @@ def _all(db_path: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Trajectory & near-miss views (trajectory spec §6, additive)
+# ---------------------------------------------------------------------------
+
+
+def render_trajectory_ribbon(mcp) -> str:
+    """Per-lane harm-ladder stage over turns — a compact ribbon per lane."""
+    trajectories = mcp.get_trajectories()
+    rows = []
+    for t in trajectories[:50]:
+        cells = "".join(
+            f"<span class='stage stage-{ts.stage}'>{ts.stage}</span>"
+            for ts in t.turn_scores)
+        rows.append(
+            f"<tr><td>{t.zone_id}</td><td>{t.lane_id}</td>"
+            f"<td>{cells}</td><td>slope {t.erosion_slope:+.2f}</td></tr>")
+    body = "".join(rows) or "<tr><td colspan=4>no trajectories yet</td></tr>"
+    return ("<h2>Trajectory ribbon</h2><table>"
+            "<tr><th>zone</th><th>lane</th><th>stage over turns</th>"
+            f"<th>erosion</th></tr>{body}</table>")
+
+
+def render_near_miss_queue(mcp) -> str:
+    """Unconsumed near misses — attacks that almost worked, with seeds."""
+    misses = mcp.search_near_misses(zone=None, only_unconsumed=True, top_k=50)
+    rows = []
+    for nm in misses:
+        rows.append(
+            f"<tr><td>{nm.zone_id}</td><td>stage {nm.max_stage}</td>"
+            f"<td>turn {nm.stalled_at_turn}</td>"
+            f"<td>{nm.erosion_excerpt[:120]}</td>"
+            f"<td>{', '.join(nm.mutation_seeds)}</td></tr>")
+    body = "".join(rows) or "<tr><td colspan=5>no near misses yet</td></tr>"
+    return ("<h2>Near-miss queue</h2><table>"
+            "<tr><th>zone</th><th>peak</th><th>stalled</th>"
+            f"<th>erosion excerpt</th><th>seeds</th></tr>{body}</table>")
+
+
+def _trajectory_views(db_path: str) -> dict[str, str]:
+    """Render both trajectory views from a database path. Best-effort —
+    returns empty placeholders when the DB or its tables are absent."""
+    try:
+        from infra.database import Database
+        from infra.mcp_server import MCPServer
+        db = Database(Path(db_path))
+        try:
+            mcp = MCPServer(db)
+            return {
+                "trajectory_ribbon": render_trajectory_ribbon(mcp),
+                "near_miss_queue": render_near_miss_queue(mcp),
+            }
+        finally:
+            db.close()
+    except Exception:  # noqa: BLE001
+        return {
+            "trajectory_ribbon": render_trajectory_ribbon(_EmptyMCP()),
+            "near_miss_queue": render_near_miss_queue(_EmptyMCP()),
+        }
+
+
+class _EmptyMCP:
+    """Stand-in used when the dashboard DB cannot be opened."""
+
+    def get_trajectories(self, zone_id=None):
+        return []
+
+    def search_near_misses(self, zone, *, only_unconsumed, top_k):
+        return []
+
+
+# ---------------------------------------------------------------------------
 # The page
 # ---------------------------------------------------------------------------
 
@@ -967,6 +1037,12 @@ def build_dashboard_app(db_path: str):
     @app.get("/api/operators")
     def api_operators() -> list[dict[str, Any]]:
         return _operators(db_path)
+
+    @app.get("/api/trajectory_views", response_class=HTMLResponse)
+    def api_trajectory_views() -> str:
+        """Two additive views: the trajectory ribbon + near-miss queue."""
+        views = _trajectory_views(db_path)
+        return views["trajectory_ribbon"] + views["near_miss_queue"]
 
     @app.get("/api/judges")
     def api_judges() -> list[dict[str, Any]]:
