@@ -118,6 +118,34 @@ class StubBlue:
         LOG.info("stub regression: no tests to run")
 
 
+def _build_purple_pipeline(rt: Runtime):
+    """Construct the purple pipeline for this runtime. Mock-safe: the
+    case_runner returns each corpus case's expected decision so the
+    validator runs with zero model credentials, consistent with the
+    repo's demo posture (upgrade-roadmap coordination rule 5)."""
+    from purple_team.pipeline import PurplePipeline
+    from red_team.policy_corpus import load_corpus
+
+    try:
+        corpus = load_corpus()
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("purple: corpus load failed, using empty corpus: %s", e)
+        corpus = []
+
+    def _mock_case_runner(case):  # noqa: ANN001
+        # Mock victim: a correctly-behaving control reaches the expected
+        # decision. Real victim integration replaces this with a probe.
+        return case.expected_decision
+
+    return PurplePipeline(
+        rt.mcp,
+        corpus=corpus,
+        case_runner=_mock_case_runner,
+        full_sweep_every=rt.cfg.purple.full_sweep_every,
+        self_governance_enabled=rt.cfg.purple.self_governance_enabled,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -147,6 +175,14 @@ class Orchestrator:
             on_result=self._on_result,
             mcp=rt.mcp,
         )
+        # Purple pipeline — read-mostly; writes its own tables, never blocks
+        # the red/blue path (purple-team spec §11).
+        self.purple = None
+        if getattr(rt.cfg, "purple", None) and rt.cfg.purple.enabled:
+            try:
+                self.purple = _build_purple_pipeline(rt)
+            except Exception as e:  # noqa: BLE001
+                LOG.exception("purple pipeline init failed — disabling: %s", e)
 
     # ------------------------------------------------------------------
     def run(self) -> None:
@@ -197,6 +233,14 @@ class Orchestrator:
                 except Exception as e:  # noqa: BLE001
                     LOG.exception("judge failed for lane %s (zone %s): %s",
                                   r.lane_id, r.zone_targeted, e)
+            # Purple cycle — score executions, validate controls, route
+            # feedback. Read-mostly; isolated so it never aborts red/blue.
+            if self.purple is not None:
+                try:
+                    self._run_purple(cycle_id, results)
+                except Exception as e:  # noqa: BLE001
+                    LOG.exception("purple cycle failed in cycle %d: %s",
+                                  cycle_id, e)
             # Repro batch (blue side runs continuously, we nudge it per cycle).
             try:
                 self.blue.process_repro_queue()
@@ -210,6 +254,56 @@ class Orchestrator:
             LOG.exception("cycle %d lane phase failed: %s", cycle_id, e)
         finally:
             self._finalize_cycle(cycle_id, ideas, results, start)
+
+    def _run_purple(self, cycle_id: int, results: list[LaneResult]) -> None:
+        """Build the CycleContext from this cycle's executions and run the
+        purple pipeline. Pairs each LaneResult with its red judgment by
+        re-reading the finding verdict; a lane with no finding is scored
+        with a synthetic 'clean' judgment (no violation recorded)."""
+        from interfaces.types import FindingRecord, JudgmentResult
+        from purple_team.pipeline import CycleContext
+
+        executions: list[tuple[LaneResult, JudgmentResult]] = []
+        for r in results:
+            row = self.rt.db.fetchone(
+                "SELECT verdict, zone_id, failure_class, severity "
+                "FROM findings WHERE idea_id=? AND cycle_id=? "
+                "ORDER BY created_at DESC LIMIT 1", (r.idea_id, cycle_id))
+            verdict = row["verdict"] if row else "clean"
+            judgment = JudgmentResult(
+                lane_id=r.lane_id, idea_id=r.idea_id,
+                zone_id=r.zone_targeted, verdict=verdict,
+                tier_that_caught="programmatic",
+                failure_class=row["failure_class"] if row else "none",
+                severity=row["severity"] if row else "low",
+                confidence=1.0, evidence=[], reasoning="",
+                tokens_used_judgment=0, timestamp="")
+            executions.append((r, judgment))
+        zone_id = results[0].zone_targeted if results else "PROMPT-INJ"
+        # Read confirmed findings for this cycle directly (non-mutating).
+        # get_repro_queue() is a CLAIMING op — it would steal blue's work.
+        confirmed: list[FindingRecord] = []
+        for fr in self.rt.db.fetchall(
+            "SELECT * FROM findings WHERE cycle_id=? AND verdict IN "
+            "('confirmed','suspicious')", (cycle_id,)):
+            confirmed.append(FindingRecord(
+                finding_id=fr["finding_id"], cycle_id=fr["cycle_id"],
+                idea_id=fr["idea_id"], zone_id=fr["zone_id"],
+                source_mode=fr["source_mode"], idea_summary=fr["idea_summary"],
+                verdict=fr["verdict"], tier_caught=fr["tier_caught"],
+                failure_class=fr["failure_class"], severity=fr["severity"],
+                evidence=fr["evidence"], repro_rate=fr["repro_rate"],
+                patch_status=fr["patch_status"], reusability=fr["reusability"],
+                created_at=fr["created_at"]))
+        ctx = CycleContext(
+            cycle_id=cycle_id, zone_id=zone_id,
+            executions=executions, confirmed_findings=confirmed)
+        cycle_result = self.purple.run(ctx)
+        LOG.info("purple cycle %d: %d verdicts, validation=%s, %d new rules",
+                 cycle_id, len(cycle_result.verdicts),
+                 cycle_result.validation_run.kind
+                 if cycle_result.validation_run else "none",
+                 len(cycle_result.new_rules))
 
     def _finalize_cycle(self, cycle_id: int, ideas: list[IdeaObject],
                         results: list[LaneResult], start: float) -> None:

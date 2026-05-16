@@ -129,3 +129,43 @@ def test_orchestrator_sweeps_stale_claims_each_cycle(tmp_path, monkeypatch):
         assert row["status"] == "queued"
     finally:
         rt.shutdown()
+
+
+def test_orchestrator_runs_purple_when_enabled(tmp_path, monkeypatch):
+    """A cycle with purple enabled produces a control_validation_runs row."""
+    monkeypatch.setenv("MC_STORAGE__DB_PATH", str(tmp_path / "mcp.db"))
+    monkeypatch.setenv("MC_LOGGING__FILE", str(tmp_path / "mcp.log"))
+    monkeypatch.setenv("MC_LANES__POOL_SIZE", "2")
+    monkeypatch.setenv("MC_LANES__LANE_TIMEOUT_SECONDS", "5")
+
+    from infra.bootstrap import boot
+    from infra.orchestrator import Orchestrator, StubBlue, StubRedTeam
+
+    rt = boot(None, use_mock_provisioner=True)
+    try:
+        rt.cfg.purple.enabled = True
+        orch = Orchestrator(rt, StubRedTeam(), StubBlue())
+        orch._run_cycle(1)
+        runs = rt.mcp.get_control_validation_runs()
+        assert len(runs) >= 1
+    finally:
+        rt.shutdown()
+
+
+def test_orchestrator_skips_purple_when_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("MC_STORAGE__DB_PATH", str(tmp_path / "mcd.db"))
+    monkeypatch.setenv("MC_LOGGING__FILE", str(tmp_path / "mcd.log"))
+    monkeypatch.setenv("MC_LANES__POOL_SIZE", "2")
+    monkeypatch.setenv("MC_LANES__LANE_TIMEOUT_SECONDS", "5")
+
+    from infra.bootstrap import boot
+    from infra.orchestrator import Orchestrator, StubBlue, StubRedTeam
+
+    rt = boot(None, use_mock_provisioner=True)
+    try:
+        rt.cfg.purple.enabled = False
+        orch = Orchestrator(rt, StubRedTeam(), StubBlue())
+        orch._run_cycle(1)
+        assert rt.mcp.get_control_validation_runs() == []
+    finally:
+        rt.shutdown()
