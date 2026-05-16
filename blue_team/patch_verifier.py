@@ -141,6 +141,34 @@ def _diff_lines(diff: str) -> tuple[list[str], list[str], list[str]]:
     return added, removed, paths
 
 
+def _extract_attack_instruction(
+    package: ReproPackage,
+) -> tuple[str | None, int | None]:
+    """Pull the highest-signal attacker instruction out of the repro
+    package's minimal transcript (spec §6.1). Returns (text, turn_index)
+    or (None, None) for a degenerate repro with no attacker turn."""
+    transcript = (package.transcripts or {}).get("minimal")
+    if not transcript:
+        # fall back to any transcript present
+        for t in (package.transcripts or {}).values():
+            transcript = t
+            break
+    if not transcript:
+        return None, None
+    best: tuple[str, int] | None = None
+    for idx, msg in enumerate(transcript):
+        if getattr(msg, "role", "") != "attacker":
+            continue
+        content = (getattr(msg, "content", "") or "").strip()
+        if not content:
+            continue
+        if best is None or len(content) > len(best[0]):
+            best = (content, idx)
+    if best is None:
+        return None, None
+    return best
+
+
 def detect_control_plane_weakening(diff: str) -> list[str]:
     """Return a list of human-readable reasons the diff weakens the
     control plane. Empty list == clean."""

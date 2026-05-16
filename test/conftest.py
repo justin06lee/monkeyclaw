@@ -36,6 +36,14 @@ def server(db: Database) -> MCPServer:
     return MCPServer(db)
 
 
+@pytest.fixture
+def mock_provisioner():
+    """A MockProvisioner — used by the verifier-hardening tests, which
+    synthesize LaneResults directly so no planted victim is required."""
+    from infra.provisioning_nemoclaw import MockProvisioner
+    return MockProvisioner()
+
+
 @pytest.fixture(autouse=True)
 def _isolate_logs(tmp_path: Path, monkeypatch):
     """Send logs to a per-test directory so we don't pollute logs/ on rerun."""
