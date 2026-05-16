@@ -28,6 +28,8 @@ from interfaces.types import (
     ArchiveUpdateInput,
     AttackChain,
     AttackElo,
+    AttemptTrace,
+    AttemptTraceInput,
     ChainFinding,
     ChainStep,
     ChainStepResult,
@@ -56,6 +58,8 @@ from interfaces.types import (
     PatchCandidateInput,
     PolicyCorpusResult,
     PolicyCorpusResultInput,
+    Preference,
+    PreferenceInput,
     RegressionTest,
     RegressionTestInput,
     ReportCard,
@@ -1331,6 +1335,95 @@ class MCPServer(MonkeyClawMCP):
             self.db.execute(
                 "UPDATE near_misses SET consumed=1 WHERE near_miss_id=?",
                 (near_miss_id,))
+
+    # ------------------------------------------------------------------
+    # Learned ranking — the structured trace dataset (ranking spec §7)
+    # ------------------------------------------------------------------
+    def log_attempt_trace(self, trace: AttemptTraceInput) -> str:
+        tid = _new_id("TRC")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO attempt_traces(trace_id, idea_id, finding_id, "
+                "cycle_id, zone_id, feature_schema_version, idea_summary, "
+                "tactic_tags, mutation_operator, interaction_style, "
+                "progress_dims, judge_scores, token_cost, repro_outcome, "
+                "judge_verdict, search_score, archive_niche, "
+                "usefulness_label, created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (tid, trace.idea_id, trace.finding_id, trace.cycle_id,
+                 trace.zone_id, trace.feature_schema_version,
+                 trace.idea_summary, json.dumps(trace.tactic_tags),
+                 trace.mutation_operator, trace.interaction_style,
+                 json.dumps(trace.progress_dims),
+                 json.dumps(trace.judge_scores), trace.token_cost,
+                 trace.repro_outcome, trace.judge_verdict,
+                 trace.search_score, trace.archive_niche,
+                 trace.usefulness_label, _now()),
+            )
+        return tid
+
+    def get_attempt_traces(
+        self, zone_id: str | None = None
+    ) -> list[AttemptTrace]:
+        if zone_id is None:
+            rows = self.db.fetchall(
+                "SELECT * FROM attempt_traces ORDER BY created_at DESC")
+        else:
+            rows = self.db.fetchall(
+                "SELECT * FROM attempt_traces WHERE zone_id=? "
+                "ORDER BY created_at DESC", (zone_id,))
+        return [
+            AttemptTrace(
+                trace_id=r["trace_id"], idea_id=r["idea_id"],
+                finding_id=r["finding_id"], cycle_id=r["cycle_id"],
+                zone_id=r["zone_id"],
+                feature_schema_version=r["feature_schema_version"],
+                idea_summary=r["idea_summary"],
+                tactic_tags=json.loads(r["tactic_tags"]),
+                mutation_operator=r["mutation_operator"],
+                interaction_style=r["interaction_style"],
+                progress_dims=json.loads(r["progress_dims"]),
+                judge_scores=json.loads(r["judge_scores"]),
+                token_cost=r["token_cost"],
+                repro_outcome=r["repro_outcome"],
+                judge_verdict=r["judge_verdict"],
+                search_score=r["search_score"],
+                archive_niche=r["archive_niche"],
+                usefulness_label=r["usefulness_label"],
+                created_at=r["created_at"],
+            )
+            for r in rows
+        ]
+
+    def attach_repro_outcome(self, trace_id: str, outcome: str) -> None:
+        with self.db.lock():
+            self.db.execute(
+                "UPDATE attempt_traces SET repro_outcome=? WHERE trace_id=?",
+                (outcome, trace_id))
+
+    def log_pairwise_label(self, preference: PreferenceInput) -> str:
+        pid = _new_id("PRF")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO pairwise_labels(pair_id, trace_a, trace_b, "
+                "preferred, judge_confidence, created_at) VALUES(?,?,?,?,?,?)",
+                (pid, preference.trace_a, preference.trace_b,
+                 preference.preferred, preference.judge_confidence, _now()),
+            )
+        return pid
+
+    def get_pairwise_labels(self) -> list[Preference]:
+        rows = self.db.fetchall(
+            "SELECT * FROM pairwise_labels ORDER BY created_at DESC")
+        return [
+            Preference(
+                pair_id=r["pair_id"], trace_a=r["trace_a"],
+                trace_b=r["trace_b"], preferred=r["preferred"],
+                judge_confidence=r["judge_confidence"],
+                created_at=r["created_at"],
+            )
+            for r in rows
+        ]
 
     # ------------------------------------------------------------------
     # Corpus-driven ideation — technique tags + coverage axis

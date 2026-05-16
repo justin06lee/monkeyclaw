@@ -21,6 +21,8 @@ from interfaces.types import (
     ArchiveUpdateInput,
     AttackChain,
     AttackElo,
+    AttemptTrace,
+    AttemptTraceInput,
     ChainFinding,
     ChainStepResult,
     CodeChunk,
@@ -48,6 +50,8 @@ from interfaces.types import (
     PatchCandidateInput,
     PolicyCorpusResult,
     PolicyCorpusResultInput,
+    Preference,
+    PreferenceInput,
     RegressionTest,
     RegressionTestInput,
     ReportCard,
@@ -453,6 +457,31 @@ class MonkeyClawMCP(Protocol):
 
     def mark_near_miss_consumed(self, near_miss_id: str) -> None:
         """Set consumed=1 on a near miss once a mutation has been seeded."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Learned ranking — the structured trace dataset (ranking spec §7)
+    # ------------------------------------------------------------------
+    def log_attempt_trace(self, trace: AttemptTraceInput) -> str:
+        """Persist one attempt trace into attempt_traces; return trace_id."""
+        ...
+
+    def get_attempt_traces(
+        self, zone_id: str | None = None
+    ) -> list[AttemptTrace]:
+        """Attempt traces newest-first, optionally filtered to one zone."""
+        ...
+
+    def attach_repro_outcome(self, trace_id: str, outcome: str) -> None:
+        """Update the repro_outcome label on an existing trace."""
+        ...
+
+    def log_pairwise_label(self, preference: PreferenceInput) -> str:
+        """Persist a pairwise preference label; return pair_id."""
+        ...
+
+    def get_pairwise_labels(self) -> list[Preference]:
+        """All pairwise preference labels, newest-first."""
         ...
 
     # ------------------------------------------------------------------
