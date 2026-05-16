@@ -86,3 +86,30 @@ def test_no_mcp_means_no_accounting(monkeypatch):
     resp = router.client_for("red_ideation").complete(
         [LLMMessage(role="user", content="x")])
     assert resp.text == "done"
+
+
+def test_per_role_cost_rollup(tmp_path):
+    from infra.database import Database
+    from infra.mcp_server import MCPServer
+    from interfaces.types import ModelRunInput
+    db = Database(str(tmp_path / "t.db"))
+    mcp = MCPServer(db)
+    try:
+        mcp.log_model_run(ModelRunInput(
+            role="red_ideation", model="m1", provider="nvidia",
+            input_tokens=100, output_tokens=50, latency_ms=10, cost_usd=0.5))
+        mcp.log_model_run(ModelRunInput(
+            role="red_ideation", model="m1", provider="nvidia",
+            input_tokens=200, output_tokens=80, latency_ms=12, cost_usd=1.5))
+        mcp.log_model_run(ModelRunInput(
+            role="patch_generation", model="m2", provider="anthropic_or_openai",
+            input_tokens=300, output_tokens=300, latency_ms=40, cost_usd=3.0))
+        rollup = mcp.get_model_cost_rollup()
+        by_role = {r["role"]: r for r in rollup}
+        assert by_role["red_ideation"]["input_tokens"] == 300
+        assert by_role["red_ideation"]["output_tokens"] == 130
+        assert abs(by_role["red_ideation"]["cost_usd"] - 2.0) < 1e-6
+        assert by_role["red_ideation"]["runs"] == 2
+        assert abs(by_role["patch_generation"]["cost_usd"] - 3.0) < 1e-6
+    finally:
+        db.close()
