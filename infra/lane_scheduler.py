@@ -78,10 +78,19 @@ class LaneScheduler:
         serial: bool = True,
         mcp: MonkeyClawMCP | None = None,
         enforcer: PolicyEnforcer | None = None,
+        sandbox_runs=None,
+        telemetry_capturer=None,
     ) -> None:
         self.lane_cfg = lane_cfg
         self.nemoclaw_cfg = nemoclaw_cfg
         self.provisioner = provisioner
+        # Optional SandboxRunsStore. When set, each lane writes a sandbox_runs
+        # audit row. Unset (mock/no-db) -> behavior is identical to before.
+        self._sandbox_runs = sandbox_runs
+        # Optional SandboxTelemetryCapturer. When set and the victim exposes a
+        # real container, each lane captures real observables. Unset -> the
+        # harness-supplied observables are used unchanged.
+        self._telemetry_capturer = telemetry_capturer
         # Optional MonkeyClawMCP. When set, each lane emits A5 session
         # telemetry. Unset -> behavior is identical to before.
         self._mcp = mcp
@@ -180,6 +189,7 @@ class LaneScheduler:
         LOG.info("lane %s starting idea %s zone=%s priority=%.3f",
                   lane_id, idea.idea_id, idea.zone_id, idea.priority_score)
         instance: VictimInstance | None = None
+        run_id = None
         emitter = (
             TelemetryEmitter(self._mcp, session_id=lane_id)
             if self._mcp is not None else None
@@ -199,6 +209,20 @@ class LaneScheduler:
             # and judges against the real Landlock allow-set. A mock victim
             # has no container -> the harness snapshots host paths.
             sandbox_container = instance.metadata.get("sandbox_container")
+            if self._sandbox_runs is not None:
+                from interfaces.provisioning import SandboxCapabilities  # noqa: PLC0415
+
+                caps = getattr(self.provisioner, "capabilities", None)
+                if not isinstance(caps, SandboxCapabilities):
+                    caps = SandboxCapabilities(
+                        cli_present=False, snapshots=False, ephemeral=False,
+                        container_fsdiff=False, recover=False)
+                run_id = self._sandbox_runs.open_run(
+                    instance_id=instance.instance_id, lane_id=lane_id,
+                    mode=instance.metadata.get("sandbox_mode", "mock"),
+                    deterministic=instance.metadata.get(
+                        "deterministic", "true") == "true",
+                    patch_applied=False, capabilities=caps)
             if sandbox_container:
                 watched_paths = list(NEMOCLAW_MONITORED_PATHS)
                 allowed_paths = list(NEMOCLAW_ALLOWED_PATHS)
@@ -233,6 +257,19 @@ class LaneScheduler:
                     LOG.warning("lane %s timeout — abandoning thread", lane_id)
                     harness.set_termination("timeout")
             result = harness.result()
+            result.deterministic = (
+                instance.metadata.get("deterministic", "true") == "true")
+            if (self._telemetry_capturer is not None
+                    and instance.metadata.get("sandbox_container")):
+                try:
+                    bundle = self._telemetry_capturer.capture(instance)
+                    result.network_log = list(bundle.network_events)
+                    result.process_log = list(bundle.process_events)
+                    result.inference_routing_log = list(
+                        bundle.inference_events)
+                except Exception as e:  # noqa: BLE001
+                    LOG.warning("telemetry capture failed for lane %s: %s",
+                                lane_id, e)
             if emitter is not None:
                 emitter.session_finished(
                     actor="lane-scheduler",
@@ -249,6 +286,8 @@ class LaneScheduler:
                     self.provisioner.teardown_victim(instance.instance_id)
                 except Exception as e:  # noqa: BLE001
                     LOG.warning("teardown failed for %s: %s", instance.instance_id, e)
+                if self._sandbox_runs is not None and run_id is not None:
+                    self._sandbox_runs.close_run(run_id)
 
     def _executor_wrapper(self, idea: IdeaObject, instance: VictimInstance,
                           harness: MonitoringHarness) -> None:

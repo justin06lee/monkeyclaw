@@ -96,6 +96,9 @@ nemoclaw:
   # victim without per-lane snapshot restore/recover. Set this to a real
   # snapshot name once snapshots work to restore per-lane isolation.
   clean_snapshot: ""
+  baseline_snapshot: "clean-baseline"
+  work_area_dir: "/tmp/monkeyclaw-work"
+  patch_build_timeout_s: 900
   # Empty: this sandbox runs as a standalone docker container, not a k3s pod
   # inside a gateway container, so the docker-exec fs-diff path does not apply.
   # The monitoring harness falls back to host-path snapshots.

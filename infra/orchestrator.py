@@ -28,6 +28,8 @@ from typing import Protocol
 from infra.bootstrap import Runtime, boot
 from infra.lane_scheduler import LaneScheduler
 from infra.monitoring_harness import MonitoringHarness
+from infra.sandbox_runs_store import SandboxRunsStore
+from infra.sandbox_telemetry import SandboxTelemetryCapturer
 from infra.telemetry import TelemetryEmitter
 from interfaces.config_schema import LaneConfig
 from interfaces.provisioning import VictimInstance
@@ -174,6 +176,9 @@ class Orchestrator:
             executor=red.execute_lane,
             on_result=self._on_result,
             mcp=rt.mcp,
+            sandbox_runs=SandboxRunsStore(rt.db),
+            telemetry_capturer=SandboxTelemetryCapturer(
+                rt.cfg.nemoclaw.cli_binary),
         )
         # Purple pipeline — read-mostly; writes its own tables, never blocks
         # the red/blue path (purple-team spec §11).

@@ -30,11 +30,13 @@ if TYPE_CHECKING:
     from infra.telemetry import TelemetryEmitter
 
 from demo.victims.registry import make_victim
+from infra.sandbox_capabilities import probe as probe_capabilities
 from interfaces.provisioning import (
     ProvisioningError,
     VictimConfig,
     VictimInstance,
     VictimProvisioner,
+    VictimSnapshot,
 )
 from interfaces.victim_client import register, unregister
 
@@ -67,10 +69,14 @@ class NemoClawProvisioner(VictimProvisioner):
         sandbox_name: str = "monkey-victim",
         sandbox_namespace: str = "openshell",
         clean_snapshot: str = "clean-baseline",
+        baseline_snapshot: str = "clean-baseline",
         gateway_endpoint: str = "ws://localhost:18789/",
         gateway_container: str = "openshell-cluster-nemoclaw",
         snapshot_restore_timeout_s: int = 180,
         recover_timeout_s: int = 600,
+        work_area_dir: str = "/tmp/monkeyclaw-work",
+        nemoclaw_repo_path: str | None = None,
+        patch_build_timeout_s: int = 900,
         telemetry: TelemetryEmitter | None = None,
     ) -> None:
         self.cli = cli_binary
@@ -80,11 +86,19 @@ class NemoClawProvisioner(VictimProvisioner):
         self.sandbox_name = sandbox_name
         self.sandbox_namespace = sandbox_namespace
         self.clean_snapshot = clean_snapshot
+        self.baseline_snapshot = baseline_snapshot
         self.gateway_endpoint = gateway_endpoint
         self.gateway_container = gateway_container
         self.snapshot_restore_timeout_s = snapshot_restore_timeout_s
         self.recover_timeout_s = recover_timeout_s
+        self.work_area_dir = work_area_dir
+        self.nemoclaw_repo_path = nemoclaw_repo_path
+        self.patch_build_timeout_s = patch_build_timeout_s
         self._instances: dict[str, VictimInstance] = {}
+
+        # Probe the local nemoclaw build once. Every lifecycle method
+        # branches on this; an unsupported capability degrades gracefully.
+        self.capabilities = probe_capabilities(self.cli, self.sandbox_name)
 
     # ------------------------------------------------------------------
     def provision_victim(self, config: VictimConfig) -> VictimInstance:
@@ -93,62 +107,75 @@ class NemoClawProvisioner(VictimProvisioner):
                 f"`{self.cli}` CLI not found on PATH. Install NemoClaw, or use "
                 f"the MockProvisioner (orchestrator flag --use-mock-provisioner)."
             )
-        if config.patch_diff:
-            # The snapshot model resets to a fixed baseline; per-lane patch
-            # application would need the patch baked into a snapshot. Not
-            # supported on this path yet — surface it loudly rather than
-            # silently running an unpatched victim.
-            raise ProvisioningError(
-                "VictimConfig.patch_diff is set, but the snapshot-based "
-                "NemoClawProvisioner cannot apply per-lane patches. Build a "
-                "patched snapshot and point `clean_snapshot` at it instead."
-            )
-
         instance_id = f"VICT-{uuid.uuid4().hex[:10]}"
         if self._telemetry is not None:
             self._telemetry.policy_loaded(actor="provisioner",
                                           target=config.policy_path)
-        if self.clean_snapshot:
-            LOG.info("provisioning victim %s: restoring %s -> %s, then recover",
-                     instance_id, self.sandbox_name, self.clean_snapshot)
-            # 1. Reset filesystem/state to the clean snapshot.
+
+        patched_snapshot = None
+        if config.patch_diff:
+            if not self.capabilities.snapshots:
+                raise ProvisioningError(
+                    "VictimConfig.patch_diff is set but this nemoclaw build "
+                    "has no snapshot support — refusing to run an unpatched "
+                    "victim (no silent unpatched victims, spec §4 c6)")
+            repo = config.nemoclaw_repo_path or self.nemoclaw_repo_path
+            if not repo:
+                raise ProvisioningError(
+                    "VictimConfig.patch_diff is set but no nemoclaw_repo_path "
+                    "is configured to build the patched victim from")
+            from infra.patch_builder import PatchBuilder  # noqa: PLC0415
+
+            builder = PatchBuilder(
+                repo_path=repo, work_area_dir=self.work_area_dir,
+                capabilities=self.capabilities,
+                build_timeout_s=self.patch_build_timeout_s)
+            patched_snapshot = builder.build_patched_snapshot(
+                config.patch_diff,
+                baseline=self.clean_snapshot or self.baseline_snapshot)
+
+        if self.capabilities.ephemeral:
+            # Ephemeral: clone the baseline into a per-lane disposable work
+            # area, restore the clean snapshot into it, then recover.
+            mode = "ephemeral"
+            deterministic = True
+            work = os.path.join(self.work_area_dir, instance_id)
+            os.makedirs(work, exist_ok=True)
+            LOG.info("provisioning ephemeral victim %s in %s",
+                     instance_id, work)
+            restore_target = (
+                patched_snapshot.name if patched_snapshot is not None
+                else (self.clean_snapshot or self.baseline_snapshot))
             self._run(
-                [self.cli, self.sandbox_name, "snapshot", "restore", self.clean_snapshot],
+                [self.cli, self.sandbox_name, "snapshot", "restore",
+                 restore_target],
                 timeout=self.snapshot_restore_timeout_s,
-                what="snapshot restore",
-            )
-            # 2. Restart the gateway + agent so no runtime/session state carries over.
-            self._run(
-                [self.cli, self.sandbox_name, "recover"],
-                timeout=self.recover_timeout_s,
-                what="recover",
-            )
+                what="snapshot restore")
+            self._run([self.cli, self.sandbox_name, "recover"],
+                      timeout=self.recover_timeout_s, what="recover")
         else:
-            # Recover-only mode: `clean_snapshot` is unset (snapshots are
-            # unavailable on this nemoclaw CPU sandbox), so we cannot reset
-            # the filesystem — but we still `recover` to restart the gateway
-            # + agent. That clears in-memory session/conversation state, so
-            # each lane gets a fresh agent with no carried-over prompt
-            # injection. Filesystem changes from prior lanes persist.
+            # Recover-only: snapshots unavailable — restart the agent but
+            # the filesystem is NOT reset. Isolation is not guaranteed.
+            mode = "recover_only"
+            deterministic = False
+            work = None
             LOG.warning("provisioning victim %s: recover-only mode "
-                        "(clean_snapshot unset) — restarting agent on %s "
-                        "without snapshot restore", instance_id,
-                        self.sandbox_name)
-            self._run(
-                [self.cli, self.sandbox_name, "recover"],
-                timeout=self.recover_timeout_s,
-                what="recover",
-            )
-        # 3. Fetch the gateway auth token for VictimClient.
+                        "(snapshots unavailable) — isolation NOT guaranteed",
+                        instance_id)
+            if self.clean_snapshot:
+                self._run(
+                    [self.cli, self.sandbox_name, "snapshot", "restore",
+                     self.clean_snapshot],
+                    timeout=self.snapshot_restore_timeout_s,
+                    what="snapshot restore")
+            self._run([self.cli, self.sandbox_name, "recover"],
+                      timeout=self.recover_timeout_s, what="recover")
+
         token = self._run(
             [self.cli, self.sandbox_name, "gateway-token", "--quiet"],
-            timeout=30,
-            what="gateway-token",
-        ).strip()
+            timeout=30, what="gateway-token").strip()
         if not token:
             raise ProvisioningError("gateway-token returned empty output")
-        # Mirror into the environment so a bare VictimClient(endpoint) — as
-        # constructed by the red/blue replay paths — picks it up.
         os.environ["MC_GATEWAY_TOKEN"] = token
 
         instance = VictimInstance(
@@ -164,10 +191,15 @@ class NemoClawProvisioner(VictimProvisioner):
                 "sandbox_namespace": self.sandbox_namespace,
                 "sandbox_container": self.gateway_container,
                 "nemoclaw_version": config.nemoclaw_version,
+                "sandbox_mode": mode,
+                "deterministic": "true" if deterministic else "false",
+                "patch_applied": "true" if patched_snapshot else "false",
+                **({"work_area": work} if work else {}),
             },
         )
         self._instances[instance_id] = instance
-        LOG.info("victim %s ready: endpoint=%s", instance_id, self.gateway_endpoint)
+        LOG.info("victim %s ready: mode=%s deterministic=%s",
+                 instance_id, mode, deterministic)
         return instance
 
     def connect_existing(self) -> VictimInstance:
@@ -205,14 +237,57 @@ class NemoClawProvisioner(VictimProvisioner):
         self._instances[instance_id] = instance
         return instance
 
-    def teardown_victim(self, instance_id: str) -> None:
-        # No-op: the sandbox is persistent and reset on the next
-        # provision_victim. We only mark our local record stopped.
+    def recover_victim(self, instance_id: str) -> VictimInstance:
+        """Restart the gateway + agent in place — clears in-memory session/
+        conversation state without a full reprovision. Promoted from the
+        internal `recover` call to a first-class contract method."""
         instance = self._instances.get(instance_id)
-        if instance is not None:
-            instance.status = "stopped"
-        LOG.debug("teardown_victim(%s): no-op (sandbox persists, reset on "
-                  "next provision)", instance_id)
+        if instance is None:
+            raise ProvisioningError(f"unknown instance {instance_id}")
+        self._run(
+            [self.cli, self.sandbox_name, "recover"],
+            timeout=self.recover_timeout_s, what="recover")
+        token = self._run(
+            [self.cli, self.sandbox_name, "gateway-token", "--quiet"],
+            timeout=30, what="gateway-token").strip()
+        if not token:
+            raise ProvisioningError("gateway-token returned empty output")
+        os.environ["MC_GATEWAY_TOKEN"] = token
+        instance.metadata["gateway_token"] = token
+        instance.status = "running"
+        return instance
+
+    def snapshot_victim(self, instance_id: str, name: str) -> VictimSnapshot:
+        """Capture the current victim state as a named snapshot. Raises when
+        the local build has no snapshot support — never returns a snapshot
+        that is not really a snapshot."""
+        instance = self._instances.get(instance_id)
+        if instance is None:
+            raise ProvisioningError(f"unknown instance {instance_id}")
+        if not self.capabilities.snapshots:
+            raise ProvisioningError(
+                f"cannot snapshot `{name}`: this nemoclaw build reports no "
+                f"snapshot support (capabilities.snapshots=False)")
+        self._run(
+            [self.cli, self.sandbox_name, "snapshot", "create", name],
+            timeout=self.snapshot_restore_timeout_s, what="snapshot create")
+        return VictimSnapshot(
+            name=name, sandbox_id=self.sandbox_name, created_at=_now(),
+            deterministic=True, patched=False,
+            base_snapshot=self.clean_snapshot or None)
+
+    def teardown_victim(self, instance_id: str) -> None:
+        """Discard the per-lane disposable work area. For recover-only mode
+        (no work area) this just marks the local record stopped."""
+        instance = self._instances.get(instance_id)
+        if instance is None:
+            return
+        work = instance.metadata.get("work_area")
+        if work:
+            shutil.rmtree(work, ignore_errors=True)
+            LOG.debug("teardown_victim(%s): discarded work area %s",
+                      instance_id, work)
+        instance.status = "stopped"
 
     def list_victims(self) -> list[VictimInstance]:
         return list(self._instances.values())
@@ -335,6 +410,24 @@ class MockProvisioner(VictimProvisioner):
         if base:
             shutil.rmtree(base, ignore_errors=True)
         instance.status = "stopped"
+
+    def recover_victim(self, instance_id: str) -> VictimInstance:
+        """The mock victim is replanted fresh per provision, so recover is a
+        no-op that returns the existing instance."""
+        instance = self._instances.get(instance_id)
+        if instance is None:
+            raise ProvisioningError(f"unknown instance {instance_id}")
+        return instance
+
+    def snapshot_victim(self, instance_id: str, name: str) -> VictimSnapshot:
+        """The mock victim's state is deterministic by construction."""
+        instance = self._instances.get(instance_id)
+        if instance is None:
+            raise ProvisioningError(f"unknown instance {instance_id}")
+        return VictimSnapshot(
+            name=name, sandbox_id=instance.sandbox_id or instance_id,
+            created_at=_now(), deterministic=True, patched=False,
+            base_snapshot=None)
 
     def list_victims(self) -> list[VictimInstance]:
         return list(self._instances.values())

@@ -118,6 +118,7 @@ def test_real_provisioner_runs_snapshot_restore_and_recover(monkeypatch):
     monkeypatch.setattr(pn.subprocess, "run", fake_run)
 
     prov = pn.NemoClawProvisioner(cli_binary="nemoclaw")
+    calls.clear()  # discard the construction-time capability probe calls
     inst = prov.provision_victim(_real_cfg())
 
     assert inst.chat_endpoint.startswith("ws://")
@@ -144,7 +145,11 @@ def test_real_provisioner_raises_on_restore_failure(monkeypatch):
         returncode = 1
 
     def fake_run(cmd, **kwargs):
-        kwargs["stderr"].write("snapshot not found")
+        # The construction-time capability probe passes subprocess.DEVNULL
+        # (an int) for stderr; only write when handed a real file object.
+        err = kwargs.get("stderr")
+        if hasattr(err, "write"):
+            err.write("snapshot not found")
         return FailProc()
 
     monkeypatch.setattr(pn.shutil, "which", lambda _: "/usr/bin/nemoclaw")
@@ -174,3 +179,60 @@ def test_real_provisioner_raises_on_subprocess_timeout(monkeypatch):
     with pytest.raises(ProvisioningError) as exc:
         prov.provision_victim(_real_cfg())
     assert "timed out" in str(exc.value)
+
+
+def test_victim_snapshot_records_determinism_and_patched():
+    from interfaces.provisioning import VictimSnapshot
+
+    s = VictimSnapshot(
+        name="clean-baseline", sandbox_id="monkey-victim",
+        created_at="2026-05-15T00:00:00Z", deterministic=True,
+        patched=False, base_snapshot=None,
+    )
+    assert s.deterministic is True
+    assert s.patched is False
+
+
+def test_sandbox_capabilities_has_five_flags():
+    from dataclasses import fields
+
+    from interfaces.provisioning import SandboxCapabilities
+
+    fnames = {f.name for f in fields(SandboxCapabilities)}
+    assert fnames == {"cli_present", "snapshots", "ephemeral",
+                      "container_fsdiff", "recover"}
+
+
+def test_victim_provisioner_protocol_includes_recover_and_snapshot():
+    from interfaces.provisioning import VictimProvisioner
+
+    # Method names are part of the extended contract.
+    assert hasattr(VictimProvisioner, "recover_victim")
+    assert hasattr(VictimProvisioner, "snapshot_victim")
+
+
+def test_victim_telemetry_bundle_carries_five_observable_lists():
+    from dataclasses import fields
+
+    from interfaces.types import VictimTelemetryBundle
+
+    fnames = {f.name for f in fields(VictimTelemetryBundle)}
+    assert {"fs_diff", "network_events", "process_events",
+            "inference_events", "memory_diff"} <= fnames
+
+
+def test_mock_provisioner_satisfies_extended_protocol():
+    from interfaces.provisioning import VictimConfig, VictimProvisioner
+    from infra.provisioning_nemoclaw import MockProvisioner
+
+    p = MockProvisioner()
+    assert isinstance(p, VictimProvisioner)  # runtime_checkable structural
+    inst = p.provision_victim(VictimConfig(
+        nemoclaw_version="v0", policy_path="p", agent_type="coding_assistant",
+        agent_config_path="c"))
+    recovered = p.recover_victim(inst.instance_id)
+    assert recovered.instance_id == inst.instance_id
+    snap = p.snapshot_victim(inst.instance_id, "snap-1")
+    assert snap.deterministic is True   # mock victim replanted fresh per provision
+    assert snap.name == "snap-1"
+    p.teardown_victim(inst.instance_id)

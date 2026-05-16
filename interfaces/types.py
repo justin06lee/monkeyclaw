@@ -53,6 +53,7 @@ Observability = Literal["observed", "silent", "unknown"]
 ControlValidationKind = Literal["inline", "full"]
 ControlValidationStatus = Literal["ok", "errored"]
 DetectionRuleStatus = Literal["active", "candidate", "retired"]
+SandboxMode = Literal["ephemeral", "recover_only", "mock"]
 
 # ---------------------------------------------------------------------------
 # Message + observability primitives
@@ -114,6 +115,19 @@ class InferenceEvent:
     content_preview: str  # first 200 chars
     pii_detected: bool
     pii_types: list[str] | None = None
+
+
+@dataclass
+class VictimTelemetryBundle:
+    """Real observables captured from a running/just-finished victim sandbox.
+    Each field reuses an existing observable type; missing streams degrade to
+    an empty list / None rather than aborting the lane."""
+
+    fs_diff: FsDiff | None = None
+    network_events: list[NetworkEvent] = field(default_factory=list)
+    process_events: list[ProcessEvent] = field(default_factory=list)
+    inference_events: list[InferenceEvent] = field(default_factory=list)
+    memory_diff: MemoryDiff | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +257,7 @@ class LaneResult:
     memory_diff: MemoryDiff
     inference_routing_log: list[InferenceEvent]
     attacker_self_assessment: str
+    deterministic: bool = True  # False when the victim was not snapshot-isolated
 
 
 # ---------------------------------------------------------------------------
@@ -936,6 +951,7 @@ __all__ = [
     "ReproPackage",
     "ReproPackageInput",
     "ReproQueueStatus",
+    "SandboxMode",
     "SeccompProfile",
     "SelfGovernanceCheck",
     "SelfGovernanceReport",
@@ -943,5 +959,6 @@ __all__ = [
     "TelemetryEvent",
     "TelemetryEventInput",
     "TelemetryEventType",
+    "VictimTelemetryBundle",
     "ZoneCoverage",
 ]
