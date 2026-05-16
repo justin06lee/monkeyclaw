@@ -84,3 +84,17 @@ def test_purple_cycle_result_carries_all_outputs():
     fnames = {f.name for f in fields(PurpleCycleResult)}
     assert {"verdicts", "validation_run", "report_card",
             "new_rules", "routed_signals"} <= fnames
+
+
+def test_control_telemetry_adapter_is_a_protocol():
+    from interfaces.control_telemetry import ControlTelemetryAdapter
+
+    # A class with the two methods satisfies the Protocol structurally.
+    class FakeAdapter:
+        def telemetry_for(self, execution):  # noqa: ANN001
+            return []
+
+        def decisions_for(self, execution):  # noqa: ANN001
+            return []
+
+    assert isinstance(FakeAdapter(), ControlTelemetryAdapter)
