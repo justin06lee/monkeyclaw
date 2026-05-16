@@ -105,11 +105,18 @@ def coverage_gap_for(zone: CoverageGap) -> float:
 def score_ideas(
     outcomes: list[DedupOutcome],
     zones_by_id: dict[str, CoverageGap],
+    *,
+    elo_by_zone: dict[str, float] | None = None,
 ) -> list[PrioritizedIdea]:
     """Compute the priority score for every KEPT idea, sort descending.
 
     Discarded duplicates are not scored — they're already logged with
     `deduplicated=true` and would only pollute the prioritized list.
+
+    When `elo_by_zone` is supplied (judge-ensemble spec §7.3), a small
+    normalised Elo term is folded into each idea's priority so zones whose
+    attacks rank highest get a modest boost. Default `None` reproduces the
+    pre-existing scoring exactly.
     """
     out: list[PrioritizedIdea] = []
     for oc in outcomes:
@@ -136,6 +143,17 @@ def score_ideas(
                 "severity_weight": sw,
             },
         ))
+    if elo_by_zone:
+        ratings = list(elo_by_zone.values())
+        lo, hi = min(ratings), max(ratings)
+        span = (hi - lo) or 1.0
+        for scored in out:
+            r = elo_by_zone.get(scored.idea.zone_id)
+            if r is not None:
+                boost = 0.1 * ((r - lo) / span)  # up to +0.1 priority
+                scored.priority = min(1.0, scored.priority + boost)
+                scored.idea.priority_score = scored.priority
+                scored.components["elo_boost"] = boost
     out.sort(key=lambda p: p.priority, reverse=True)
     return out
 
