@@ -64,11 +64,15 @@ class PatchIsolation:
         Path(self.cfg.worktree_root).mkdir(parents=True, exist_ok=True)
         worktree = tempfile.mkdtemp(
             prefix=_WORKTREE_PREFIX, dir=self.cfg.worktree_root)
-        proc = subprocess.run(
-            ["git", "worktree", "add", "--detach", worktree,
-             self.cfg.base_ref],
-            cwd=self.cfg.nemoclaw_repo_path, capture_output=True, text=True,
-            timeout=self.cfg.build_timeout_s)
+        try:
+            proc = subprocess.run(
+                ["git", "worktree", "add", "--detach", worktree,
+                 self.cfg.base_ref],
+                cwd=self.cfg.nemoclaw_repo_path, capture_output=True,
+                text=True, timeout=self.cfg.build_timeout_s)
+        except (subprocess.TimeoutExpired, OSError):
+            shutil.rmtree(worktree, ignore_errors=True)
+            raise
         if proc.returncode != 0:
             shutil.rmtree(worktree, ignore_errors=True)
             raise RuntimeError(

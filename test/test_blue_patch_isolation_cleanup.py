@@ -28,3 +28,21 @@ def test_exception_inside_prepare_still_tears_down(tmp_path, db):
     assert not Path(captured_worktree["path"]).exists()
     rows = db.fetchall("SELECT * FROM patch_builds WHERE torn_down = 1")
     assert len(rows) == 1
+
+
+def test_worktree_add_timeout_is_a_clean_failure(tmp_path, db, monkeypatch):
+    import subprocess
+
+    repo, base = build_repo(tmp_path / "nemoclaw")
+    iso = PatchIsolation(
+        provisioner=None, store=PatchBuildsStore(db),
+        cfg=PatchIsolationConfig(
+            nemoclaw_repo_path=repo, base_ref=base,
+            worktree_root=str(tmp_path / "wt"), build_timeout_s=1))
+
+    def _slow_run(*a, **kw):  # noqa: ANN002, ANN003
+        raise subprocess.TimeoutExpired(cmd="git worktree add", timeout=1)
+
+    monkeypatch.setattr(subprocess, "run", _slow_run)
+    with pytest.raises(subprocess.TimeoutExpired):
+        iso.diff_applies(make_patch("P1", GOOD_DIFF))
