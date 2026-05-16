@@ -21,3 +21,13 @@ def test_defaults_load():
     assert cfg.lanes.lane_timeout_seconds == 1200
     assert cfg.nemoclaw.repo_path
     assert "PROMPT-INJ" in cfg.judgment.tier2_zones
+
+
+def test_red_archive_config_defaults():
+    from infra.config import load_config
+
+    cfg = load_config()
+    arch = cfg.red.archive
+    assert arch.niche_gap_low == 0.5
+    assert arch.niche_gap_high == 1.5
+    assert arch.seed_cross_zone_count == 2
