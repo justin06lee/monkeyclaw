@@ -239,3 +239,83 @@ def test_archive_update_input_niche_descriptors_defaults_empty():
         response_movement="refusal", idea_id="I1", score=4.0,
     )
     assert upd.niche_descriptors == {}
+
+
+def _cell(zone, style, movement, idea_id, score, descriptors=None):
+    from interfaces.types import ArchiveCell
+
+    return ArchiveCell(
+        cell_id=f"{zone}-{style}-{movement}",
+        zone_id=zone, interaction_style=style, response_movement=movement,
+        best_idea_id=idea_id, best_score=score, occupancy=1,
+        updated_at="2026-05-15T00:00:00Z",
+        niche_descriptors=descriptors or {},
+    )
+
+
+def test_load_from_cells_rebuilds_grid():
+    from red_team.archive import EliteArchive
+
+    cells = [
+        _cell("SBX-FS", "direct", "refusal", "I1", 4.0,
+              {"turn_bucket": "3-7", "transfer_score": 0.3,
+               "tactic_tags": ["t"], "model": "nemotron"}),
+        _cell("SBX-FS", "roleplay", "partial_compliance", "I2", 7.0),
+    ]
+    arch = EliteArchive.load_from_cells(cells)
+    assert arch.cell_count() == 2
+    elite = arch.get_elite("SBX-FS", "direct", "refusal")
+    assert elite is not None
+    assert elite.idea_id == "I1"
+    assert elite.score == 4.0
+    assert elite.turn_bucket == "3-7"
+    assert elite.tactic_tags == ["t"]
+    assert elite.model == "nemotron"
+    assert elite.transfer_score == 0.3
+
+
+def test_load_from_cells_skips_null_elite_rows():
+    from red_team.archive import EliteArchive
+
+    cell = _cell("SBX-FS", "direct", "refusal", None, 0.0)
+    arch = EliteArchive.load_from_cells([cell])
+    assert arch.cell_count() == 0
+
+
+def test_load_from_cells_skips_invalid_vocabulary_rows():
+    from red_team.archive import EliteArchive
+
+    cell = _cell("SBX-FS", "telepathy", "refusal", "I3", 5.0)
+    arch = EliteArchive.load_from_cells([cell])
+    assert arch.cell_count() == 0
+
+
+def test_load_from_cells_round_trips_snapshot():
+    from interfaces.types import ArchiveCell
+
+    from red_team.archive import ArchiveEntry, EliteArchive
+
+    src = EliteArchive()
+    src.consider(ArchiveEntry(
+        zone="PROMPT-INJ", interaction_style="context_injection",
+        response_movement="strong_compliance", score=8.0, idea_id="I7",
+        turn_bucket="8-15", tactic_tags=["inj"], model="m", transfer_score=0.5,
+    ))
+    cells = []
+    for key, entry in src.snapshot().items():
+        cells.append(ArchiveCell(
+            cell_id="-".join(key), zone_id=entry.zone,
+            interaction_style=entry.interaction_style,
+            response_movement=entry.response_movement,
+            best_idea_id=entry.idea_id, best_score=entry.score, occupancy=1,
+            updated_at="2026-05-15T00:00:00Z",
+            niche_descriptors={
+                "turn_bucket": entry.turn_bucket,
+                "transfer_score": entry.transfer_score,
+                "tactic_tags": entry.tactic_tags, "model": entry.model,
+            },
+        ))
+    restored = EliteArchive.load_from_cells(cells)
+    e = restored.get_elite("PROMPT-INJ", "context_injection",
+                           "strong_compliance")
+    assert e is not None and e.idea_id == "I7" and e.score == 8.0

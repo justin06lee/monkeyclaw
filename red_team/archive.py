@@ -17,6 +17,7 @@ structure — there is no MCP persistence method for it, which is intentional.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field, replace
 
 # --- Primary archive axes --------------------------------------------------
@@ -42,6 +43,8 @@ RESPONSE_MOVEMENTS: tuple[str, ...] = (
 # Exposed as sets for fast membership validation.
 _VALID_STYLES = frozenset(INTERACTION_STYLES)
 _VALID_MOVEMENTS = frozenset(RESPONSE_MOVEMENTS)
+
+LOG = logging.getLogger("monkeyclaw.red.archive")
 
 
 # --- Entry -----------------------------------------------------------------
@@ -114,6 +117,47 @@ class EliteArchive:
 
     def __init__(self) -> None:
         self._cells: dict[tuple[str, str, str], ArchiveEntry] = {}
+
+    @classmethod
+    def load_from_cells(cls, cells: list) -> EliteArchive:
+        """Rebuild an in-memory archive from persisted ArchiveCell rows.
+
+        Rows whose ``best_idea_id`` is NULL (an occupied counter that never
+        held an elite) are skipped. Rows whose axis values are no longer in
+        the vocabulary are skipped with a warning rather than aborting the
+        whole rehydration — a cold archive is recoverable, a crash is not.
+        """
+        archive = cls()
+        for cell in cells:
+            if cell.best_idea_id is None:
+                continue
+            if (cell.interaction_style not in _VALID_STYLES
+                    or cell.response_movement not in _VALID_MOVEMENTS):
+                LOG.warning(
+                    "load_from_cells: skipping cell %s — unknown axis "
+                    "(%s / %s)",
+                    cell.cell_id, cell.interaction_style,
+                    cell.response_movement)
+                continue
+            nd = cell.niche_descriptors or {}
+            try:
+                entry = ArchiveEntry(
+                    zone=cell.zone_id,
+                    interaction_style=cell.interaction_style,
+                    response_movement=cell.response_movement,
+                    score=cell.best_score,
+                    idea_id=cell.best_idea_id,
+                    turn_bucket=str(nd.get("turn_bucket", "0-2")),
+                    tactic_tags=list(nd.get("tactic_tags", []) or []),
+                    model=str(nd.get("model", "")),
+                    transfer_score=float(nd.get("transfer_score", 0.0) or 0.0),
+                )
+            except (ValueError, TypeError) as e:
+                LOG.warning("load_from_cells: skipping cell %s — %s",
+                            cell.cell_id, e)
+                continue
+            archive._cells[entry.cell_key] = entry
+        return archive
 
     def consider(self, entry: ArchiveEntry) -> bool:
         """Place or replace ``entry`` in its cell.
