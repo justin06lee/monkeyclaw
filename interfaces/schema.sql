@@ -178,7 +178,8 @@ CREATE TABLE IF NOT EXISTS regression_tests (
     deprecated                 INTEGER NOT NULL DEFAULT 0,
     last_run_at                TEXT,
     last_run_result            TEXT,
-    consecutive_passes         INTEGER NOT NULL DEFAULT 0
+    consecutive_passes         INTEGER NOT NULL DEFAULT 0,
+    run_state                  TEXT NOT NULL DEFAULT 'untested'  -- untested|passing|failing|quarantined
 );
 
 CREATE INDEX IF NOT EXISTS idx_regression_zone   ON regression_tests(zone_id);

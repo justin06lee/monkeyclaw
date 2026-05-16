@@ -82,3 +82,39 @@ def test_failing_migration_raises_and_is_not_recorded(tmp_path: Path) -> None:
         assert 2 not in applied_set(db.conn)
     finally:
         db.close()
+
+
+def test_0004_backfills_run_state_from_last_run_result(tmp_path: Path) -> None:
+    import sqlite3 as _sqlite3
+
+    import sqlite_vec
+
+    from infra.database import SCHEMA_PATH
+    from infra.migrations import discover
+
+    conn = _sqlite3.connect(tmp_path / "rs.db")
+    # schema.sql uses sqlite-vec vec0 virtual tables.
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
+    # Build an *old* schema: regression_tests without run_state.
+    conn.executescript(SCHEMA_PATH.read_text())
+    conn.execute("ALTER TABLE regression_tests DROP COLUMN run_state")
+    conn.execute("DELETE FROM schema_meta WHERE key LIKE 'migration:%'")
+    conn.execute(
+        "INSERT INTO surface_zones(zone_id, name, description) "
+        "VALUES('Z', 'z', 'z')")
+    for tid, res in [("T1", "pass"), ("T2", "fail"), ("T3", None)]:
+        conn.execute(
+            "INSERT INTO regression_tests(test_id, vuln_id, zone_id, "
+            "test_script, expected_result, last_run_result) "
+            "VALUES(?, 'V', 'Z', 's', 'blocked', ?)", (tid, res))
+    # Apply 0001..0004.
+    for mig in discover():
+        from infra.migrations import _apply_one, _record_applied
+        _apply_one(conn, mig)
+        _record_applied(conn, mig)
+    states = dict(conn.execute(
+        "SELECT test_id, run_state FROM regression_tests").fetchall())
+    assert states == {"T1": "passing", "T2": "failing", "T3": "untested"}
+    conn.close()
