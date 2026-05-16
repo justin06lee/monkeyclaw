@@ -24,6 +24,17 @@ model_tournament:
   #     model: nvidia/some-cyber-specialist
   #     optional: true
 
+mutation:
+  # Mutate near-miss attacks into stronger variants and learn which
+  # operators help. A strict no-op when `enabled: false`.
+  enabled: true
+  policy: thompson          # thompson | greedy | epsilon_greedy
+  epsilon: 0.1              # exploration rate for epsilon_greedy
+  children_per_parent: 2
+  near_miss_threshold: 0.4  # min clean-verdict confidence to mutate
+  improvement_epsilon: 0.05 # min lift counted as a real improvement
+  max_lineage_depth: 2
+
 lanes:
   # One lane per synthesized attack chain — 5 chains, 5 deep-dive agents.
   pool_size: 5
