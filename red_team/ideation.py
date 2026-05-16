@@ -677,6 +677,24 @@ def tournament_ideas(
     return tournament.generate(_generate)
 
 
+# ---------------------------------------------------------------------------
+# Mode D — taxonomy-driven ideas (corpus-driven-ideation spec §6.3)
+# ---------------------------------------------------------------------------
+
+
+def taxonomy_ideas(
+    engine: IdeationEngine,
+    zone: CoverageGap,
+    cycle_id: int,
+) -> list[IdeaObject]:
+    """Run Mode D for one zone. Returns [] when taxonomy_mode is disabled
+    so the caller falls back to the three-mode path."""
+    if not engine.cfg.taxonomy_mode:
+        return []
+    return engine._mode_taxonomy(
+        zone, cycle_id, gap_top_n=engine.cfg.taxonomy_gap_top_n)
+
+
 __all__ = [
     "IdeaTactics",
     "IdeationConfig",
@@ -686,6 +704,7 @@ __all__ = [
     "TARGET_DEFENSES",
     "playbook_ideas",
     "tactics_for",
+    "taxonomy_ideas",
     "techniques_for",
     "tournament_ideas",
 ]

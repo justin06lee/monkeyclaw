@@ -254,3 +254,27 @@ def test_generate_ideas_produces_prioritized_top_n():
     # Priority sort descending
     if len(ideas) >= 2:
         assert ideas[0].priority_score >= ideas[1].priority_score
+
+
+def test_pipeline_runs_taxonomy_mode_when_enabled():
+    """A red-team cycle with taxonomy_mode on produces taxonomy-sourced
+    ideas tagged with technique refs."""
+    from red_team.ideation import IdeationConfig, taxonomy_ideas
+    from interfaces.types import CoverageGap
+
+    llm = MockLLM()
+    mcp = MockMCP(seed=0, verbose=False)
+    pipeline = Pipeline(
+        mcp=mcp, llm=llm,
+        ideation_cfg=IdeationConfig(taxonomy_mode=True, taxonomy_gap_top_n=3))
+    # Mode D is wired into the engine; verify it produces taxonomy-sourced,
+    # technique-tagged ideas for a mapped zone.
+    gap = CoverageGap(
+        zone_id="PROMPT-INJ", zone_name="Prompt Injection",
+        coverage_score=0.1, priority_score=0.9, vulns_open=0,
+        last_tested_at=None, severity_weight=1.0,
+        description="Direct + indirect prompt injection.")
+    tax_ideas = taxonomy_ideas(pipeline.ideation, gap, cycle_id=1)
+    assert tax_ideas
+    assert all(i.source_mode == "taxonomy" for i in tax_ideas)
+    assert any(getattr(i, "techniques", None) for i in tax_ideas)
