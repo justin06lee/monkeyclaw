@@ -16,8 +16,13 @@ import uuid
 from dataclasses import asdict
 from datetime import UTC, datetime
 
+from typing import TYPE_CHECKING
+
 from infra.database import Database, EmbeddingModel
 from interfaces.mcp_tools import MonkeyClawMCP
+
+if TYPE_CHECKING:
+    from infra.state_machine import TransitionEngine
 from interfaces.types import (
     ArchiveCell,
     ArchiveUpdateInput,
@@ -70,6 +75,16 @@ class MCPServer(MonkeyClawMCP):
         self._code_backend = "python"
         self._argyph = None
         self._repo_path = "."
+
+    @property
+    def transitions(self) -> "TransitionEngine":
+        """The shared transition engine for this server's DB."""
+        eng = getattr(self, "_transition_engine", None)
+        if eng is None:
+            from infra.state_machine import TransitionEngine
+            eng = TransitionEngine(self.db)
+            self._transition_engine = eng
+        return eng
 
     def set_code_context(self, backend: str = "python",
                          argyph_binary: str | None = None,
@@ -296,38 +311,36 @@ class MCPServer(MonkeyClawMCP):
         # Verify the finding exists
         if self.db.fetchone("SELECT 1 FROM findings WHERE finding_id = ?", (finding_id,)) is None:
             raise KeyError(f"unknown finding_id {finding_id}")
-        self.db.execute(
-            "INSERT OR REPLACE INTO repro_queue(finding_id, priority, status, enqueued_at) "
-            "VALUES (?, ?, 'queued', ?)",
-            (finding_id, priority, _now()),
-        )
-
-    def get_repro_queue(self) -> list[FindingRecord]:
-        """Atomically claim the next queued finding. Returns 0 or 1 record."""
-        worker = os.environ.get("MC_WORKER_ID") or _new_id("WK")
+        import uuid as _uuid
         with self.db.lock():
             self.db.execute("BEGIN IMMEDIATE")
             try:
-                row = self.db.fetchone(
-                    "SELECT finding_id FROM repro_queue "
-                    "WHERE status = 'queued' "
-                    "ORDER BY CASE WHEN priority = 'high' THEN 0 ELSE 1 END, enqueued_at "
-                    "LIMIT 1"
-                )
-                if row is None:
-                    self.db.execute("COMMIT")
-                    return []
-                fid = row["finding_id"]
                 self.db.execute(
-                    "UPDATE repro_queue SET status = 'processing', dequeued_at = ?, worker_id = ? "
-                    "WHERE finding_id = ?",
-                    (_now(), worker, fid),
+                    "INSERT OR REPLACE INTO repro_queue("
+                    "finding_id, priority, status, enqueued_at) "
+                    "VALUES (?, ?, 'queued', ?)",
+                    (finding_id, priority, _now()),
+                )
+                self.db.execute(
+                    "INSERT INTO queue_transitions(transition_id, entity, "
+                    "entity_id, from_state, to_state, actor, reason) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    (f"TR-{_uuid.uuid4().hex[:12]}", "repro_queue", finding_id,
+                     None, "queued", "routing", f"enqueued ({priority})"),
                 )
                 self.db.execute("COMMIT")
             except Exception:
                 self.db.execute("ROLLBACK")
                 raise
-        finding_row = self.db.fetchone("SELECT * FROM findings WHERE finding_id = ?", (fid,))
+
+    def get_repro_queue(self) -> list[FindingRecord]:
+        """Atomically claim the next queued finding. Returns 0 or 1 record."""
+        worker = os.environ.get("MC_WORKER_ID") or _new_id("WK")
+        fid = self.transitions.claim_next_repro(worker)
+        if fid is None:
+            return []
+        finding_row = self.db.fetchone(
+            "SELECT * FROM findings WHERE finding_id = ?", (fid,))
         if finding_row is None:
             return []
         return [_finding_row_to_record(finding_row)]
@@ -354,29 +367,45 @@ class MCPServer(MonkeyClawMCP):
             k: [asdict(m) for m in v] for k, v in package.transcripts.items()
         })
         with self.db.lock():
-            self.db.execute(
-                "INSERT INTO repro_packages(package_id, finding_id, vuln_id, title, severity, "
-                "repro_rate, minimal_steps, affected_zone, affected_paths, ideas_used, "
-                "transcripts, suggested_mitigations, repro_document_md, cold_verified, "
-                "ready_for_blue, blue_team_status, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (pid, package.finding_id, vuln_id, package.title, package.severity,
-                 package.repro_rate, json.dumps(package.minimal_steps),
-                 package.affected_zone, affected_paths,
-                 json.dumps(package.ideas_used), transcripts,
-                 json.dumps(package.suggested_mitigations), package.repro_document_md,
-                 1 if package.cold_verified else 0,
-                 1 if package.ready_for_blue else 0, "queued", _now()),
-            )
-            self.db.execute(
-                "UPDATE findings SET repro_rate = ?, patch_status = 'in_progress' "
-                "WHERE finding_id = ?",
-                (package.repro_rate, package.finding_id),
-            )
-            self.db.execute(
-                "UPDATE repro_queue SET status = 'completed' WHERE finding_id = ?",
-                (package.finding_id,),
-            )
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                self.db.execute(
+                    "INSERT INTO repro_packages(package_id, finding_id, "
+                    "vuln_id, title, severity, repro_rate, minimal_steps, "
+                    "affected_zone, affected_paths, ideas_used, transcripts, "
+                    "suggested_mitigations, repro_document_md, cold_verified, "
+                    "ready_for_blue, blue_team_status, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (pid, package.finding_id, vuln_id, package.title,
+                     package.severity, package.repro_rate,
+                     json.dumps(package.minimal_steps), package.affected_zone,
+                     affected_paths, json.dumps(package.ideas_used),
+                     transcripts, json.dumps(package.suggested_mitigations),
+                     package.repro_document_md,
+                     1 if package.cold_verified else 0,
+                     1 if package.ready_for_blue else 0, "queued", _now()),
+                )
+                self.db.execute(
+                    "UPDATE findings SET repro_rate = ? WHERE finding_id = ?",
+                    (package.repro_rate, package.finding_id),
+                )
+                self.db.execute("COMMIT")
+            except Exception:
+                self.db.execute("ROLLBACK")
+                raise
+        # Audited lifecycle transitions: complete the queue row and advance
+        # the finding open->in_progress. The queue row may legally already be
+        # 'processing' (claimed) — transition processing->completed.
+        self.transitions.transition(
+            entity="repro_queue", entity_id=package.finding_id,
+            to_state="completed", actor="repro_pipeline",
+            reason=f"package {pid}",
+        )
+        self.transitions.transition(
+            entity="finding", entity_id=package.finding_id,
+            to_state="in_progress", actor="repro_pipeline",
+            reason=f"package {pid}",
+        )
         return pid
 
     def get_blue_team_queue(self) -> list[ReproPackage]:

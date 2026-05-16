@@ -82,6 +82,9 @@ def test_repro_package_publishes_to_blue_queue(real_mcp):
         tier_caught="programmatic", failure_class="pii_leak",
         severity="high", evidence=json.dumps([]),
     ))
+    # A package is only pushed for a claimed finding: enqueue then claim.
+    real_mcp.push_to_repro_queue(fid, priority="high")
+    real_mcp.get_repro_queue()
     pid = real_mcp.push_repro_package(ReproPackageInput(
         finding_id=fid, vuln_id="MC-2026-0001", title="leak", severity="high",
         repro_rate=0.9, minimal_steps=[{"do": "x"}], affected_zone="PRV-ROUTE",
@@ -230,6 +233,8 @@ def test_real_server_mark_repro_queue_status(server):
 
 def test_real_server_mark_repro_package_status(server):
     fid = server.log_finding(_sample_finding_input())
+    server.push_to_repro_queue(fid, priority="high")
+    server.get_repro_queue()
     pkg_id = server.push_repro_package(_sample_repro_package_input(fid))
     server.mark_repro_package_status(pkg_id, "triaged")
     row = server.db.fetchone(
