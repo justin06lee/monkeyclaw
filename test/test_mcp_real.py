@@ -119,3 +119,18 @@ def test_send_alert_persists(real_mcp, tmp_db):
     row = tmp_db.fetchone("SELECT message, severity FROM alerts ORDER BY alert_id DESC LIMIT 1")
     assert row["message"] == "hello"
     assert row["severity"] == "high"
+
+
+def test_a3_tables_exist(db):
+    names = {r[0] for r in db.fetchall(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    for t in ("telemetry_events", "model_runs", "judge_votes",
+              "policy_corpus_results", "idea_components",
+              "idea_archive_cells", "mutation_operator_stats"):
+        assert t in names, f"missing table {t}"
+
+
+def test_a3_schema_version_is_2(db):
+    row = db.fetchone(
+        "SELECT value FROM schema_meta WHERE key='schema_version'")
+    assert row[0] == "2"

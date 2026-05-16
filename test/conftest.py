@@ -20,6 +20,13 @@ def tmp_db(tmp_path: Path) -> Database:
 
 
 @pytest.fixture
+def db(tmp_path: Path) -> Database:
+    database = Database(tmp_path / "test.db")
+    yield database
+    database.close()
+
+
+@pytest.fixture
 def real_mcp(tmp_db: Database) -> MCPServer:
     return MCPServer(tmp_db)
 
