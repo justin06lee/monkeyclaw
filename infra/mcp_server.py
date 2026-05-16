@@ -860,9 +860,12 @@ class MCPServer(MonkeyClawMCP):
 
     def get_technique_coverage_rows(self, zone_id=None):
         if zone_id is None:
-            return self.db.fetchall("SELECT * FROM technique_coverage")
-        return self.db.fetchall(
-            "SELECT * FROM technique_coverage WHERE zone_id = ?", (zone_id,))
+            rows = self.db.fetchall("SELECT * FROM technique_coverage")
+        else:
+            rows = self.db.fetchall(
+                "SELECT * FROM technique_coverage WHERE zone_id = ?",
+                (zone_id,))
+        return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------
     # Notifications
