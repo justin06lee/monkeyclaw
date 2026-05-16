@@ -64,6 +64,19 @@ def boot(config_path: str | Path | None = None,
               f"({db_path})", flush=True)
     except Exception as e:  # noqa: BLE001
         LOG.warning("could not read persistent-memory banner counts: %s", e)
+    # Preloaded attack skills — seed the research-grounded ideation priors so a
+    # fresh database already "knows" the documented attack landscape (Mode D).
+    # Idempotent: after the first boot, unchanged skills are skipped. A failure
+    # here is not fatal — Mode D falls back to reading the YAML corpus directly.
+    try:
+        from infra.seed_attack_skills import seed_attack_skills
+        seeded = seed_attack_skills(db)
+        if seeded.changed:
+            print(f"[memory] Seeded attack skills: +{seeded.inserted} "
+                  f"updated {seeded.updated} removed {seeded.removed}",
+                  flush=True)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("could not seed attack skills: %s", e)
     dispatcher = AlertDispatcher(cfg.notifications)
     # If anything below fails, the dispatcher's httpx.Client would leak —
     # close it on a failed boot.

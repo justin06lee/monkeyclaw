@@ -32,6 +32,7 @@ _VEC_TABLES: dict[str, str] = {
     "findings_vec": "finding_id",
     "ideas_vec": "idea_id",
     "code_chunks_vec": "chunk_id",
+    "attack_skills_vec": "skill_id",
 }
 
 
