@@ -796,6 +796,45 @@ CREATE INDEX IF NOT EXISTS idx_patch_builds_torn_down
     ON patch_builds(torn_down);
 
 --------------------------------------------------------------------------------
+-- attempt_traces / pairwise_labels — learned-ranking dataset (ranking spec §7)
+-- Kept in sync with migration 0017_attempt_traces.sql.
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS attempt_traces (
+    trace_id               TEXT PRIMARY KEY,
+    idea_id                TEXT NOT NULL,
+    finding_id             TEXT,
+    cycle_id               INTEGER NOT NULL,
+    zone_id                TEXT NOT NULL,
+    feature_schema_version INTEGER NOT NULL DEFAULT 1,
+    idea_summary           TEXT NOT NULL DEFAULT '',
+    tactic_tags            TEXT NOT NULL DEFAULT '[]',  -- JSON list
+    mutation_operator      TEXT,
+    interaction_style      TEXT NOT NULL DEFAULT 'direct',
+    progress_dims          TEXT NOT NULL DEFAULT '{}',  -- JSON object
+    judge_scores           TEXT NOT NULL DEFAULT '{}',  -- JSON object
+    token_cost             INTEGER NOT NULL DEFAULT 0,
+    repro_outcome          TEXT NOT NULL DEFAULT 'pending',
+    judge_verdict          TEXT NOT NULL DEFAULT 'clean',
+    search_score           REAL NOT NULL DEFAULT 0.0,
+    archive_niche          TEXT NOT NULL DEFAULT '',
+    usefulness_label       REAL NOT NULL DEFAULT 0.0,
+    created_at             TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_attempt_traces_zone
+    ON attempt_traces(zone_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_attempt_traces_repro
+    ON attempt_traces(repro_outcome);
+
+CREATE TABLE IF NOT EXISTS pairwise_labels (
+    pair_id          TEXT PRIMARY KEY,
+    trace_a          TEXT NOT NULL,
+    trace_b          TEXT NOT NULL,
+    preferred        TEXT NOT NULL,            -- a | b | tie
+    judge_confidence REAL NOT NULL DEFAULT 0.0,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+--------------------------------------------------------------------------------
 -- schema_meta — track schema version for migrations
 --------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -805,6 +844,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 
 INSERT OR IGNORE INTO schema_meta(key, value) VALUES
     ('schema_version', '16'),
+    ('feature_schema_version', '1'),
     ('taxonomy_corpus_version', 'atlas-5.4.0+owasp-2025'),
     ('embedding_model', 'sentence-transformers/all-MiniLM-L6-v2'),
     ('embedding_dim',   '384');
