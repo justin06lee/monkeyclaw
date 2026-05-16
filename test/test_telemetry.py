@@ -1,4 +1,8 @@
+import sqlite3
+from pathlib import Path
+
 from infra.mock_mcp import MockMCP
+from infra.orchestrator import main as orch_main
 from infra.telemetry import TelemetryEmitter, bounded_excerpt, content_hash
 
 
@@ -44,3 +48,37 @@ def test_mcp_server_emits_invoked_event(server):
     server.get_coverage_gaps(3)
     tl = server.get_session_timeline("SVC")
     assert any(e.event_type == "agent.mcp.invoked" for e in tl)
+
+
+def test_orchestrator_run_produces_session_timeline(tmp_path: Path, monkeypatch):
+    """A5 acceptance: a real mock cycle drives the LaneScheduler through the
+    orchestrator and lands per-lane session telemetry in the DB.
+
+    This exercises the wiring fixed in orchestrator.py — the LaneScheduler is
+    constructed with mcp=rt.mcp, so each lane emits session_started /
+    session_finished events to the telemetry_events table.
+    """
+    db_path = tmp_path / "mc.db"
+    monkeypatch.setenv("MC_STORAGE__DB_PATH", str(db_path))
+    monkeypatch.setenv("MC_LOGGING__FILE", str(tmp_path / "mc.log"))
+    monkeypatch.setenv("MC_LANES__POOL_SIZE", "2")
+    monkeypatch.setenv("MC_LANES__LANE_TIMEOUT_SECONDS", "5")
+    monkeypatch.setenv("MC_LLM_BACKEND", "mock")
+
+    rc = orch_main(["--use-mock-provisioner", "--max-cycles", "1"])
+    assert rc == 0
+
+    conn = sqlite3.connect(db_path)
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM telemetry_events").fetchone()[0]
+        types = {
+            r[0] for r in conn.execute(
+                "SELECT DISTINCT event_type FROM telemetry_events").fetchall()
+        }
+    finally:
+        conn.close()
+
+    assert count > 0, "mock cycle produced no telemetry events"
+    assert "agent.session.started" in types
+    assert "agent.session.finished" in types
