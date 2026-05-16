@@ -55,3 +55,15 @@ def test_lifecycle_reconstructs_from_request_id(server):
     decisions = [e.decision for e in events]
     # The full lifecycle of one request_id is recoverable from its rows.
     assert decisions == ["ask", "deny"]
+
+
+def test_dashboard_renders_approvals_panel(server):
+    from infra.dashboard import render_approvals_panel
+
+    svc = _service(server)
+    out_low = svc.request(_patch("PD"), severity="low")  # auto-allow
+    assert out_low.decision == "ALLOW"
+    svc.request(_patch("PE"), severity="high")           # pending
+    html = render_approvals_panel(server)
+    assert "PE" in html          # pending request listed
+    assert "auto_allow" in html  # the posture split is shown

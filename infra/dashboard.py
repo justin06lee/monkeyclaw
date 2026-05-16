@@ -696,6 +696,41 @@ def render_near_miss_queue(mcp) -> str:
             f"<th>erosion excerpt</th><th>seeds</th></tr>{body}</table>")
 
 
+def render_approvals_panel(mcp) -> str:  # noqa: ANN001
+    """Render the approvals panel: pending requests + posture legend."""
+    pending = mcp.get_pending_approvals()
+    pending_rows = "".join(
+        f"<tr><td>{r.request_id}</td><td>{r.patch_id}</td>"
+        f"<td>{r.severity}</td><td>{r.zone_id}</td>"
+        f"<td>{r.ask_expiry or '—'}</td></tr>"
+        for r in pending
+    ) or "<tr><td colspan='5'>no pending requests</td></tr>"
+    return (
+        "<section class='approvals-panel'>"
+        "<h3>Approvals</h3>"
+        "<p>posture: auto_allow (low/medium) · "
+        "require_approval (high/critical)</p>"
+        "<table><thead><tr><th>request</th><th>patch</th>"
+        "<th>severity</th><th>zone</th><th>ask expiry</th></tr></thead>"
+        f"<tbody>{pending_rows}</tbody></table>"
+        "</section>"
+    )
+
+
+def _approvals_panel(db_path: str) -> str:
+    """Render the approvals panel from a database path. Best-effort."""
+    try:
+        from infra.database import Database
+        from infra.mcp_server import MCPServer
+        db = Database(Path(db_path))
+        try:
+            return render_approvals_panel(MCPServer(db))
+        finally:
+            db.close()
+    except Exception:  # noqa: BLE001
+        return render_approvals_panel(_EmptyMCP())
+
+
 def _trajectory_views(db_path: str) -> dict[str, str]:
     """Render both trajectory views from a database path. Best-effort —
     returns empty placeholders when the DB or its tables are absent."""
@@ -725,6 +760,9 @@ class _EmptyMCP:
         return []
 
     def search_near_misses(self, zone, *, only_unconsumed, top_k):
+        return []
+
+    def get_pending_approvals(self):
         return []
 
 
@@ -1507,6 +1545,11 @@ def build_dashboard_app(db_path: str):
         """Two additive views: the trajectory ribbon + near-miss queue."""
         views = _trajectory_views(db_path)
         return views["trajectory_ribbon"] + views["near_miss_queue"]
+
+    @app.get("/api/approvals_panel", response_class=HTMLResponse)
+    def api_approvals_panel() -> str:
+        """The additive approvals panel: pending requests + posture split."""
+        return _approvals_panel(db_path)
 
     @app.get("/kill-chains", response_class=HTMLResponse)
     def kill_chains() -> str:
