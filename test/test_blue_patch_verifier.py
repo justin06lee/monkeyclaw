@@ -251,6 +251,7 @@ def test_all_gates_pass_when_replay_blocks_vuln(tmp_path: Path):
         "gate_diff_applies", "gate1_regression",
         "gate1b_mutation_robustness", "gate2_functionality",
         "gate3_full_suite", "gate_control_plane", "gate_telemetry",
+        "gate_detection",
     }
 
 
@@ -438,3 +439,17 @@ def test_gate3_fails_when_existing_test_regresses(tmp_path: Path):
     outcome = verifier.verify(patch=_patch(), package=pkg, test_pair=pair)
     assert outcome.approved is False
     assert outcome.failed_gate == "gate3_full_suite"
+
+
+def test_verify_outcome_carries_hardening_fields(real_mcp, mock_provisioner):
+    """The all-pass VerifyOutcome carries variant_results and
+    detection_verdicts and reports eight gates."""
+    pkg = make_repro_package()
+    verifier = PatchVerifier(
+        real_mcp, mock_provisioner,
+        patched_replay_factory=make_blocking_replay_factory())
+    outcome = verifier.verify(
+        patch=make_patch(), package=pkg, test_pair=make_test_pair(pkg))
+    assert hasattr(outcome, "variant_results")
+    assert hasattr(outcome, "detection_verdicts")
+    assert len(outcome.gates) == 8
