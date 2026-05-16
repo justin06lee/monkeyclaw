@@ -44,6 +44,7 @@ from interfaces.types import (
     DupResult,
     FindingInput,
     FindingRecord,
+    GeneralizationRoundInput,
     IdeaComponent,
     IdeaComponentInput,
     IdeaInput,
@@ -166,6 +167,8 @@ class MockMCP(MonkeyClawMCP):
         # Model ideation tournament stores (model-ideation-tournament §9)
         self._model_zone_winrate: dict[tuple[str, str], ModelZoneWinrate] = {}
         self._tournament_rounds: list[TournamentRound] = []
+        # Patch generalization loop (patch-generalization-loop spec §11)
+        self._generalization_rounds: list[GeneralizationRoundInput] = []
         self._seed_history()
 
     def _seed_history(self) -> None:
@@ -1075,6 +1078,14 @@ class MockMCP(MonkeyClawMCP):
         if zone_id is None:
             return [dict(r) for r in rows]
         return [dict(r) for r in rows if r["zone_id"] == zone_id]
+
+    # --- patch generalization loop -------------------------------------
+    def log_generalization_round(
+        self, round: GeneralizationRoundInput
+    ) -> str:
+        rid = f"GR-{len(self._generalization_rounds) + 1:04d}"
+        self._generalization_rounds.append(round)
+        return rid
 
     # ------------------------------------------------------------------
     # Inspection helpers (mock-only — not part of the Protocol)

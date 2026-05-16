@@ -203,3 +203,12 @@ def test_both_mcps_expose_tournament_methods():
             assert callable(getattr(impl, name)), f"{impl.__name__}.{name}"
         sig = inspect.signature(impl.get_model_zone_winrate)
         assert "zone_id" in sig.parameters
+
+
+def test_both_mcps_expose_log_generalization_round():
+    """The real and mock MCP both expose the generalization-loop write."""
+    from infra.mcp_server import MCPServer
+    from infra.mock_mcp import MockMCP
+
+    for impl in (MCPServer, MockMCP):
+        assert callable(impl.log_generalization_round)

@@ -43,6 +43,7 @@ from interfaces.types import (
     DupResult,
     FindingInput,
     FindingRecord,
+    GeneralizationRoundInput,
     IdeaComponent,
     IdeaComponentInput,
     IdeaInput,
@@ -1506,6 +1507,29 @@ class MCPServer(MonkeyClawMCP):
                  1 if attempt.improved else 0, attempt.child_verdict,
                  attempt.created_at or _now()))
         return aid
+
+    # ------------------------------------------------------------------
+    # Patch generalization loop (patch-generalization-loop spec §11)
+    # ------------------------------------------------------------------
+    def log_generalization_round(
+        self, round: GeneralizationRoundInput
+    ) -> str:
+        rid = _new_id("GR")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO generalization_rounds(round_id, patch_id, "
+                "finding_id, vuln_id, zone_id, round_index, operators_tried, "
+                "variants_total, variants_bypassed, variants_inconclusive, "
+                "bypass_operators, outcome, repatch_patch_id, evidence, "
+                "created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (rid, round.patch_id, round.finding_id, round.vuln_id,
+                 round.zone_id, round.round_index,
+                 json.dumps(round.operators_tried), round.variants_total,
+                 round.variants_bypassed, round.variants_inconclusive,
+                 json.dumps(round.bypass_operators), round.outcome,
+                 round.repatch_patch_id, json.dumps(round.evidence), _now()),
+            )
+        return rid
 
 
 # ---------------------------------------------------------------------------
