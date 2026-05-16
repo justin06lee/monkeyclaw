@@ -328,9 +328,9 @@ _PAGE = r"""<!doctype html>
   a{color:inherit;}
 
   /* ---- header — just the mark, centered, blended into the page ---- */
-  header{display:flex; justify-content:center; padding:54px 28px 20px;}
-  header img{height:164px; width:auto; max-width:86%;
-    filter:drop-shadow(0 0 38px rgba(245,166,35,.22));}
+  header{display:flex; justify-content:center; padding:60px 28px 24px;}
+  header img{height:340px; width:auto; max-width:94%;
+    filter:drop-shadow(0 0 56px rgba(245,166,35,.24));}
   @keyframes pulse{
     0%{box-shadow:0 0 0 0 rgba(54,211,147,.55);}
     70%{box-shadow:0 0 0 12px rgba(54,211,147,0);}
