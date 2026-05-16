@@ -829,7 +829,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 
 INSERT OR IGNORE INTO schema_meta(key, value) VALUES
-    ('schema_version', '16'),
+    ('schema_version', '17'),
     ('taxonomy_corpus_version', 'atlas-5.4.0+owasp-2025'),
     ('embedding_model', 'sentence-transformers/all-MiniLM-L6-v2'),
     ('embedding_dim',   '384');
