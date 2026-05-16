@@ -63,6 +63,10 @@ class OrchestratorConfig(BaseModel):
     regression_before_batch: bool = True
     graceful_shutdown_timeout_s: int = 30
     persist_queue_state: bool = True
+    # A repro can replay several lanes; default the stale-claim timeout to
+    # 2 x the lane timeout. A processing repro_queue row older than this is
+    # treated as a crashed worker and requeued.
+    stale_claim_timeout_s: int = 3600
 
 
 class NotificationsConfig(BaseModel):

@@ -122,6 +122,10 @@ class MonkeyClawMCP(Protocol):
         """
         ...
 
+    def sweep_stale_claims(self, older_than_seconds: int) -> int:
+        """Requeue processing repro_queue rows past the timeout. Returns count."""
+        ...
+
     # ------------------------------------------------------------------
     # Repro packages
     # ------------------------------------------------------------------

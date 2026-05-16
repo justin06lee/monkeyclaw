@@ -344,6 +344,11 @@ class MCPServer(MonkeyClawMCP):
             return []
         return [_finding_row_to_record(finding_row)]
 
+    def sweep_stale_claims(self, older_than_seconds: int) -> int:
+        """Requeue repro_queue rows stranded in 'processing' by a crashed
+        worker. Returns the count requeued."""
+        return self.transitions.sweep_stale_claims(older_than_seconds)
+
     # ------------------------------------------------------------------
     # Repro packages
     # ------------------------------------------------------------------

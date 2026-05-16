@@ -314,6 +314,12 @@ class MockMCP(MonkeyClawMCP):
                 return [rec]
         return []
 
+    def sweep_stale_claims(self, older_than_seconds: int) -> int:
+        """Requeue stranded processing claims; mock mode has no clock, no-op."""
+        self._log("sweep_stale_claims",
+                  {"older_than_seconds": older_than_seconds})
+        return 0
+
     # ------------------------------------------------------------------
     # Repro packages
     # ------------------------------------------------------------------

@@ -96,3 +96,36 @@ def test_orchestrator_respects_max_cycles(tmp_path: Path, monkeypatch):
     # Mock-provisioner runs write to a separate `-mock` database.
     rows = _cycle_log_rows(tmp_path / "mc-mock.db")
     assert len(rows) == 2
+
+
+def test_orchestrator_sweeps_stale_claims_each_cycle(tmp_path, monkeypatch):
+    """A repro_queue row stranded in 'processing' is requeued at cycle start."""
+    monkeypatch.setenv("MC_STORAGE__DB_PATH", str(tmp_path / "mc.db"))
+    monkeypatch.setenv("MC_LOGGING__FILE", str(tmp_path / "mc.log"))
+    monkeypatch.setenv("MC_LANES__POOL_SIZE", "2")
+    monkeypatch.setenv("MC_LANES__LANE_TIMEOUT_SECONDS", "5")
+
+    from infra.bootstrap import boot
+    from infra.orchestrator import Orchestrator, StubBlue, StubRedTeam
+
+    rt = boot(None, use_mock_provisioner=True)
+    try:
+        rt.mcp.db.execute(
+            "INSERT INTO surface_zones(zone_id, name, description) "
+            "VALUES('Z','z','z')")
+        rt.mcp.db.execute(
+            "INSERT INTO findings(finding_id, cycle_id, idea_id, zone_id, "
+            "source_mode, idea_summary, verdict, tier_caught, failure_class, "
+            "severity, evidence) VALUES('F1',1,'I','Z','creative','s',"
+            "'confirmed','programmatic','none','high','[]')")
+        rt.mcp.db.execute(
+            "INSERT INTO repro_queue(finding_id, priority, status, "
+            "dequeued_at, worker_id) VALUES('F1','high','processing',"
+            "datetime('now','-99999 seconds'),'dead')")
+        orch = Orchestrator(rt, StubRedTeam(), StubBlue())
+        orch._run_cycle(1)
+        row = rt.mcp.db.fetchone(
+            "SELECT status FROM repro_queue WHERE finding_id='F1'")
+        assert row["status"] == "queued"
+    finally:
+        rt.shutdown()
