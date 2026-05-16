@@ -211,6 +211,26 @@ class NemoClawProvisioner(VictimProvisioner):
         self._instances[instance_id] = instance
         return instance
 
+    def recover_victim(self, instance_id: str) -> VictimInstance:
+        """Restart the gateway + agent in place — clears in-memory session/
+        conversation state without a full reprovision. Promoted from the
+        internal `recover` call to a first-class contract method."""
+        instance = self._instances.get(instance_id)
+        if instance is None:
+            raise ProvisioningError(f"unknown instance {instance_id}")
+        self._run(
+            [self.cli, self.sandbox_name, "recover"],
+            timeout=self.recover_timeout_s, what="recover")
+        token = self._run(
+            [self.cli, self.sandbox_name, "gateway-token", "--quiet"],
+            timeout=30, what="gateway-token").strip()
+        if not token:
+            raise ProvisioningError("gateway-token returned empty output")
+        os.environ["MC_GATEWAY_TOKEN"] = token
+        instance.metadata["gateway_token"] = token
+        instance.status = "running"
+        return instance
+
     def teardown_victim(self, instance_id: str) -> None:
         # No-op: the sandbox is persistent and reset on the next
         # provision_victim. We only mark our local record stopped.
