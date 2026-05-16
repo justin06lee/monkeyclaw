@@ -62,11 +62,25 @@ class MCPServer(MonkeyClawMCP):
         self.db = db
         self.embedder = embedder or EmbeddingModel.shared()
         self.alert_sink = alert_sink  # Callable[[str, str], None] | None
+        self._telemetry = None
+
+    def attach_telemetry(self, emitter) -> None:
+        """Attach a TelemetryEmitter so MCP calls emit agent.mcp.invoked.
+
+        Attached lazily by the orchestrator/scheduler so contract tests that
+        construct a bare MCPServer are unaffected.
+        """
+        self._telemetry = emitter
+
+    def _emit_invoked(self, tool: str) -> None:
+        if self._telemetry is not None:
+            self._telemetry.mcp_invoked("mcp-client", tool=tool)
 
     # ------------------------------------------------------------------
     # Coverage / surface map
     # ------------------------------------------------------------------
     def get_coverage_gaps(self, top_n: int) -> list[CoverageGap]:
+        self._emit_invoked("get_coverage_gaps")
         rows = self.db.fetchall(
             "SELECT zone_id, name, description, severity_weight, coverage_score, "
             "vulns_open, last_tested_at "
@@ -114,6 +128,7 @@ class MCPServer(MonkeyClawMCP):
     # Findings
     # ------------------------------------------------------------------
     def log_finding(self, finding: FindingInput) -> str:
+        self._emit_invoked("log_finding")
         fid = _new_id("FND")
         with self.db.lock():
             self.db.execute(
@@ -228,6 +243,7 @@ class MCPServer(MonkeyClawMCP):
         return DupResult(False, 0.0, None)
 
     def log_idea(self, idea: IdeaInput) -> str:
+        self._emit_invoked("log_idea")
         iid = _new_id("IDEA")
         emb = idea.embedding or self.embedder.encode_one(f"{idea.title}\n{idea.approach}").tolist()
         with self.db.lock():
@@ -301,6 +317,7 @@ class MCPServer(MonkeyClawMCP):
     # Repro packages
     # ------------------------------------------------------------------
     def push_repro_package(self, package: ReproPackageInput) -> str:
+        self._emit_invoked("push_repro_package")
         pid = _new_id("PKG")
         vuln_id = package.vuln_id or _vuln_id()
         affected_paths = (
@@ -369,6 +386,7 @@ class MCPServer(MonkeyClawMCP):
     # Codebase search
     # ------------------------------------------------------------------
     def search_codebase(self, query: str, top_k: int) -> list[CodeChunk]:
+        self._emit_invoked("search_codebase")
         emb = self.embedder.encode_one(query)
         candidates = self.db.vector_search("code_chunks_vec", "chunk_id", emb, top_k)
         if not candidates:

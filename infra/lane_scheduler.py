@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from queue import Empty, PriorityQueue
 
 from infra.monitoring_harness import HarnessConfig, MonitoringHarness
+from infra.telemetry import TelemetryEmitter
 from interfaces.config_schema import LaneConfig, NemoClawConfig
 from interfaces.nemoclaw_policy import NEMOCLAW_ALLOWED_PATHS, NEMOCLAW_MONITORED_PATHS
 from interfaces.provisioning import VictimConfig, VictimInstance, VictimProvisioner
@@ -70,10 +71,14 @@ class LaneScheduler:
         on_result: Callable[[LaneResult], None],
         on_error: Callable[[Exception, IdeaObject], None] | None = None,
         serial: bool = True,
+        mcp=None,
     ) -> None:
         self.lane_cfg = lane_cfg
         self.nemoclaw_cfg = nemoclaw_cfg
         self.provisioner = provisioner
+        # Optional MonkeyClawMCP. When set, each lane emits A5 session
+        # telemetry. Unset -> behavior is identical to before.
+        self._mcp = mcp
         self.executor = executor
         self.on_result = on_result
         self.on_error = on_error or (lambda e, idea: LOG.exception(
@@ -152,6 +157,12 @@ class LaneScheduler:
         LOG.info("lane %s starting idea %s zone=%s priority=%.3f",
                   lane_id, idea.idea_id, idea.zone_id, idea.priority_score)
         instance: VictimInstance | None = None
+        emitter = (
+            TelemetryEmitter(self._mcp, session_id=lane_id)
+            if self._mcp is not None else None
+        )
+        if emitter is not None:
+            emitter.session_started(actor="lane-scheduler", zone=idea.zone_id)
         try:
             instance = self.provisioner.provision_victim(VictimConfig(
                 nemoclaw_version=self.nemoclaw_cfg.version,
@@ -198,8 +209,15 @@ class LaneScheduler:
                     LOG.warning("lane %s timeout — abandoning thread", lane_id)
                     harness.set_termination("timeout")
             result = harness.result()
+            if emitter is not None:
+                emitter.session_finished(
+                    actor="lane-scheduler",
+                    final_status=result.termination_reason)
             self.on_result(result)
         except Exception as e:  # noqa: BLE001
+            if emitter is not None:
+                emitter.session_finished(actor="lane-scheduler",
+                                         final_status="error")
             self.on_error(e, idea)
         finally:
             if instance is not None:

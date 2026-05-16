@@ -35,3 +35,13 @@ def test_emitter_never_stores_raw_secret():
     ev = mcp.get_session_timeline("S2")[0]
     assert "AKIA" not in (ev.excerpt or "")
     assert ev.content_hash is not None
+
+
+def test_mcp_server_emits_invoked_event(server):
+    """Any MCP call records an agent.mcp.invoked event when a telemetry
+    emitter is attached."""
+    from infra.telemetry import TelemetryEmitter
+    server.attach_telemetry(TelemetryEmitter(server, session_id="SVC"))
+    server.get_coverage_gaps(3)
+    tl = server.get_session_timeline("SVC")
+    assert any(e.event_type == "agent.mcp.invoked" for e in tl)

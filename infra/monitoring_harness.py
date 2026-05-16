@@ -286,11 +286,14 @@ class MonitoringHarness:
     """Per-lane monitoring. Use as a context manager; produces a LaneResult."""
 
     def __init__(self, cfg: HarnessConfig, lane_id: str, idea_id: str,
-                 zone_id: str) -> None:
+                 zone_id: str, telemetry=None) -> None:
         self.cfg = cfg
         self.lane_id = lane_id
         self.idea_id = idea_id
         self.zone_id = zone_id
+        # Optional TelemetryEmitter. When set, network/file events are
+        # mirrored as A5 telemetry. Unset -> behavior is identical to before.
+        self._telemetry = telemetry
         self.network_log: list[NetworkEvent] = []
         self.inference_log: list[InferenceEvent] = []
         self.transcript: list[Message] = []
@@ -363,6 +366,11 @@ class MonitoringHarness:
 
     def record_network(self, event: NetworkEvent) -> None:
         self.network_log.append(event)
+        if self._telemetry is not None:
+            self._telemetry.network_request(
+                "harness",
+                destination=event.destination_domain,
+                decision="deny" if event.blocked else "allow")
 
     def record_inference(self, event: InferenceEvent) -> None:
         self.inference_log.append(event)
@@ -387,6 +395,11 @@ class MonitoringHarness:
         if self._fs_before is None or self._fs_after is None:
             raise RuntimeError("MonitoringHarness.stop() must be called before result()")
         fs_diff = diff_snapshots(self._fs_before, self._fs_after, self.cfg.allowed_paths)
+        if self._telemetry is not None:
+            for path in fs_diff.files_outside_allowed_paths:
+                self._telemetry.file_write(
+                    "harness", path=path, decision="deny",
+                    reason_code="outside_allowed_path")
         mem_diff = diff_memory(self._mem_before or {}, self._mem_after or {})
         end_iso = _now()
         wall_ms = int((time.time() - self._started_at) * 1000)

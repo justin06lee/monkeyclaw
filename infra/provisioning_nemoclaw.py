@@ -65,8 +65,12 @@ class NemoClawProvisioner(VictimProvisioner):
         gateway_container: str = "openshell-cluster-nemoclaw",
         snapshot_restore_timeout_s: int = 180,
         recover_timeout_s: int = 600,
+        telemetry=None,
     ) -> None:
         self.cli = cli_binary
+        # Optional TelemetryEmitter. When set, provisioning emits A5
+        # policy events. Unset -> behavior is identical to before.
+        self._telemetry = telemetry
         self.sandbox_name = sandbox_name
         self.sandbox_namespace = sandbox_namespace
         self.clean_snapshot = clean_snapshot
@@ -95,6 +99,9 @@ class NemoClawProvisioner(VictimProvisioner):
             )
 
         instance_id = f"VICT-{uuid.uuid4().hex[:10]}"
+        if self._telemetry is not None:
+            self._telemetry.policy_loaded(actor="provisioner",
+                                          target=config.policy_path)
         LOG.info("provisioning victim %s: restoring %s -> %s, then recover",
                  instance_id, self.sandbox_name, self.clean_snapshot)
 
@@ -227,11 +234,16 @@ class NemoClawProvisioner(VictimProvisioner):
 class MockProvisioner(VictimProvisioner):
     """In-memory provisioner for tests and offline development."""
 
-    def __init__(self) -> None:
+    def __init__(self, telemetry=None) -> None:
         self._instances: dict[str, VictimInstance] = {}
+        # Optional TelemetryEmitter. Unset -> behavior is identical to before.
+        self._telemetry = telemetry
 
     def provision_victim(self, config: VictimConfig) -> VictimInstance:
         iid = f"MOCK-{uuid.uuid4().hex[:10]}"
+        if self._telemetry is not None:
+            self._telemetry.policy_loaded(actor="provisioner",
+                                          target=config.policy_path)
         instance = VictimInstance(
             instance_id=iid,
             chat_endpoint=f"mock://chat/{iid}",
