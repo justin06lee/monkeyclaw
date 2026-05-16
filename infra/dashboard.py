@@ -1008,5 +1008,8 @@ def serve(db_path: str = "data/monkeyclaw.db", port: int = 8787) -> None:
     import uvicorn
 
     print(f"MonkeyClaw dashboard — http://127.0.0.1:{port}  (db: {db_path})")
-    uvicorn.run(build_dashboard_app(db_path), host="127.0.0.1", port=port,
+    # Bind all interfaces so the dashboard is reachable through Docker's
+    # published port from the host; container network isolation + the explicit
+    # `ports:` mapping are the access control.
+    uvicorn.run(build_dashboard_app(db_path), host="0.0.0.0", port=port,
                 log_level="warning")
