@@ -376,3 +376,35 @@ def test_run_regression_after_patch_approval(tmp_path: Path):
     # No newly-failing alerts (the new test should pass)
     failing_alerts = [a for a in mcp._alerts if "REGRESSION" in a["message"]]
     assert failing_alerts == []
+
+
+# ---------------------------------------------------------------------------
+# Verifier gate hardening — pipeline wires the hardened verifier (Task 12)
+# ---------------------------------------------------------------------------
+
+
+def build_blue_pipeline_for_test(tmp_path, *, purple_enabled: bool = False):
+    """Construct a blue Pipeline on mock infra. `purple_enabled` toggles the
+    purple layer so the detection oracle is (not) injected."""
+    from interfaces.config_schema import MonkeyClawConfig
+
+    cfg = MonkeyClawConfig()
+    cfg.purple.enabled = purple_enabled
+    mcp = MockMCP(seed=0, verbose=False)
+    provisioner = MockProvisioner()
+    return Pipeline(mcp=mcp, provisioner=provisioner, cfg=cfg,
+                    llm=MockLLM(), policy=default_policy())
+
+
+def test_pipeline_constructs_hardened_verifier(tmp_path):
+    """The blue pipeline builds a PatchVerifier whose config carries the
+    hardening knobs; with the purple layer off, detection_oracle is None."""
+    pipe = build_blue_pipeline_for_test(tmp_path)
+    assert pipe.patch_verifier.cfg.mutation_gate_enabled is True
+    # purple layer off in the test build -> detection gate auto-skips.
+    assert pipe.patch_verifier.detection_oracle is None
+
+
+def test_pipeline_injects_detection_oracle_when_purple_enabled(tmp_path):
+    pipe = build_blue_pipeline_for_test(tmp_path, purple_enabled=True)
+    assert pipe.patch_verifier.detection_oracle is not None

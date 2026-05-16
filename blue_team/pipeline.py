@@ -107,6 +107,7 @@ class Pipeline:
         *,
         mcp: MonkeyClawMCP | None = None,
         provisioner: VictimProvisioner | None = None,
+        cfg: MonkeyClawConfig | None = None,
         llm: LLMClient | None = None,
         router: ModelRouter | None = None,
         policy: PolicyConfig | None = None,
@@ -137,7 +138,7 @@ class Pipeline:
                 )
             self.mcp = mcp
             self.provisioner = provisioner
-            self.cfg = MonkeyClawConfig()
+            self.cfg = cfg or MonkeyClawConfig()
 
         if router is not None:
             self.router = router
@@ -203,10 +204,22 @@ class Pipeline:
             cfg=PatchGeneratorConfig.from_blue_team_cfg(self.cfg.blue_team),
         )
         self.test_generator = test_generator or TestGenerator()
+        # gate_detection consumes the purple-team detection oracle; inject it
+        # only when the purple layer is enabled. Absent → gate auto-skips.
+        detection_oracle = None
+        purple_cfg = getattr(self.cfg, "purple", None)
+        if purple_cfg is not None and getattr(purple_cfg, "enabled", False):
+            try:
+                from purple_team.detection_oracle import DetectionOracle
+                detection_oracle = DetectionOracle()
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("purple detection oracle unavailable: %s", e)
+                detection_oracle = None
         self.patch_verifier = patch_verifier or PatchVerifier(
             mcp=self.mcp, provisioner=self.provisioner,
             cfg=PatchVerifierConfig.from_blue_team_cfg(self.cfg.blue_team),
             policy=self.policy,
+            detection_oracle=detection_oracle,
         )
         self.regression_runner = regression_runner or RegressionRunner(
             mcp=self.mcp, provisioner=self.provisioner, policy=self.policy,
