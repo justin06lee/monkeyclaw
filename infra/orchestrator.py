@@ -220,17 +220,24 @@ class Orchestrator:
             suspicious = sum(1 for f in cyc if f["verdict"] == "suspicious")
         except Exception as e:  # noqa: BLE001
             LOG.warning("could not read cycle findings: %s", e)
+        # `ideas` is only the lanes that were dispatched (top-N after dedup).
+        # The red pipeline records the real pre-dedup ideation volume in
+        # `_last_cycle_metrics` — use it so the summary reflects actual work.
+        red_metrics = getattr(self.red, "_last_cycle_metrics", {}) or {}
+        generated = red_metrics.get("ideas_generated", len(ideas))
+        deduped = red_metrics.get("ideas_deduplicated", 0)
+        executed = len(results)
         # ALWAYS write the cycle summary, even if the lane phase failed.
         try:
             self.rt.mcp.log_cycle_summary(CycleSummaryInput(
                 cycle_id=cycle_id,
-                summary=(f"Cycle {cycle_id}: {len(ideas)} ideas, "
-                         f"{len(results)} lanes completed, "
+                summary=(f"Cycle {cycle_id}: {generated} ideas generated, "
+                         f"{executed} executed, "
                          f"{confirmed} confirmed, {suspicious} suspicious."),
                 zones_targeted=zones,
-                ideas_generated=len(ideas),
-                ideas_deduplicated=0,
-                ideas_executed=len(results),
+                ideas_generated=generated,
+                ideas_deduplicated=deduped,
+                ideas_executed=executed,
                 vulns_confirmed=confirmed,
                 vulns_suspicious=suspicious,
                 total_tokens_used=sum(
@@ -245,8 +252,8 @@ class Orchestrator:
         # per-cycle digest. Delivered when a Telegram token is configured.
         try:
             self.rt.mcp.send_alert(
-                f"Cycle {cycle_id} complete — {len(ideas)} ideas, "
-                f"{len(results)} lanes, {confirmed} confirmed, "
+                f"Cycle {cycle_id} complete — {generated} ideas generated, "
+                f"{executed} executed, {confirmed} confirmed, "
                 f"{suspicious} suspicious. Zones: {', '.join(zones) or '-'}",
                 severity="high" if confirmed else "info",
             )

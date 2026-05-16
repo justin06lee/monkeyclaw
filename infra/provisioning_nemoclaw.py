@@ -238,7 +238,16 @@ class NemoClawProvisioner(VictimProvisioner):
 
 
 class MockProvisioner(VictimProvisioner):
-    """In-memory provisioner for tests and offline development."""
+    """In-memory provisioner for tests and offline development.
+
+    Each `provision_victim` plants a fresh `red_team.mock_victim.MockVictim`
+    — an OpenClaw-agent-shaped target with deliberately-introduced flaws
+    (system-prompt leak, filesystem escape, PII cloud-routing) — and
+    registers it at the returned `mock://` endpoint. That makes the whole
+    red → judge → repro → blue pipeline runnable end-to-end without a live
+    NemoClaw sandbox: the planted target gives the pipeline something real
+    to find, reproduce, and patch.
+    """
 
     def __init__(self, telemetry: TelemetryEmitter | None = None) -> None:
         self._instances: dict[str, VictimInstance] = {}
@@ -246,6 +255,10 @@ class MockProvisioner(VictimProvisioner):
         self._telemetry = telemetry
 
     def provision_victim(self, config: VictimConfig) -> VictimInstance:
+        # Lazy import: this dev/test provisioner is the one place infra is
+        # intentionally coupled to the red-team planted-victim fixture.
+        from red_team import mock_victim  # noqa: PLC0415
+
         iid = f"MOCK-{uuid.uuid4().hex[:10]}"
         if self._telemetry is not None:
             self._telemetry.policy_loaded(actor="provisioner",
@@ -255,15 +268,31 @@ class MockProvisioner(VictimProvisioner):
                     "agent_type": config.agent_type}
 
         # Profile selector: a planted victim profile name carried in the
-        # config's `env` dict (VictimConfig has no `metadata` field). When
-        # set, bind that planted victim to the mock transport for this
-        # instance. When unset, behavior is identical to before.
-        profile = config.env.get("MC_PROFILE")
+        # config's `env` dict (VictimConfig has no `metadata` field), or in
+        # the process environment as `MC_PROFILE` (how the `demo --profile`
+        # path routes it, since the lane scheduler builds VictimConfig with
+        # an empty `env`). When set, bind that planted victim to the mock
+        # transport for this instance. When unset, fall back to the
+        # red_team multi-flaw MockVictim with tempdir sandbox roots.
+        profile = config.env.get("MC_PROFILE") or os.environ.get("MC_PROFILE")
         if profile:
+            # Planted-profile mode (Person A demo profiles).
             # make_victim raises KeyError for an unknown profile.
             victim = make_victim(profile)
             register(chat_endpoint, victim)
             metadata["profile"] = profile
+        else:
+            # Default: the red_team multi-flaw MockVictim with tempdir
+            # sandbox roots.
+            base = tempfile.mkdtemp(prefix=f"mc-mock-{iid}-")
+            allowed = os.path.join(base, "allowed")
+            escape = os.path.join(base, "escape")
+            chat_endpoint, _ = mock_victim.build_and_register(
+                endpoint=chat_endpoint,
+                allowed_root=allowed, escape_root=escape,
+            )
+            metadata.update(allowed_root=allowed, escape_root=escape,
+                            base_dir=base)
 
         instance = VictimInstance(
             instance_id=iid,
@@ -279,10 +308,17 @@ class MockProvisioner(VictimProvisioner):
 
     def teardown_victim(self, instance_id: str) -> None:
         instance = self._instances.get(instance_id)
-        if instance is not None:
-            instance.status = "stopped"
-            # Release any planted victim bound to the mock transport.
-            unregister(instance.chat_endpoint)
+        if instance is None:
+            return
+        # Release whichever victim was bound to the mock transport.
+        # `mock_victim.unregister` and `interfaces.victim_client.unregister`
+        # are the same function over the same registry, so one call covers
+        # both planted-profile and default MockVictim instances.
+        unregister(instance.chat_endpoint)
+        base = instance.metadata.get("base_dir")
+        if base:
+            shutil.rmtree(base, ignore_errors=True)
+        instance.status = "stopped"
 
     def list_victims(self) -> list[VictimInstance]:
         return list(self._instances.values())

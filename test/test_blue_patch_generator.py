@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 from infra.mock_mcp import MockMCP
 from interfaces.llm import MockLLM
 from interfaces.types import FixSite, ReproPackage
@@ -54,6 +52,19 @@ _GOOD_DIFF = (
 )
 
 
+def _patch_block(n: int, label: str, invasiveness: str, diff: str,
+                 explanation: str = "why", side_effects: str = "none") -> str:
+    """Build one `### PATCH n` fenced-block patch in the model output format."""
+    return (
+        f"### PATCH {n}\n"
+        f"label: {label}\n"
+        f"invasiveness: {invasiveness}\n"
+        f"explanation: {explanation}\n"
+        f"side_effects: {side_effects}\n"
+        f"```diff\n{diff}\n```\n"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Diff sanity check
 # ---------------------------------------------------------------------------
@@ -76,17 +87,16 @@ def test_looks_like_diff_rejects_prose():
 
 def test_patch_generator_emits_multiple_alts_for_high_severity():
     llm = MockLLM()
-    llm.queue(json.dumps([
-        {"label": "Canonicalize", "invasiveness": "low",
-          "diff": _GOOD_DIFF,
-          "explanation": "resolve symlinks", "side_effects": "none"},
-        {"label": "Reject symlinks entirely", "invasiveness": "medium",
-          "diff": _GOOD_DIFF.replace("create.ts", "policy.ts"),
-          "explanation": "deny all symlinks", "side_effects": "may break shortcuts"},
-        {"label": "Rewrite policy engine", "invasiveness": "high",
-          "diff": _GOOD_DIFF.replace("create.ts", "engine.ts"),
-          "explanation": "redesign", "side_effects": "deep"},
-    ]))
+    llm.queue(
+        _patch_block(1, "Canonicalize", "low", _GOOD_DIFF,
+                     "resolve symlinks")
+        + _patch_block(2, "Reject symlinks entirely", "medium",
+                       _GOOD_DIFF.replace("create.ts", "policy.ts"),
+                       "deny all symlinks", "may break shortcuts")
+        + _patch_block(3, "Rewrite policy engine", "high",
+                       _GOOD_DIFF.replace("create.ts", "engine.ts"),
+                       "redesign", "deep")
+    )
     mcp = MockMCP(seed=0, verbose=False)
     gen = PatchGenerator(llm, mcp, cfg=PatchGeneratorConfig(high_severity_alt_count=3))
     candidates = gen.generate_for_task(_task("critical"))
@@ -100,10 +110,7 @@ def test_patch_generator_emits_multiple_alts_for_high_severity():
 
 def test_patch_generator_one_alt_for_low_severity():
     llm = MockLLM()
-    llm.queue(json.dumps([
-        {"label": "Add log", "invasiveness": "low",
-          "diff": _GOOD_DIFF, "explanation": "log", "side_effects": "none"},
-    ]))
+    llm.queue(_patch_block(1, "Add log", "low", _GOOD_DIFF, "log"))
     mcp = MockMCP(seed=0, verbose=False)
     gen = PatchGenerator(llm, mcp)
     candidates = gen.generate_for_task(_task("low"))
@@ -117,12 +124,10 @@ def test_patch_generator_one_alt_for_low_severity():
 
 def test_patch_generator_drops_candidates_without_diff():
     llm = MockLLM()
-    llm.queue(json.dumps([
-        {"label": "no diff", "invasiveness": "low", "diff": "just text",
-          "explanation": "ignore me", "side_effects": ""},
-        {"label": "good", "invasiveness": "low", "diff": _GOOD_DIFF,
-          "explanation": "real", "side_effects": "none"},
-    ]))
+    llm.queue(
+        _patch_block(1, "no diff", "low", "just text", "ignore me")
+        + _patch_block(2, "good", "low", _GOOD_DIFF, "real")
+    )
     mcp = MockMCP(seed=0, verbose=False)
     gen = PatchGenerator(llm, mcp)
     candidates = gen.generate_for_task(_task())
@@ -132,21 +137,23 @@ def test_patch_generator_drops_candidates_without_diff():
 
 def test_patch_generator_handles_unparseable_response():
     llm = MockLLM()
-    llm.queue("definitely not json")
+    llm.queue("definitely no patch blocks here")
     mcp = MockMCP(seed=0, verbose=False)
     gen = PatchGenerator(llm, mcp)
     assert gen.generate_for_task(_task()) == []
 
 
-def test_patch_generator_handles_wrapping_object():
+def test_patch_generator_ignores_reasoning_preamble():
+    # Nemotron emits reasoning text before the structured output — the
+    # `### PATCH` block scanner must pick the patch out of the preamble.
     llm = MockLLM()
-    llm.queue(json.dumps({
-        "patches": [
-            {"label": "ok", "invasiveness": "low", "diff": _GOOD_DIFF,
-              "explanation": "x", "side_effects": "x"},
-        ],
-    }))
+    llm.queue(
+        "Let me think about the safest fix here. We should canonicalize "
+        "paths before the policy check.\n\n"
+        + _patch_block(1, "ok", "low", _GOOD_DIFF, "x", "x")
+    )
     mcp = MockMCP(seed=0, verbose=False)
     gen = PatchGenerator(llm, mcp)
     candidates = gen.generate_for_task(_task())
     assert len(candidates) == 1
+    assert candidates[0].approach == "ok"
