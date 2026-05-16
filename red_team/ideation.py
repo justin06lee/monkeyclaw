@@ -208,6 +208,32 @@ def _parse_techniques(entry: dict, zone_id: str, taxonomy) -> list:
     return refs
 
 
+def _technique_context_block(zone, taxonomy, gap_ids: set) -> str:
+    """The technique context block appended to modes A/B/C prompts — the
+    ATLAS techniques + OWASP categories mapped to the cycle's zone, with
+    under-covered techniques flagged so the model knows where the gaps are."""
+    if taxonomy is None:
+        return ""
+    techs = taxonomy.techniques_for_zone(zone.zone_id)
+    cats = taxonomy.owasp_for_zone(zone.zone_id)
+    if not techs and not cats:
+        return ""
+    tech_lines = [
+        f"- {t.technique_id} ({t.name})"
+        f"{'  [under-covered]' if t.technique_id in gap_ids else ''}"
+        for t in techs
+    ]
+    cat_lines = [f"- {c.category_id} ({c.name})" for c in cats]
+    return (
+        "\n# Recognised Adversarial Techniques For This Zone\n"
+        "These ATLAS techniques and OWASP categories apply to this zone. "
+        "Prefer the under-covered ones, and set `atlas_technique_ids` / "
+        "`owasp_category_ids` on every idea you return.\n"
+        "ATLAS:\n" + "\n".join(tech_lines) + "\n"
+        "OWASP:\n" + "\n".join(cat_lines) + "\n"
+    )
+
+
 # ---------------------------------------------------------------------------
 # IdeationEngine
 # ---------------------------------------------------------------------------
@@ -274,6 +300,7 @@ class IdeationEngine:
             f"- Cycle {s.cycle_id}: {s.summary}" for s in recent
         ) or "(no prior cycles)"
 
+        ctx = _technique_context_block(zone, self.taxonomy, gap_ids=set())
         system = (
             "You are a security red-team strategist working on the MonkeyClaw "
             "platform. Your job is to propose attack approaches that are "
@@ -296,7 +323,7 @@ class IdeationEngine:
             f"from anything in the recent cycles above. Focus on unexpected "
             f"interaction patterns, edge cases in the specification, and "
             f"assumptions the defense might make about attacker behavior.\n\n"
-            f"{_JSON_SCHEMA_BLURB}"
+            f"{ctx}\n{_JSON_SCHEMA_BLURB}"
         )
         raw = self._ask(system, user)
         return self._parse_ideas(raw, zone, cycle_id, source_mode="creative",
@@ -323,6 +350,7 @@ class IdeationEngine:
             )
         snippets_block = "\n\n".join(snippets)
 
+        ctx = _technique_context_block(zone, self.taxonomy, gap_ids=set())
         system = (
             "You are a security red-team strategist analyzing source code for "
             "exploitable weaknesses. Given an attack zone and relevant source "
@@ -343,7 +371,7 @@ class IdeationEngine:
             f"specific weaknesses in the code above. Each idea MUST cite "
             f"`relevant_files` (e.g., 'path/to/file.ts:L45-L89') and "
             f"`code_weakness` (a one-sentence description of the flaw).\n\n"
-            f"{_JSON_SCHEMA_BLURB}"
+            f"{ctx}\n{_JSON_SCHEMA_BLURB}"
         )
         raw = self._ask(system, user)
         ideas = self._parse_ideas(raw, zone, cycle_id,
@@ -391,6 +419,7 @@ class IdeationEngine:
             for f in near_misses
         ) or "(none)"
 
+        ctx = _technique_context_block(zone, self.taxonomy, gap_ids=set())
         system = (
             "You are a security red-team strategist extending what already "
             "works. Given past confirmed vulnerabilities and near-miss "
@@ -411,7 +440,7 @@ class IdeationEngine:
             f"Each idea MUST cite the finding_id(s) it builds on in the "
             f"`builds_on` field, and describe how it differs in "
             f"`variation_notes`.\n\n"
-            f"{_JSON_SCHEMA_BLURB}"
+            f"{ctx}\n{_JSON_SCHEMA_BLURB}"
         )
         raw = self._ask(system, user)
         return self._parse_ideas(raw, zone, cycle_id,

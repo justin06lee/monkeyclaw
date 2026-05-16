@@ -85,3 +85,25 @@ def test_tags_are_folded_into_novelty_notes(monkeypatch):
                                 taxonomy=_TAX)
     assert "atlas=AML.T0051" in ideas[0].novelty_notes
     assert "owasp=LLM01" in ideas[0].novelty_notes
+
+
+def test_technique_context_block_lists_zone_techniques():
+    from red_team.ideation import _technique_context_block
+
+    block = _technique_context_block(_ZONE, _TAX, gap_ids={"AML.T0051.001"})
+    assert "AML.T0051" in block
+    assert "LLM01" in block
+    assert "under-covered" in block.lower()
+    assert "AML.T0051.001" in block
+
+
+def test_technique_context_block_empty_for_unmapped_zone():
+    from interfaces.types import CoverageGap
+    from red_team.ideation import _technique_context_block
+
+    unmapped = CoverageGap(
+        zone_id="SBX-FS", zone_name="fs", coverage_score=0.0,
+        priority_score=0.0, vulns_open=0, last_tested_at=None,
+        severity_weight=1.0, description="")
+    block = _technique_context_block(unmapped, _TAX, gap_ids=set())
+    assert "AML.T0072" in block  # SBX-FS is mapped
