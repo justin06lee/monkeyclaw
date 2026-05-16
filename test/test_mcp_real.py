@@ -172,6 +172,70 @@ def test_a3_schema_version_is_2(db):
     assert row[0] == "2"
 
 
+def _sample_finding_input() -> FindingInput:
+    return FindingInput(
+        cycle_id=1, idea_id="IDEA-test", zone_id="SBX-FS", source_mode="creative",
+        idea_summary="sample finding for tests", verdict="suspicious",
+        tier_caught="programmatic", failure_class="sandbox_escape",
+        severity="high", evidence=json.dumps([]),
+    )
+
+
+def _sample_repro_package_input(finding_id: str) -> ReproPackageInput:
+    return ReproPackageInput(
+        finding_id=finding_id, vuln_id="MC-2026-0001", title="sample pkg",
+        severity="high", repro_rate=0.9, minimal_steps=[{"do": "x"}],
+        affected_zone="SBX-FS", affected_paths=None, ideas_used=["IDEA-test"],
+        transcripts={"original": [], "minimal": []},
+        suggested_mitigations=["sanitize input"], repro_document_md="# test",
+        cold_verified=True, ready_for_blue=True,
+    )
+
+
+def test_real_server_patch_candidate_lifecycle(server):
+    from interfaces.types import PatchCandidateInput
+    pid = server.log_patch_candidate(PatchCandidateInput(
+        vuln_ids=["MC-2026-0001"], zone_id="SBX-FS", approach="bounds check",
+        invasiveness="low", diff="--- a\n+++ b", explanation="why",
+        side_effects="none"))
+    assert pid
+    row = server.db.fetchone("SELECT * FROM patches WHERE patch_id=?", (pid,))
+    assert row is not None and row["status"] == "proposed"
+    server.mark_patch_status(pid, "verified", {"regression": "pass"})
+    row = server.db.fetchone("SELECT * FROM patches WHERE patch_id=?", (pid,))
+    assert row["status"] == "verified"
+    assert json.loads(row["verification_results"]) == {"regression": "pass"}
+
+
+def test_real_server_patch_status_null_verification(server):
+    from interfaces.types import PatchCandidateInput
+    pid = server.log_patch_candidate(PatchCandidateInput(
+        vuln_ids=["MC-2026-0002"], zone_id="SBX-FS", approach="null check",
+        invasiveness="low", diff="--- a\n+++ b", explanation="why",
+        side_effects="none"))
+    server.mark_patch_status(pid, "testing")
+    row = server.db.fetchone("SELECT verification_results FROM patches WHERE patch_id=?", (pid,))
+    assert row["verification_results"] is None
+
+
+def test_real_server_mark_repro_queue_status(server):
+    fid = server.log_finding(_sample_finding_input())
+    server.push_to_repro_queue(fid, "high")
+    server.mark_repro_queue_status(fid, "processing", worker_id="W1")
+    row = server.db.fetchone(
+        "SELECT status, worker_id FROM repro_queue WHERE finding_id=?", (fid,))
+    assert row["status"] == "processing" and row["worker_id"] == "W1"
+
+
+def test_real_server_mark_repro_package_status(server):
+    fid = server.log_finding(_sample_finding_input())
+    pkg_id = server.push_repro_package(_sample_repro_package_input(fid))
+    server.mark_repro_package_status(pkg_id, "triaged")
+    row = server.db.fetchone(
+        "SELECT blue_team_status FROM repro_packages WHERE package_id=?", (pkg_id,))
+    assert row["blue_team_status"] == "triaged"
+
+
 def test_migration_upgrades_legacy_v1_db(tmp_path):
     """A DB that predates A3 tables gets upgraded on open."""
     import sqlite3

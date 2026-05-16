@@ -499,6 +499,7 @@ class MCPServer(MonkeyClawMCP):
         self, finding_id: str, status: str, worker_id: str | None = None
     ) -> None:
         with self.db.lock():
+            # Silent no-op if the row is absent — callers transition rows they already own.
             self.db.execute(
                 "UPDATE repro_queue SET status=?, worker_id=COALESCE(?, worker_id) "
                 "WHERE finding_id=?",
@@ -509,6 +510,7 @@ class MCPServer(MonkeyClawMCP):
         self, package_id: str, blue_team_status: str
     ) -> None:
         with self.db.lock():
+            # Silent no-op if the row is absent — callers transition rows they already own.
             self.db.execute(
                 "UPDATE repro_packages SET blue_team_status=? WHERE package_id=?",
                 (blue_team_status, package_id),
@@ -532,10 +534,12 @@ class MCPServer(MonkeyClawMCP):
         verification_results: dict | None = None,
     ) -> None:
         with self.db.lock():
+            # Silent no-op if the row is absent — callers transition rows they already own.
+            vr = json.dumps(verification_results) if verification_results is not None else None
             self.db.execute(
                 "UPDATE patches SET status=?, verification_results=? "
                 "WHERE patch_id=?",
-                (status, json.dumps(verification_results or {}), patch_id),
+                (status, vr, patch_id),
             )
 
     # ------------------------------------------------------------------
