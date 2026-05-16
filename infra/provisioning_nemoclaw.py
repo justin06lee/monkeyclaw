@@ -24,13 +24,19 @@ import subprocess
 import tempfile
 import uuid
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from infra.telemetry import TelemetryEmitter
+
+from demo.victims.registry import make_victim
 from interfaces.provisioning import (
     ProvisioningError,
     VictimConfig,
     VictimInstance,
     VictimProvisioner,
 )
+from interfaces.victim_client import register, unregister
 
 LOG = logging.getLogger("monkeyclaw.provisioning")
 
@@ -65,8 +71,12 @@ class NemoClawProvisioner(VictimProvisioner):
         gateway_container: str = "openshell-cluster-nemoclaw",
         snapshot_restore_timeout_s: int = 180,
         recover_timeout_s: int = 600,
+        telemetry: TelemetryEmitter | None = None,
     ) -> None:
         self.cli = cli_binary
+        # Optional TelemetryEmitter. When set, provisioning emits A5
+        # policy events. Unset -> behavior is identical to before.
+        self._telemetry = telemetry
         self.sandbox_name = sandbox_name
         self.sandbox_namespace = sandbox_namespace
         self.clean_snapshot = clean_snapshot
@@ -95,6 +105,9 @@ class NemoClawProvisioner(VictimProvisioner):
             )
 
         instance_id = f"VICT-{uuid.uuid4().hex[:10]}"
+        if self._telemetry is not None:
+            self._telemetry.policy_loaded(actor="provisioner",
+                                          target=config.policy_path)
         LOG.info("provisioning victim %s: restoring %s -> %s, then recover",
                  instance_id, self.sandbox_name, self.clean_snapshot)
 
@@ -236,8 +249,10 @@ class MockProvisioner(VictimProvisioner):
     to find, reproduce, and patch.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, telemetry: TelemetryEmitter | None = None) -> None:
         self._instances: dict[str, VictimInstance] = {}
+        # Optional TelemetryEmitter. Unset -> behavior is identical to before.
+        self._telemetry = telemetry
 
     def provision_victim(self, config: VictimConfig) -> VictimInstance:
         # Lazy import: this dev/test provisioner is the one place infra is
@@ -245,35 +260,61 @@ class MockProvisioner(VictimProvisioner):
         from red_team import mock_victim  # noqa: PLC0415
 
         iid = f"MOCK-{uuid.uuid4().hex[:10]}"
-        base = tempfile.mkdtemp(prefix=f"mc-mock-{iid}-")
-        allowed = os.path.join(base, "allowed")
-        escape = os.path.join(base, "escape")
-        endpoint, _ = mock_victim.build_and_register(
-            endpoint=f"mock://chat/{iid}",
-            allowed_root=allowed, escape_root=escape,
-        )
+        if self._telemetry is not None:
+            self._telemetry.policy_loaded(actor="provisioner",
+                                          target=config.policy_path)
+        chat_endpoint = f"mock://chat/{iid}"
+        metadata = {"policy_path": config.policy_path,
+                    "agent_type": config.agent_type}
+
+        # Profile selector: a planted victim profile name carried in the
+        # config's `env` dict (VictimConfig has no `metadata` field), or in
+        # the process environment as `MC_PROFILE` (how the `demo --profile`
+        # path routes it, since the lane scheduler builds VictimConfig with
+        # an empty `env`). When set, bind that planted victim to the mock
+        # transport for this instance. When unset, fall back to the
+        # red_team multi-flaw MockVictim with tempdir sandbox roots.
+        profile = config.env.get("MC_PROFILE") or os.environ.get("MC_PROFILE")
+        if profile:
+            # Planted-profile mode (Person A demo profiles).
+            # make_victim raises KeyError for an unknown profile.
+            victim = make_victim(profile)
+            register(chat_endpoint, victim)
+            metadata["profile"] = profile
+        else:
+            # Default: the red_team multi-flaw MockVictim with tempdir
+            # sandbox roots.
+            base = tempfile.mkdtemp(prefix=f"mc-mock-{iid}-")
+            allowed = os.path.join(base, "allowed")
+            escape = os.path.join(base, "escape")
+            chat_endpoint, _ = mock_victim.build_and_register(
+                endpoint=chat_endpoint,
+                allowed_root=allowed, escape_root=escape,
+            )
+            metadata.update(allowed_root=allowed, escape_root=escape,
+                            base_dir=base)
+
         instance = VictimInstance(
             instance_id=iid,
-            chat_endpoint=endpoint,
+            chat_endpoint=chat_endpoint,
             shell_endpoint=f"mock://shell/{iid}",
             status="running",
             sandbox_id=iid,
             started_at=_now(),
-            metadata={"policy_path": config.policy_path,
-                      "agent_type": config.agent_type,
-                      "allowed_root": allowed, "escape_root": escape,
-                      "base_dir": base},
+            metadata=metadata,
         )
         self._instances[iid] = instance
         return instance
 
     def teardown_victim(self, instance_id: str) -> None:
-        from red_team import mock_victim  # noqa: PLC0415
-
         instance = self._instances.get(instance_id)
         if instance is None:
             return
-        mock_victim.unregister(instance.chat_endpoint)
+        # Release whichever victim was bound to the mock transport.
+        # `mock_victim.unregister` and `interfaces.victim_client.unregister`
+        # are the same function over the same registry, so one call covers
+        # both planted-profile and default MockVictim instances.
+        unregister(instance.chat_endpoint)
         base = instance.metadata.get("base_dir")
         if base:
             shutil.rmtree(base, ignore_errors=True)

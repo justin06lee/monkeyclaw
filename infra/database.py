@@ -11,10 +11,9 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-import struct
 import threading
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 import sqlite_vec
@@ -23,6 +22,7 @@ LOG = logging.getLogger("monkeyclaw.db")
 
 EMBEDDING_DIM = 384
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+CURRENT_SCHEMA_VERSION = 2
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "interfaces" / "schema.sql"
 
 
@@ -48,10 +48,10 @@ class EmbeddingModel:
     """
 
     _lock = threading.Lock()
-    _instance: "EmbeddingModel | None" = None
+    _instance: EmbeddingModel | None = None
 
     @classmethod
-    def shared(cls) -> "EmbeddingModel":
+    def shared(cls) -> EmbeddingModel:
         with cls._lock:
             if cls._instance is None:
                 cls._instance = cls()
@@ -117,11 +117,31 @@ class Database:
         )
         if not self.read_only:
             self._apply_schema(conn)
+            self._run_migrations(conn)
         return conn
 
     def _apply_schema(self, conn: sqlite3.Connection) -> None:
         sql = self.schema_path.read_text()
         conn.executescript(sql)
+
+    def _run_migrations(self, conn: sqlite3.Connection) -> None:
+        """Reconcile schema_version after the (idempotent) schema script runs.
+
+        schema.sql uses CREATE TABLE IF NOT EXISTS, so re-running it on an old
+        DB adds any missing tables. This step records that the DB is now at
+        CURRENT_SCHEMA_VERSION so future migrations can branch on it.
+        """
+        row = conn.execute(
+            "SELECT value FROM schema_meta WHERE key='schema_version'"
+        ).fetchone()
+        current = int(row[0]) if row else 0
+        if current < CURRENT_SCHEMA_VERSION:
+            LOG.info("migrating DB schema %d -> %d", current, CURRENT_SCHEMA_VERSION)
+            conn.execute(
+                "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(CURRENT_SCHEMA_VERSION),),
+            )
 
     # ------------------------------------------------------------------
     @property

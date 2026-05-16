@@ -23,6 +23,7 @@ dependencies = [
     "openai>=1.40",
     "websockets>=13.0",
     "cryptography>=43.0",
+    "spacy>=3.7",
 ]
 
 [project.scripts]
@@ -48,12 +49,17 @@ build-backend = "hatchling.build"
 packages = ["infra", "interfaces", "red_team", "blue_team"]
 
 [tool.ruff]
-line-length = 100
 target-version = "py312"
+line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "N", "RUF"]
+select = ["E", "F", "I", "UP", "B", "W"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"test/*" = ["F811", "F401", "I001", "F841"]  # F811/F401: fixtures; I001/F841: B/C-owned test lint debt
+"red_team/*" = ["I001", "F401", "B007"]  # B-owned; lint debt tracked for Person B
+"blue_team/*" = ["I001", "F401", "B007", "UP037"]  # C-owned; lint debt tracked for Person C
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

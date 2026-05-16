@@ -1,11 +1,92 @@
-# Ubuntu base, installs the Brev CLI via its official install script.
+# MonkeyClaw development environment image.
+#
+# Provides everything to run the red -> judge -> repro -> blue codebase AND to
+# stand up a real NemoClaw victim, which runs as a nested container via the
+# bundled Docker-in-Docker engine.
+#
+# The build installs tooling only; NemoClaw's installer needs a live Docker
+# daemon (it builds a ~2.4 GB sandbox image), so it cannot run at build time.
+# Instead the entrypoint prepares the environment automatically on container
+# start, then hands off to a shell:
+#   - with NVIDIA_API_KEY set -> runs the full NemoClaw setup (starts the inner
+#     Docker daemon, installs + onboards NemoClaw, creates the clean-baseline
+#     snapshot);
+#   - with no key -> setup is skipped; the offline mock path is ready.
+#
+# Live path -- one command brings the whole environment up:
+#   docker run -it --rm --privileged -e NVIDIA_API_KEY=<key> <image>
+#   uv run monkeyclaw run --cycles 3 --target monkey-victim
+#
+# Offline/mock path -- no --privileged, no key:
+#   docker run -it --rm <image>
+#   uv run monkeyclaw run --mock
+#
+# Live-path host requirements: --privileged, >=8 GB RAM, >=20 GB free disk
+# (NemoClaw onboarding can trip the OOM killer below 8 GB).
 
 FROM ubuntu:24.04
 
+# Base tools: curl/ca-certs for the install scripts; git + zstd + sudo are
+# required by the NemoClaw installer; iptables by the Docker-in-Docker daemon.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates \
+        curl ca-certificates git zstd sudo iptables \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL https://raw.githubusercontent.com/brevdev/brev-cli/main/bin/install-latest.sh | bash
+# Docker-in-Docker: the FULL Docker engine (daemon + CLI + containerd) so a
+# NemoClaw victim container can run nested inside this image. MonkeyClaw's
+# monitoring harness then `docker exec`s into that nested container normally.
+RUN install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        -o /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable" \
+        > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        docker-ce docker-ce-cli containerd.io docker-buildx-plugin \
+    && rm -rf /var/lib/apt/lists/*
 
-ENV PATH=/root/.local/bin:$PATH
+# Node.js 22.x: the NemoClaw CLI requires Node >= 22.16 and npm >= 10.
+# Installing it system-wide here lets NemoClaw's installer skip its own nvm
+# bootstrap and just `npm link` the CLI.
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# uv - the MonkeyClaw project's Python package manager.
+RUN curl -fsSL https://astral.sh/uv/install.sh | sh
+ENV PATH=/root/.local/bin:/app/.venv/bin:$PATH
+
+WORKDIR /app
+
+# Python dependency layer: copy only the manifests so this stays cached until
+# the dependency set changes. uv.lock is intentionally NOT copied -- the build
+# resolves dependencies fresh from pyproject.toml so a stale committed lock
+# cannot break the image. uv installs Python 3.12 itself (per .python-version);
+# all declared deps ship Linux wheels, so no compiler is needed.
+COPY pyproject.toml .python-version ./
+RUN uv python install 3.12 \
+    && uv sync --no-install-project
+
+# MonkeyClaw source + install the package itself (console scripts).
+COPY . .
+RUN uv sync
+
+# Runtime helpers onto PATH:
+#   nemoclaw-setup       -- starts the nested Docker daemon, runs NemoClaw's
+#                           installer + onboarding, creates the clean-baseline
+#                           snapshot (deferred to runtime: needs a live daemon)
+#   docker-entrypoint.sh -- entrypoint; runs nemoclaw-setup on first start when
+#                           NVIDIA_API_KEY is set, then hands off to CMD
+RUN install -m 0755 scripts/nemoclaw-setup.sh /usr/local/bin/nemoclaw-setup \
+    && install -m 0755 scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+# Dashboard 8787, MCP server 7322, mock MCP 7321 -- documented for reference.
+# All bind 127.0.0.1 by default; pass `--host 0.0.0.0` to the MCP servers to
+# expose them (the dashboard hardcodes 127.0.0.1 in dashboard.py).
+EXPOSE 8787 7321 7322
+
+# The entrypoint runs NemoClaw setup automatically when NVIDIA_API_KEY is set
+# (skipped otherwise, at most once per container), then execs CMD -- an
+# interactive shell by default.
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["bash"]

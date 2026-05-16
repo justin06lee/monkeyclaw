@@ -19,7 +19,6 @@ import time
 
 from infra.config import load_config
 
-
 # ---------------------------------------------------------------------------
 # run — red/blue cycles via the orchestrator
 # ---------------------------------------------------------------------------
@@ -272,11 +271,65 @@ def _cmd_blueteam(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# demo — one full pipeline run against a planted-vulnerability victim
+# demo — with --profile: a mock cycle against a planted profile preset;
+#        without --profile: one full pipeline run end-to-end
 # ---------------------------------------------------------------------------
 
 
 def _cmd_demo(args: argparse.Namespace) -> int:
+    """Demo entry point. With --profile, run a planted-profile mock cycle;
+    otherwise run the full end-to-end pipeline demo."""
+    if getattr(args, "profile", None):
+        return _cmd_demo_profile(args)
+    return _cmd_demo_pipeline(args)
+
+
+def _cmd_demo_profile(args: argparse.Namespace) -> int:
+    """Run the canned demo: one mock cycle against a planted victim profile.
+
+    This is a thin preset over `run` — `demo --profile X` does exactly what
+    `run --cycles 1 --target X --mock` does, then prints the resulting
+    findings so the demo is self-contained.
+    """
+    import os
+
+    from demo.victims.registry import PROFILES
+
+    if args.profile not in PROFILES:
+        print(f"unknown planted profile {args.profile!r}; "
+              f"known: {', '.join(sorted(PROFILES))}")
+        return 1
+
+    print(f"=== MonkeyClaw demo — planted profile '{args.profile}' ===\n")
+
+    # The lane scheduler builds VictimConfig with an empty `env`, so the
+    # MockProvisioner reads the planted-profile name from the process
+    # environment. Set it here so the requested planted victim is the one
+    # actually exercised by this cycle.
+    prev_profile = os.environ.get("MC_PROFILE")
+    os.environ["MC_PROFILE"] = args.profile
+    try:
+        # Reuse the run path verbatim: build a Namespace matching `run`'s args.
+        run_args = argparse.Namespace(
+            cycles=1, perpetual=False, target=args.profile, mock=True,
+        )
+        rc = _cmd_run(run_args)
+    finally:
+        if prev_profile is None:
+            os.environ.pop("MC_PROFILE", None)
+        else:
+            os.environ["MC_PROFILE"] = prev_profile
+    if rc != 0:
+        print(f"\ndemo cycle failed (run exited {rc}).")
+        return rc
+
+    # Print the findings the cycle produced, the way `findings` does.
+    print("\n--- findings from this demo ---")
+    _cmd_findings(args)
+    return 0
+
+
+def _cmd_demo_pipeline(args: argparse.Namespace) -> int:
     """Run the whole pipeline end-to-end: attack → judge → route → repro →
     blue (triage/patch/test), against a deliberately-vulnerable victim.
 
@@ -495,10 +548,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="demo: triage -> patch -> test for queued repros")
     bt.add_argument("vuln_id", nargs="?", default=None,
                     help="optional: limit to one vuln_id / finding_id")
+    bt.add_argument("--mock", action="store_true",
+                    help="use the mock provisioner (default for demo mode)")
     bt.set_defaults(func=_cmd_blueteam)
 
-    dm = sub.add_parser("demo",
-                        help="run the full pipeline end-to-end vs a planted victim")
+    dm = sub.add_parser(
+        "demo",
+        help="demo: --profile runs a mock cycle vs a planted profile; "
+             "omit it for the full end-to-end pipeline demo")
+    dm.add_argument("--profile", default=None,
+                    help="planted victim profile; omit for the full-pipeline demo")
     dm.set_defaults(func=_cmd_demo)
 
     ts = sub.add_parser("test", help="self-checks (e.g. notification delivery)")

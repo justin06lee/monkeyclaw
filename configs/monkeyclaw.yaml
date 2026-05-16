@@ -77,3 +77,51 @@ nemoclaw:
     - ~/.nemoclaw
   allowed_paths:
     - /tmp/openshell
+
+models:
+  roles:
+    cheap_extraction:
+      provider: nvidia
+      model: nvidia/nemotron-3-nano
+    red_ideation:
+      provider: nvidia
+      model: nvidia/nemotron-3-super-120b-a12b
+    red_execution:
+      provider: nvidia
+      model: nvidia/nemotron-3-super-120b-a12b
+    semantic_judge:
+      provider: nvidia
+      model: nvidia/nemotron-3-super-120b-a12b
+    safety_judge:
+      provider: nvidia
+      model: nvidia/nemotron-content-safety-reasoning-4b
+    root_cause:
+      provider: anthropic_or_openai
+      model: frontier-coding
+    patch_generation:
+      provider: anthropic_or_openai
+      model: frontier-coding
+    codex_code_work:
+      provider: openai
+      model: gpt-5.3-codex
+
+guardrails:
+  artifact_dir: data/artifacts
+  denied_host_paths:
+    - ~/.ssh
+    - ~/.aws
+    - ~/.config/gcloud
+    - /etc/shadow
+  network_allowlist:
+    default: [localhost, 127.0.0.1]
+    analysis: [docs.anthropic.com, integrate.api.nvidia.com]
+    setup: [registry.npmjs.org, pypi.org, files.pythonhosted.org, github.com]
+  model_route_allowlist: [nvidia, openai, anthropic_or_openai]
+  mcp_tool_allowlist: [argyph, github-readonly, docs-search]
+  max_lanes_per_cycle: 64
+  max_tokens_per_cycle: 5000000
+  emergency_stop: false
+
+code_context:
+  backend: python   # set to 'argyph' to use the Argyph binary
+  argyph_binary: null

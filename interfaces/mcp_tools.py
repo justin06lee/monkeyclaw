@@ -24,10 +24,17 @@ from interfaces.types import (
     FindingInput,
     FindingRecord,
     IdeaInput,
+    JudgeVoteInput,
+    ModelRunInput,
+    PatchCandidateInput,
+    PolicyCorpusResult,
+    PolicyCorpusResultInput,
     RegressionTest,
     RegressionTestInput,
     ReproPackage,
     ReproPackageInput,
+    TelemetryEvent,
+    TelemetryEventInput,
 )
 
 
@@ -145,6 +152,68 @@ class MonkeyClawMCP(Protocol):
     # ------------------------------------------------------------------
     def send_alert(self, message: str, severity: str) -> None:
         """Telegram/webhook notification. severity in critical|high|medium|low|info."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Telemetry & policy events (deliverable A5)
+    # ------------------------------------------------------------------
+    def log_telemetry_event(self, event: TelemetryEventInput) -> str:
+        """Append a telemetry event. Returns the generated event_id."""
+        ...
+
+    def get_session_timeline(self, session_id: str) -> list[TelemetryEvent]:
+        """All telemetry events for a session, ordered by timestamp."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Model run accounting
+    # ------------------------------------------------------------------
+    def log_model_run(self, run: ModelRunInput) -> str:
+        """Record one LLM call's tokens/latency/cost. Returns run_id."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Judge votes
+    # ------------------------------------------------------------------
+    def log_judge_vote(self, vote: JudgeVoteInput) -> str:
+        """Record one judge's vote on a lane. Returns vote_id."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Policy corpus
+    # ------------------------------------------------------------------
+    def log_policy_corpus_result(self, result: PolicyCorpusResultInput) -> str:
+        """Record the outcome of one adversarial corpus case. Returns result_id."""
+        ...
+
+    def get_policy_corpus_results(self, run_id: str) -> list[PolicyCorpusResult]:
+        """All corpus results for a given evaluation run."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Queue / package / patch status transitions
+    # ------------------------------------------------------------------
+    def mark_repro_queue_status(
+        self, finding_id: str, status: str, worker_id: str | None = None
+    ) -> None:
+        """Transition a repro_queue row: queued|processing|completed|failed."""
+        ...
+
+    def mark_repro_package_status(
+        self, package_id: str, blue_team_status: str
+    ) -> None:
+        """Transition a repro package's blue_team_status."""
+        ...
+
+    def log_patch_candidate(self, patch: PatchCandidateInput) -> str:
+        """Persist a candidate patch. Returns patch_id."""
+        ...
+
+    def mark_patch_status(
+        self, patch_id: str, status: str,
+        verification_results: dict | None = None,
+    ) -> None:
+        """Transition a patch's status and optionally store verification results."""
         ...
 
 

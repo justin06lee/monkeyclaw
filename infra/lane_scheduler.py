@@ -29,8 +29,14 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from queue import Empty, PriorityQueue
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from infra.guardrails import PolicyEnforcer
+    from interfaces.mcp_tools import MonkeyClawMCP
 
 from infra.monitoring_harness import HarnessConfig, MonitoringHarness
+from infra.telemetry import TelemetryEmitter
 from interfaces.config_schema import LaneConfig, NemoClawConfig
 from interfaces.nemoclaw_policy import NEMOCLAW_ALLOWED_PATHS, NEMOCLAW_MONITORED_PATHS
 from interfaces.provisioning import VictimConfig, VictimInstance, VictimProvisioner
@@ -51,9 +57,9 @@ class _Job:
     """Priority queue item — highest priority popped first."""
     neg_priority: float  # priority queue is a min-heap → negate
     seq: int  # tiebreaker for FIFO order at equal priority
-    idea: "IdeaObject"
+    idea: IdeaObject
 
-    def __lt__(self, other: "_Job") -> bool:
+    def __lt__(self, other: _Job) -> bool:
         return (self.neg_priority, self.seq) < (other.neg_priority, other.seq)
 
 
@@ -70,10 +76,20 @@ class LaneScheduler:
         on_result: Callable[[LaneResult], None],
         on_error: Callable[[Exception, IdeaObject], None] | None = None,
         serial: bool = True,
+        mcp: MonkeyClawMCP | None = None,
+        enforcer: PolicyEnforcer | None = None,
     ) -> None:
         self.lane_cfg = lane_cfg
         self.nemoclaw_cfg = nemoclaw_cfg
         self.provisioner = provisioner
+        # Optional MonkeyClawMCP. When set, each lane emits A5 session
+        # telemetry. Unset -> behavior is identical to before.
+        self._mcp = mcp
+        # Optional PolicyEnforcer (A8). When set, the dispatch loop honours
+        # emergency stop and the per-cycle lane budget. Unset -> behavior is
+        # identical to before.
+        self._enforcer = enforcer
+        self._lanes_dispatched = 0
         self.executor = executor
         self.on_result = on_result
         self.on_error = on_error or (lambda e, idea: LOG.exception(
@@ -133,6 +149,18 @@ class LaneScheduler:
                 job = self._queue.get(timeout=0.5)
             except Empty:
                 continue
+            if self._enforcer is not None:
+                if self._enforcer.emergency_stopped():
+                    LOG.warning("emergency stop active — halting lane dispatch "
+                                "(idea %s left undispatched)", job.idea.idea_id)
+                    break
+                budget = self._enforcer.check_lane_budget(self._lanes_dispatched)
+                if budget.decision == "deny":
+                    LOG.warning("lane budget exhausted (%s) — halting lane "
+                                "dispatch (idea %s left undispatched)",
+                                budget.reason_code, job.idea.idea_id)
+                    break
+            self._lanes_dispatched += 1
             fut = self._pool.submit(self._run_lane, job.idea)
             self._inflight[job.idea.idea_id] = fut
             fut.add_done_callback(lambda f, iid=job.idea.idea_id: self._inflight.pop(iid, None))
@@ -152,6 +180,12 @@ class LaneScheduler:
         LOG.info("lane %s starting idea %s zone=%s priority=%.3f",
                   lane_id, idea.idea_id, idea.zone_id, idea.priority_score)
         instance: VictimInstance | None = None
+        emitter = (
+            TelemetryEmitter(self._mcp, session_id=lane_id)
+            if self._mcp is not None else None
+        )
+        if emitter is not None:
+            emitter.session_started(actor="lane-scheduler", zone=idea.zone_id)
         try:
             instance = self.provisioner.provision_victim(VictimConfig(
                 nemoclaw_version=self.nemoclaw_cfg.version,
@@ -185,6 +219,7 @@ class LaneScheduler:
                 lane_id=lane_id,
                 idea_id=idea.idea_id,
                 zone_id=idea.zone_id,
+                telemetry=emitter,
             )
             with harness:
                 t = threading.Thread(
@@ -198,8 +233,15 @@ class LaneScheduler:
                     LOG.warning("lane %s timeout — abandoning thread", lane_id)
                     harness.set_termination("timeout")
             result = harness.result()
+            if emitter is not None:
+                emitter.session_finished(
+                    actor="lane-scheduler",
+                    final_status=result.termination_reason)
             self.on_result(result)
         except Exception as e:  # noqa: BLE001
+            if emitter is not None:
+                emitter.session_finished(actor="lane-scheduler",
+                                         final_status="error")
             self.on_error(e, idea)
         finally:
             if instance is not None:

@@ -235,6 +235,120 @@ CREATE TABLE IF NOT EXISTS alerts (
 );
 
 --------------------------------------------------------------------------------
+-- telemetry_events — A5 session timeline. Bounded excerpts + hashes only.
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS telemetry_events (
+    event_id      TEXT PRIMARY KEY,
+    session_id    TEXT NOT NULL,
+    event_type    TEXT NOT NULL,
+    timestamp     TEXT NOT NULL DEFAULT (datetime('now')),
+    actor         TEXT NOT NULL,
+    action_class  TEXT NOT NULL,
+    target        TEXT,
+    decision      TEXT,
+    reason_code   TEXT,
+    data_class    TEXT,
+    content_hash  TEXT,
+    excerpt       TEXT,
+    metadata      TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_telemetry_session
+    ON telemetry_events(session_id, timestamp);
+
+--------------------------------------------------------------------------------
+-- model_runs — A2/A4 per-LLM-call accounting
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS model_runs (
+    run_id        TEXT PRIMARY KEY,
+    role          TEXT NOT NULL,
+    model         TEXT NOT NULL,
+    provider      TEXT NOT NULL,
+    input_tokens  INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    latency_ms    INTEGER NOT NULL DEFAULT 0,
+    cost_usd      REAL,
+    success       INTEGER NOT NULL DEFAULT 1,
+    error         TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_model_runs_role
+    ON model_runs(role, model, created_at);
+
+--------------------------------------------------------------------------------
+-- judge_votes — A2 multi-judge ensemble
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS judge_votes (
+    vote_id        TEXT PRIMARY KEY,
+    lane_id        TEXT NOT NULL,
+    judge_role     TEXT NOT NULL,
+    verdict        TEXT NOT NULL,
+    score          REAL NOT NULL,
+    confidence     REAL NOT NULL,
+    reasoning      TEXT NOT NULL,
+    evidence_turns TEXT NOT NULL DEFAULT '[]',
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_judge_votes_lane
+    ON judge_votes(lane_id, judge_role);
+
+--------------------------------------------------------------------------------
+-- policy_corpus_results — A2 adversarial-corpus outcomes
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS policy_corpus_results (
+    result_id         TEXT PRIMARY KEY,
+    run_id            TEXT NOT NULL,
+    case_id           TEXT NOT NULL,
+    observed_decision TEXT NOT NULL,
+    expected_decision TEXT NOT NULL,
+    passed            INTEGER NOT NULL DEFAULT 0,
+    evidence          TEXT NOT NULL DEFAULT '',
+    notes             TEXT NOT NULL DEFAULT '',
+    created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_policy_corpus_run
+    ON policy_corpus_results(run_id, case_id);
+
+--------------------------------------------------------------------------------
+-- idea_components — A2 building blocks of an idea (MAP-Elites)
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS idea_components (
+    component_id   TEXT PRIMARY KEY,
+    idea_id        TEXT NOT NULL,
+    component_type TEXT NOT NULL,
+    content        TEXT NOT NULL,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_idea_components_idea
+    ON idea_components(idea_id);
+
+--------------------------------------------------------------------------------
+-- idea_archive_cells — A2 MAP-Elites archive grid
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS idea_archive_cells (
+    cell_id           TEXT PRIMARY KEY,
+    zone_id           TEXT NOT NULL,
+    interaction_style TEXT NOT NULL,
+    response_movement TEXT NOT NULL,
+    best_idea_id      TEXT,
+    best_score        REAL NOT NULL DEFAULT 0.0,
+    occupancy         INTEGER NOT NULL DEFAULT 0,
+    updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_archive_cells_grid
+    ON idea_archive_cells(zone_id, interaction_style, response_movement);
+
+--------------------------------------------------------------------------------
+-- mutation_operator_stats — A2 operator success tracking
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS mutation_operator_stats (
+    operator    TEXT PRIMARY KEY,
+    uses        INTEGER NOT NULL DEFAULT 0,
+    successes   INTEGER NOT NULL DEFAULT 0,
+    avg_score   REAL NOT NULL DEFAULT 0.0,
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+--------------------------------------------------------------------------------
 -- schema_meta — track schema version for migrations
 --------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -243,7 +357,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 
 INSERT OR IGNORE INTO schema_meta(key, value) VALUES
-    ('schema_version', '1'),
+    ('schema_version', '2'),
     ('embedding_model', 'sentence-transformers/all-MiniLM-L6-v2'),
     ('embedding_dim',   '384');
 

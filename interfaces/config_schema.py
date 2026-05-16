@@ -108,6 +108,53 @@ class NemoClawConfig(BaseModel):
     recover_timeout_s: int = 600
 
 
+class ModelRoute(BaseModel):
+    provider: str
+    model: str
+
+
+def _default_model_roles() -> dict[str, ModelRoute]:
+    return {
+        "cheap_extraction": ModelRoute(provider="nvidia", model="nvidia/nemotron-3-nano"),
+        "red_ideation": ModelRoute(provider="nvidia", model="nvidia/nemotron-3-super-120b-a12b"),
+        "red_execution": ModelRoute(provider="nvidia", model="nvidia/nemotron-3-super-120b-a12b"),
+        "semantic_judge": ModelRoute(provider="nvidia", model="nvidia/nemotron-3-super-120b-a12b"),
+        "safety_judge": ModelRoute(provider="nvidia", model="nvidia/nemotron-content-safety-reasoning-4b"),
+        "root_cause": ModelRoute(provider="anthropic_or_openai", model="frontier-coding"),
+        "patch_generation": ModelRoute(provider="anthropic_or_openai", model="frontier-coding"),
+        "codex_code_work": ModelRoute(provider="openai", model="gpt-5.3-codex"),
+    }
+
+
+class ModelsConfig(BaseModel):
+    roles: dict[str, ModelRoute] = Field(default_factory=_default_model_roles)
+
+
+class GuardrailsConfig(BaseModel):
+    """MonkeyClaw self-containment limits — deliverable A8."""
+
+    artifact_dir: str = "data/artifacts"
+    denied_host_paths: list[str] = [
+        "~/.ssh", "~/.aws", "~/.config/gcloud", "/etc/shadow",
+    ]
+    network_allowlist: dict[str, list[str]] = Field(default_factory=lambda: {
+        "default": ["localhost", "127.0.0.1"],
+        "analysis": ["docs.anthropic.com"],
+    })
+    model_route_allowlist: list[str] = ["nvidia", "openai", "anthropic_or_openai"]
+    mcp_tool_allowlist: list[str] = ["argyph", "github-readonly", "docs-search"]
+    max_lanes_per_cycle: int = 64
+    max_tokens_per_cycle: int = 5_000_000
+    emergency_stop: bool = False
+
+
+class CodeContextConfig(BaseModel):
+    """Code-context search backend — Python indexer or Argyph."""
+
+    backend: str = "python"          # "python" | "argyph"
+    argyph_binary: str | None = None  # explicit path; None = autodetect
+
+
 class MonkeyClawConfig(BaseModel):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     ideation: IdeationConfig = Field(default_factory=IdeationConfig)
@@ -120,3 +167,6 @@ class MonkeyClawConfig(BaseModel):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     nemoclaw: NemoClawConfig = Field(default_factory=NemoClawConfig)
+    models: ModelsConfig = Field(default_factory=ModelsConfig)
+    guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
+    code_context: CodeContextConfig = Field(default_factory=CodeContextConfig)
