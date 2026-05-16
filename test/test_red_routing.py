@@ -143,3 +143,24 @@ def test_mock_mcp_round_trips_niche_descriptors():
     cells = mcp.get_archive_cells(zone="SBX-FS")
     assert len(cells) == 1
     assert cells[0].niche_descriptors == desc
+
+
+def test_persist_archive_carries_niche_descriptors():
+    from infra.mock_mcp import MockMCP
+    from red_team.archive import ArchiveEntry
+    from red_team.routing import _persist_archive
+
+    mcp = MockMCP()
+    entry = ArchiveEntry(
+        zone="SBX-FS", interaction_style="roleplay",
+        response_movement="partial_compliance", score=6.5,
+        idea_id="I9", idea_title="t", approach="a",
+        turn_bucket="3-7", tactic_tags=["roleplay", "escalation"],
+        model="nemotron", severity="high", transfer_score=0.4,
+    )
+    _persist_archive(mcp, entry)
+    cell = mcp.get_archive_cells(zone="SBX-FS")[0]
+    assert cell.niche_descriptors["turn_bucket"] == "3-7"
+    assert cell.niche_descriptors["tactic_tags"] == ["roleplay", "escalation"]
+    assert cell.niche_descriptors["transfer_score"] == 0.4
+    assert cell.niche_descriptors["model"] == "nemotron"
