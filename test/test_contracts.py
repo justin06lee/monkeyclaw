@@ -94,10 +94,18 @@ def test_protocol_declares_new_methods():
         assert hasattr(MonkeyClawMCP, name), f"protocol missing {name}"
 
 
-def test_mock_mcp_conforms_to_protocol():
-    from interfaces.mcp_tools import MonkeyClawMCP
+def test_mock_mcp_model_run_and_judge_vote_roundtrip():
     from infra.mock_mcp import MockMCP
-    assert isinstance(MockMCP(verbose=False), MonkeyClawMCP)
+    from interfaces.types import JudgeVoteInput, ModelRunInput
+    m = MockMCP(verbose=False)
+    rid = m.log_model_run(ModelRunInput(
+        role="red_ideation", model="m", provider="nvidia",
+        input_tokens=5, output_tokens=7, latency_ms=42))
+    assert isinstance(rid, str) and rid
+    vid = m.log_judge_vote(JudgeVoteInput(
+        lane_id="L1", judge_role="semantic", verdict="confirmed",
+        score=0.9, confidence=0.8, reasoning="r", evidence_turns=[3]))
+    assert isinstance(vid, str) and vid
 
 
 def test_mock_mcp_telemetry_roundtrip():

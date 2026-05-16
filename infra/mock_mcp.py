@@ -14,6 +14,7 @@ Design rules:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import random
 import sys
@@ -540,6 +541,8 @@ class MockMCP(MonkeyClawMCP):
             self._repro_processing.discard(finding_id)
         elif status == "queued":
             self._repro_processing.discard(finding_id)
+            if not any(fid == finding_id for fid, _ in self._repro_queue):
+                self._repro_queue.append((finding_id, "normal"))
         self._log("mark_repro_queue_status", {"finding_id": finding_id, "status": status,
                                                "worker_id": worker_id})
 
@@ -554,7 +557,7 @@ class MockMCP(MonkeyClawMCP):
 
     def log_patch_candidate(self, patch: PatchCandidateInput) -> str:
         pid = _new_id("PATCH")
-        self._patch_candidates[pid] = patch
+        self._patch_candidates[pid] = dataclasses.replace(patch, vuln_ids=list(patch.vuln_ids))
         self._patch_statuses[pid] = {"status": "proposed", "verification_results": None}
         self._log("log_patch_candidate", {"patch_id": pid, "zone_id": patch.zone_id})
         return pid
@@ -582,6 +585,11 @@ class MockMCP(MonkeyClawMCP):
             "regression_tests": len(self._regression_tests),
             "cycles": len(self._cycles),
             "alerts": len(self._alerts),
+            "telemetry_events": len(self._telemetry),
+            "model_runs": len(self._model_runs),
+            "judge_votes": len(self._judge_votes),
+            "policy_corpus_results": len(self._corpus_results),
+            "patch_candidates": len(self._patch_candidates),
         }
 
 
@@ -679,6 +687,44 @@ def _smoke_test(mcp: MockMCP) -> None:
     print("recent_summaries:", [c.cycle_id for c in mcp.get_recent_summaries(3)])
     print("codebase:", [c.file_path for c in mcp.search_codebase("router", 2)])
     mcp.send_alert("smoke", "info")
+    # Exercise the 10 new methods
+    eid = mcp.log_telemetry_event(TelemetryEventInput(
+        session_id="smoke-session", event_type="agent.session.started",
+        actor="orchestrator", action_class="session",
+    ))
+    print("log_telemetry_event:", eid)
+    timeline = mcp.get_session_timeline("smoke-session")
+    assert len(timeline) == 1 and timeline[0].event_id == eid
+    print("get_session_timeline:", len(timeline), "events")
+    rid = mcp.log_model_run(ModelRunInput(
+        role="red_ideation", model="nemotron-70b", provider="nvidia",
+        input_tokens=100, output_tokens=200, latency_ms=500,
+    ))
+    print("log_model_run:", rid)
+    vid = mcp.log_judge_vote(JudgeVoteInput(
+        lane_id="L1", judge_role="semantic", verdict="confirmed",
+        score=0.9, confidence=0.8, reasoning="smoke", evidence_turns=[1, 2],
+    ))
+    print("log_judge_vote:", vid)
+    pcr_id = mcp.log_policy_corpus_result(PolicyCorpusResultInput(
+        run_id="R1", case_id="C1", observed_decision="allow",
+        expected_decision="allow", passed=True,
+    ))
+    print("log_policy_corpus_result:", pcr_id)
+    corpus = mcp.get_policy_corpus_results("R1")
+    assert len(corpus) == 1 and corpus[0].result_id == pcr_id
+    print("get_policy_corpus_results:", len(corpus), "results")
+    pid = mcp.log_patch_candidate(PatchCandidateInput(
+        vuln_ids=[fid], zone_id=gaps[0].zone_id, approach="restrict",
+        invasiveness="low", diff="--- a\n+++ b", explanation="smoke patch",
+    ))
+    print("log_patch_candidate:", pid)
+    mcp.mark_patch_status(pid, "verified", {"passed": True})
+    print("mark_patch_status: ok")
+    mcp.mark_repro_queue_status(fid, "queued")
+    print("mark_repro_queue_status(queued): ok")
+    mcp.mark_repro_package_status("nonexistent-pkg", "reviewed")
+    print("mark_repro_package_status: ok")
     print("state:", mcp.dump_state())
 
 
