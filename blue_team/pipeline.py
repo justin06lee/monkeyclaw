@@ -463,7 +463,8 @@ class Pipeline:
                                 "%s — finalizing the verified patch",
                                 task.task_id, e)
                 if gen is None or gen.status == "generalized":
-                    self._on_patch_approved(task, cand, pair, outcome)
+                    self._on_patch_generalized(
+                        task, cand, pair, outcome, gen)
                 else:  # unconverged
                     self._on_patch_unconverged(task, cand, pair, gen)
                 return outcome
@@ -577,6 +578,39 @@ class Pipeline:
                 self.provisioner.teardown_victim(victim.instance_id)
             except Exception as e:  # noqa: BLE001
                 LOG.warning("generalization victim teardown failed: %s", e)
+
+    def _on_patch_generalized(self, task, patch, pair, outcome, gen):
+        """Finalize a GENERALIZED patch. If a re-patch round happened (the
+        patch changed from round 0), additionally commit one regression test
+        per bypassed-and-now-closed operator so the closed bypasses stay
+        closed (spec §10)."""
+        self._on_patch_approved(task, patch, pair, outcome)
+        if gen is None:
+            return
+        bypassed_ops: set[str] = set()
+        for rnd in gen.rounds:
+            bypassed_ops.update(rnd.bypass_operators)
+        for operator in sorted(bypassed_ops):
+            bypass_test = self._make_bypass_regression_test(
+                task, pair, operator)
+            try:
+                self.mcp.add_regression_test(bypass_test)
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("closed-bypass test commit failed for %s: %s",
+                            operator, e)
+
+    def _make_bypass_regression_test(self, task, pair, operator):
+        """A regression test asserting the `operator`-mutated variant of the
+        finding stays blocked. Reuses the positive test's shape with an
+        operator-tagged vuln id so the closed bypass is a permanent guard."""
+        from dataclasses import replace
+
+        _ = task
+        base = pair.positive_test
+        return replace(
+            base,
+            vuln_id=f"{base.vuln_id}-mut-{operator}",
+        )
 
     def _on_patch_unconverged(self, task, patch, pair, gen):
         """An UNCONVERGED generalization result: the last verified patch is

@@ -205,3 +205,36 @@ def test_generalized_result_runs_the_normal_approval_path(tmp_path,
     pipe.process_blue_queue()
     # A GENERALIZED patch is finalized normally -> coverage reset happened.
     assert reset_calls  # at least the patched zone was reset
+
+
+def test_generalized_after_a_bounce_commits_closed_bypass_tests(
+        tmp_path, monkeypatch):
+    """A GENERALIZED result whose patch changed (a re-patch round happened)
+    commits one extra regression test per bypassed operator so the closed
+    bypasses stay closed (spec §10)."""
+    from interfaces.types import GeneralizationRound
+
+    pipe = _build_pipeline_to_blue_queue(
+        tmp_path, GeneralizationConfig(enabled=True))
+
+    committed = []
+    monkeypatch.setattr(pipe.mcp, "add_regression_test",
+                        lambda t: committed.append(t) or "T-id")
+
+    bounced_round = GeneralizationRound(
+        round_id="GR1", patch_id="P0", finding_id="F1", vuln_id="V1",
+        zone_id="PROMPT-INJ", round_index=0, operators_tried=["paraphrase"],
+        variants_total=1, variants_bypassed=1, variants_inconclusive=0,
+        bypass_operators=["paraphrase"], outcome="bounced",
+        repatch_patch_id="P1", evidence=[], created_at="")
+
+    def _fake_run(patch, package, test_pair, task):  # noqa: ANN001
+        return GeneralizationResult(
+            finding_id="F1", final_patch_id="P1",  # changed from P0
+            status="generalized", reason=None, rounds=[bounced_round],
+            open_bypasses=[])
+
+    monkeypatch.setattr(pipe, "_run_generalization", _fake_run)
+    pipe.process_blue_queue()
+    # The positive test plus one closed-bypass test for "paraphrase".
+    assert len(committed) >= 2
