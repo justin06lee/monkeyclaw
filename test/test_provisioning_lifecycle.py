@@ -147,3 +147,12 @@ def test_recover_only_provision_stamps_not_deterministic(
         agent_config_path="c"))
     assert inst.metadata["deterministic"] == "false"
     assert inst.metadata["sandbox_mode"] == "recover_only"
+
+
+def test_lane_result_carries_deterministic_flag():
+    from dataclasses import fields
+
+    from interfaces.types import LaneResult
+
+    fnames = {f.name for f in fields(LaneResult)}
+    assert "deterministic" in fnames

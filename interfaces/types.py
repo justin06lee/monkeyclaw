@@ -251,6 +251,7 @@ class LaneResult:
     memory_diff: MemoryDiff
     inference_routing_log: list[InferenceEvent]
     attacker_self_assessment: str
+    deterministic: bool = True  # False when the victim was not snapshot-isolated
 
 
 # ---------------------------------------------------------------------------
