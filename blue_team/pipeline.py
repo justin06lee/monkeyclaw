@@ -273,8 +273,10 @@ class Pipeline:
             dispatcher=AlertDispatcher(self.cfg.notifications),
             cfg=self.cfg.approvals,
         )
-        # Patches held pending approval keep their RegressionTestPair here
-        # so the resolved-request poll can finalize them later.
+        # Patches held pending approval keep their PatchCandidate +
+        # RegressionTestPair + FixTask here so the resolved-request poll can
+        # finalize them later (the pipeline does not persist patch rows).
+        self._pending_patches: dict[str, PatchCandidate] = {}
         self._pending_test_pairs: dict[str, RegressionTestPair] = {}
         self._pending_tasks: dict[str, FixTask] = {}
         self._pending_outcomes: dict[str, VerifyOutcome] = {}
@@ -414,11 +416,15 @@ class Pipeline:
         batch. Approved patches are committed via add_regression_test +
         coverage reset + alert.
         """
+        # Lapse stale requests and finalize any newly-resolved approvals
+        # before draining the queue (approval spec §11).
+        finalized_resolved = self._finalize_resolved_approvals()
+
         packages = list(self.mcp.get_blue_team_queue())
         if not packages:
-            return 0
+            return finalized_resolved
         tasks = self.triage.triage(packages)
-        approved = 0
+        approved = finalized_resolved
         for task in tasks:
             outcome = self._patch_task(task)
             # Count only finalized patches — a verified-but-PENDING patch is
@@ -508,6 +514,7 @@ class Pipeline:
             LOG.info("patch %s held pending approval (request %s)",
                      patch.patch_id, decision.request_id)
             self._safe_mark_patch(patch.patch_id, "pending_approval")
+            self._pending_patches[patch.patch_id] = patch
             self._pending_test_pairs[patch.patch_id] = pair
             self._pending_tasks[patch.patch_id] = task
             self._pending_outcomes[patch.patch_id] = outcome
@@ -579,6 +586,67 @@ class Pipeline:
             except Exception as e:  # noqa: BLE001
                 LOG.warning("finding %s verify transition failed: %s",
                             package.finding_id, e)
+
+    def _finalize_resolved_approvals(self) -> int:
+        """Sweep expiry, then finalize patches whose approval is now `allow`.
+
+        Patches held pending approval are tracked on this Pipeline instance
+        (`_pending_patches`) — the pipeline does not persist patch rows, so
+        the resolved poll walks the stash and consults the approval audit
+        log for each. Returns the count finalized this pass.
+        """
+        try:
+            self.approval_service.expire_stale()
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("expire_stale failed: %s", e)
+
+        finalized = 0
+        for patch_id in list(self._pending_patches.keys()):
+            patch = self._pending_patches[patch_id]
+            try:
+                events = self.mcp.get_approval_events(patch_id)
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("get_approval_events failed for %s: %s",
+                            patch_id, e)
+                continue
+            decisions = [e.decision for e in events]
+            if "expired" in decisions:
+                LOG.info("patch %s approval expired — abandoning", patch_id)
+                self._safe_mark_patch(patch_id, "rejected")
+                self._drop_pending(patch_id)
+            elif "deny" in decisions:
+                LOG.info("patch %s approval denied", patch_id)
+                self._safe_mark_patch(patch_id, "rejected")
+                self._drop_pending(patch_id)
+            elif "allow" in decisions:
+                self._safe_mark_patch(patch_id, "approved")
+                self._finalize_patch_by_id(patch)
+                finalized += 1
+        return finalized
+
+    def _drop_pending(self, patch_id: str) -> None:
+        self._pending_patches.pop(patch_id, None)
+        self._pending_test_pairs.pop(patch_id, None)
+        self._pending_tasks.pop(patch_id, None)
+        self._pending_outcomes.pop(patch_id, None)
+
+    def _finalize_patch_by_id(self, patch: PatchCandidate) -> None:
+        """Re-finalize a patch whose approval has resolved to `allow`, using
+        the RegressionTestPair / FixTask stashed when it went PENDING."""
+        pair = self._pending_test_pairs.get(patch.patch_id)
+        task = self._pending_tasks.get(patch.patch_id)
+        outcome = self._pending_outcomes.get(patch.patch_id)
+        self._drop_pending(patch.patch_id)
+        if pair is None or task is None:
+            LOG.warning(
+                "cannot finalize resolved patch %s: no stashed test pair/task",
+                patch.patch_id)
+            return
+        notes = outcome.notes if outcome is not None else ""
+        self._finalize_patch(
+            task.task_id, task.severity, list(task.vuln_ids),
+            patch.zone_id, patch, pair.positive_test, notes,
+            task.primary_package)
 
     def _reset_zone_coverage(self, zone_id: str) -> None:
         """Snap the zone's coverage score to 0.3.
