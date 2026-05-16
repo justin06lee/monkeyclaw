@@ -75,6 +75,8 @@ class NemoClawProvisioner(VictimProvisioner):
         snapshot_restore_timeout_s: int = 180,
         recover_timeout_s: int = 600,
         work_area_dir: str = "/tmp/monkeyclaw-work",
+        nemoclaw_repo_path: str | None = None,
+        patch_build_timeout_s: int = 900,
         telemetry: TelemetryEmitter | None = None,
     ) -> None:
         self.cli = cli_binary
@@ -90,6 +92,8 @@ class NemoClawProvisioner(VictimProvisioner):
         self.snapshot_restore_timeout_s = snapshot_restore_timeout_s
         self.recover_timeout_s = recover_timeout_s
         self.work_area_dir = work_area_dir
+        self.nemoclaw_repo_path = nemoclaw_repo_path
+        self.patch_build_timeout_s = patch_build_timeout_s
         self._instances: dict[str, VictimInstance] = {}
 
         # Probe the local nemoclaw build once. Every lifecycle method
@@ -103,21 +107,32 @@ class NemoClawProvisioner(VictimProvisioner):
                 f"`{self.cli}` CLI not found on PATH. Install NemoClaw, or use "
                 f"the MockProvisioner (orchestrator flag --use-mock-provisioner)."
             )
-        if config.patch_diff:
-            # The snapshot model resets to a fixed baseline; per-lane patch
-            # application would need the patch baked into a snapshot. Not
-            # supported on this path yet — surface it loudly rather than
-            # silently running an unpatched victim.
-            raise ProvisioningError(
-                "VictimConfig.patch_diff is set, but the snapshot-based "
-                "NemoClawProvisioner cannot apply per-lane patches. Build a "
-                "patched snapshot and point `clean_snapshot` at it instead."
-            )
-
         instance_id = f"VICT-{uuid.uuid4().hex[:10]}"
         if self._telemetry is not None:
             self._telemetry.policy_loaded(actor="provisioner",
                                           target=config.policy_path)
+
+        patched_snapshot = None
+        if config.patch_diff:
+            if not self.capabilities.snapshots:
+                raise ProvisioningError(
+                    "VictimConfig.patch_diff is set but this nemoclaw build "
+                    "has no snapshot support — refusing to run an unpatched "
+                    "victim (no silent unpatched victims, spec §4 c6)")
+            repo = config.nemoclaw_repo_path or self.nemoclaw_repo_path
+            if not repo:
+                raise ProvisioningError(
+                    "VictimConfig.patch_diff is set but no nemoclaw_repo_path "
+                    "is configured to build the patched victim from")
+            from infra.patch_builder import PatchBuilder  # noqa: PLC0415
+
+            builder = PatchBuilder(
+                repo_path=repo, work_area_dir=self.work_area_dir,
+                capabilities=self.capabilities,
+                build_timeout_s=self.patch_build_timeout_s)
+            patched_snapshot = builder.build_patched_snapshot(
+                config.patch_diff,
+                baseline=self.clean_snapshot or self.baseline_snapshot)
 
         if self.capabilities.ephemeral:
             # Ephemeral: clone the baseline into a per-lane disposable work
@@ -128,9 +143,12 @@ class NemoClawProvisioner(VictimProvisioner):
             os.makedirs(work, exist_ok=True)
             LOG.info("provisioning ephemeral victim %s in %s",
                      instance_id, work)
+            restore_target = (
+                patched_snapshot.name if patched_snapshot is not None
+                else (self.clean_snapshot or self.baseline_snapshot))
             self._run(
                 [self.cli, self.sandbox_name, "snapshot", "restore",
-                 self.clean_snapshot or self.baseline_snapshot],
+                 restore_target],
                 timeout=self.snapshot_restore_timeout_s,
                 what="snapshot restore")
             self._run([self.cli, self.sandbox_name, "recover"],
@@ -175,6 +193,7 @@ class NemoClawProvisioner(VictimProvisioner):
                 "nemoclaw_version": config.nemoclaw_version,
                 "sandbox_mode": mode,
                 "deterministic": "true" if deterministic else "false",
+                "patch_applied": "true" if patched_snapshot else "false",
                 **({"work_area": work} if work else {}),
             },
         )

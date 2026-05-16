@@ -76,3 +76,18 @@ def test_patch_without_snapshot_support_raises(tmp_path: Path):
         capabilities=_CAPS_NO_SNAP, build_timeout_s=60)
     with pytest.raises(ProvisioningError, match="snapshot"):
         builder.build_patched_snapshot(_GOOD_DIFF, baseline="clean-baseline")
+
+
+def test_provision_with_patch_diff_no_snapshots_still_raises(
+    tmp_path: Path, monkeypatch):
+    from infra.provisioning_nemoclaw import NemoClawProvisioner
+    from interfaces.provisioning import VictimConfig
+    from test._nemoclaw_stub import write_stub
+
+    write_stub(tmp_path, monkeypatch, snapshots=False, recover=True)
+    p = NemoClawProvisioner(sandbox_name="monkey-victim")
+    with pytest.raises(ProvisioningError, match="patch"):
+        p.provision_victim(VictimConfig(
+            nemoclaw_version="v0", policy_path="p",
+            agent_type="coding_assistant", agent_config_path="c",
+            patch_diff="--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"))
