@@ -29,3 +29,11 @@ def test_pipeline_builds_isolation_only_when_enabled(server, tmp_path):
     assert pipe.patch_isolation is None
     # The verifier still works (mock surface, current behaviour).
     assert pipe.patch_verifier is not None
+
+
+def test_dashboard_patch_view_includes_isolation_mode(db):
+    from infra.dashboard import patch_isolation_badge
+
+    assert patch_isolation_badge("live") == "live"
+    assert patch_isolation_badge("mock") == "mock"
+    assert patch_isolation_badge(None) == "mock"   # default when unset
