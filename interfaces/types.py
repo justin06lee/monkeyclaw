@@ -47,6 +47,12 @@ PolicyDecisionType = Literal["allow", "deny", "ask"]
 ReproQueueStatus = Literal["queued", "processing", "completed", "failed"]
 RegressionTestStatus = Literal["untested", "passing", "failing", "quarantined"]
 JudgeRole = Literal["semantic", "safety", "programmatic"]
+DetectionQuadrant = Literal["PASS", "PARTIAL", "WEAK", "FAIL"]
+Prevention = Literal["blocked", "succeeded"]
+Observability = Literal["observed", "silent", "unknown"]
+ControlValidationKind = Literal["inline", "full"]
+ControlValidationStatus = Literal["ok", "errored"]
+DetectionRuleStatus = Literal["active", "candidate", "retired"]
 
 # ---------------------------------------------------------------------------
 # Message + observability primitives
@@ -712,15 +718,181 @@ class PatchCandidateInput:
     side_effects: str = ""
 
 
+# ---------------------------------------------------------------------------
+# Purple team — detection-as-pass scoring (purple-team spec §7-§8)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ControlDecision:
+    """One control decision about a proposed action, plus whether the runtime
+    emitted an observable event for it. Produced by a ControlTelemetryAdapter."""
+
+    action_class: str
+    target: str | None
+    decision: str  # PolicyDecisionType: allow|deny|ask
+    observed: bool
+    reason_code: str | None = None
+    source: str = "derived"  # derived|native
+
+
+@dataclass
+class DetectionVerdict:
+    """The 2x2 quadrant for one execution against one control surface."""
+
+    execution_id: str
+    session_id: str
+    zone_id: str
+    quadrant: str  # DetectionQuadrant
+    prevention: str  # Prevention
+    observability: str  # Observability
+    rule_id: str | None = None
+    evidence: str = "{}"  # JSON blob
+
+
+@dataclass
+class DetectionRule:
+    """A reusable detection rule in the whitepaper Appendix D shape."""
+
+    rule_id: str
+    zone_id: str
+    source_finding_id: str
+    logic: str
+    expected_telemetry_signature: str
+    response_action: str
+    status: str  # DetectionRuleStatus
+    created_at: str
+
+
+@dataclass
+class DetectionRuleInput:
+    """Write-side of DetectionRule — server fills rule_id + created_at."""
+
+    zone_id: str
+    source_finding_id: str
+    logic: str
+    expected_telemetry_signature: str
+    response_action: str
+    status: str = "candidate"
+
+
+@dataclass
+class DetectionCoverage:
+    """The second coverage axis: detection coverage for one zone."""
+
+    zone_id: str
+    coverage_score: float  # 0..1
+    sample_count: int
+    updated_at: str
+
+
+@dataclass
+class ZoneCoverage:
+    """One cell of the joint attack-coverage x detection-coverage heatmap."""
+
+    zone_id: str
+    zone_name: str
+    attack_coverage: float
+    detection_coverage: float
+    detection_samples: int
+
+
+@dataclass
+class ControlValidationRun:
+    """One run of the control corpus against the current victim build."""
+
+    run_id: str
+    kind: str  # ControlValidationKind
+    cases_total: int
+    cases_passed: int
+    regressions: list[dict[str, Any]]  # [{case_id, prior, now}]
+    victim_build_id: str
+    status: str  # ControlValidationStatus
+    created_at: str
+
+
+@dataclass
+class SessionTimeline:
+    """The unified evidence/decision timeline for one session."""
+
+    session_id: str
+    finding: FindingRecord | None
+    telemetry_events: list[TelemetryEvent]
+    control_decisions: list[ControlDecision]
+    patches: list[dict[str, Any]]
+    detection_rules: list[DetectionRule]
+
+
+@dataclass
+class ReportCardDimension:
+    """One rubric dimension: measured value vs. a stated (not asserted) target."""
+
+    name: str
+    measured: float
+    target: float
+    target_is_aspirational: bool
+    evidence_count: int
+    notes: str = ""
+
+
+@dataclass
+class ReportCard:
+    """The measured security report card across the 7 rubric dimensions."""
+
+    card_id: str
+    generated_at: str
+    dimensions: list[ReportCardDimension]
+    summary: str
+    self_governance: SelfGovernanceReport | None = None
+
+
+@dataclass
+class SelfGovernanceCheck:
+    name: str
+    subject: str  # which MonkeyClaw agent
+    passed: bool
+    detail: str
+
+
+@dataclass
+class SelfGovernanceReport:
+    """Result of pointing the detection machinery at MonkeyClaw itself."""
+
+    checks: list[SelfGovernanceCheck]
+    violations: list[str]
+    passed: bool
+
+
+@dataclass
+class PurpleCycleResult:
+    """The single object purple_team.pipeline.run returns per cycle."""
+
+    verdicts: list[DetectionVerdict]
+    validation_run: ControlValidationRun | None
+    report_card: ReportCard | None
+    new_rules: list[DetectionRule]
+    routed_signals: list[str]
+
+
 __all__ = [
     "AgentPolicy",
     "ArchiveCell",
     "ArchiveUpdateInput",
     "CheckResult",
     "CodeChunk",
+    "ControlDecision",
+    "ControlValidationKind",
+    "ControlValidationRun",
+    "ControlValidationStatus",
     "CoverageGap",
     "CycleSummary",
     "CycleSummaryInput",
+    "DetectionCoverage",
+    "DetectionQuadrant",
+    "DetectionRule",
+    "DetectionRuleInput",
+    "DetectionRuleStatus",
+    "DetectionVerdict",
     "DupResult",
     "FindingInput",
     "FindingRecord",
@@ -741,6 +913,7 @@ __all__ = [
     "ModelRunInput",
     "ModelRunRecord",
     "NetworkEvent",
+    "Observability",
     "PatchCandidate",
     "PatchCandidateInput",
     "PolicyConfig",
@@ -749,18 +922,26 @@ __all__ = [
     "PolicyCorpusResultInput",
     "PolicyDecision",
     "PolicyDecisionType",
+    "Prevention",
     "ProcessEvent",
+    "PurpleCycleResult",
     "QueueState",
     "QueueTransition",
     "RegressionRunResult",
     "RegressionTest",
     "RegressionTestInput",
     "RegressionTestStatus",
+    "ReportCard",
+    "ReportCardDimension",
     "ReproPackage",
     "ReproPackageInput",
     "ReproQueueStatus",
     "SeccompProfile",
+    "SelfGovernanceCheck",
+    "SelfGovernanceReport",
+    "SessionTimeline",
     "TelemetryEvent",
     "TelemetryEventInput",
     "TelemetryEventType",
+    "ZoneCoverage",
 ]
