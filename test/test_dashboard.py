@@ -56,3 +56,32 @@ def test_individual_endpoints_respond(tmp_path: Path):
     for path in ("/api/status", "/api/zones", "/api/findings", "/api/telemetry",
                  "/api/judges", "/api/patches", "/api/packages"):
         assert client.get(path).status_code == 200, path
+
+
+def test_niche_heatmap_view_renders(tmp_path: Path):
+    """B5 — the niche-heatmap endpoint exposes the zone × style grid."""
+    from infra.database import Database
+    from infra.mcp_server import MCPServer
+    from interfaces.types import ArchiveUpdateInput
+
+    db_path = str(tmp_path / "mc.db")
+    db = Database(db_path)
+    try:
+        server = MCPServer(db)
+        server.update_archive_cell(ArchiveUpdateInput(
+            zone_id="SBX-FS", interaction_style="direct",
+            response_movement="refusal", idea_id="I1", score=6.0,
+            niche_descriptors={"turn_bucket": "0-2"},
+        ))
+    finally:
+        db.close()
+
+    client = TestClient(build_dashboard_app(db_path))
+    resp = client.get("/api/niche-heatmap")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "direct" in data["styles"]
+    assert any(row["zone_id"] == "SBX-FS" for row in data["rows"])
+    fs_row = next(r for r in data["rows"] if r["zone_id"] == "SBX-FS")
+    direct_idx = data["styles"].index("direct")
+    assert fs_row["cells"][direct_idx]["best_score"] == 6.0

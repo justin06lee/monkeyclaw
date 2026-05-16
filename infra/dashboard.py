@@ -184,6 +184,51 @@ def _archive(db_path: str) -> list[dict[str, Any]]:
     )
 
 
+def _niche_heatmap(db_path: str) -> dict[str, Any]:
+    """B5 MAP-Elites niche heatmap — a zone × interaction_style occupancy grid.
+
+    Rows are zones, columns the six interaction styles. Each cell carries the
+    elite score, occupancy and the elite's turn_bucket niche descriptor so the
+    page can colour-scale by best_score and show empty cells blank.
+    """
+    import json as _json
+
+    from red_team.archive import INTERACTION_STYLES
+
+    rows = _query(
+        db_path,
+        "SELECT zone_id, interaction_style, response_movement, best_score, "
+        "occupancy, niche_descriptors FROM idea_archive_cells",
+    )
+    # Aggregate to one (zone, style) cell — the strongest elite in the column.
+    grid: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in rows:
+        key = (r["zone_id"], r["interaction_style"])
+        prev = grid.get(key)
+        if prev is not None and prev["best_score"] >= r["best_score"]:
+            continue
+        try:
+            nd = _json.loads(r["niche_descriptors"] or "{}")
+        except (TypeError, ValueError):
+            nd = {}
+        grid[key] = {
+            "best_score": r["best_score"],
+            "occupancy": r["occupancy"],
+            "turn_bucket": nd.get("turn_bucket", ""),
+        }
+    zones = sorted({r["zone_id"] for r in rows})
+    return {
+        "styles": list(INTERACTION_STYLES),
+        "rows": [
+            {
+                "zone_id": zone,
+                "cells": [grid.get((zone, style)) for style in INTERACTION_STYLES],
+            }
+            for zone in zones
+        ],
+    }
+
+
 def _operators(db_path: str) -> list[dict[str, Any]]:
     return _query(
         db_path,
@@ -963,6 +1008,10 @@ def build_dashboard_app(db_path: str):
     @app.get("/api/archive")
     def api_archive() -> list[dict[str, Any]]:
         return _archive(db_path)
+
+    @app.get("/api/niche-heatmap")
+    def api_niche_heatmap() -> dict[str, Any]:
+        return _niche_heatmap(db_path)
 
     @app.get("/api/operators")
     def api_operators() -> list[dict[str, Any]]:
