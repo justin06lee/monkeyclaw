@@ -3,12 +3,12 @@
 Date: 2026-05-15
 Status: Draft for review
 
-This roadmap sequences the 15 design specs in `docs/superpowers/specs/` into
+This roadmap sequences the 17 design specs in `docs/superpowers/specs/` into
 dependency-ordered waves. Each spec gets its own implementation plan (via the
 writing-plans process) and is executed independently; this document only fixes
 the **order** and the **cross-spec coordination rules**.
 
-## The 15 specs
+## The 17 specs
 
 | Spec | Area | One-line scope |
 |---|---|---|
