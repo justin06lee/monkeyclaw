@@ -85,7 +85,7 @@ def load_config(path: str | Path | None = None) -> MonkeyClawConfig:
                     f"explicitly-requested config file not found: {p}")
             LOG.warning("config %s not found, skipping", p)
             continue
-        with p.open() as f:
+        with p.open(encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         merged = _deep_merge(merged, data)
     merged = _deep_merge(merged, _env_overrides())
