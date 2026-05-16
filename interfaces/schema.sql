@@ -338,6 +338,7 @@ CREATE TABLE IF NOT EXISTS idea_archive_cells (
     best_idea_id      TEXT,
     best_score        REAL NOT NULL DEFAULT 0.0,
     occupancy         INTEGER NOT NULL DEFAULT 0,
+    niche_descriptors TEXT NOT NULL DEFAULT '{}',
     updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_archive_cells_grid
@@ -379,7 +380,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 
 INSERT OR IGNORE INTO schema_meta(key, value) VALUES
-    ('schema_version', '4'),
+    ('schema_version', '5'),
     ('embedding_model', 'sentence-transformers/all-MiniLM-L6-v2'),
     ('embedding_dim',   '384');
 
