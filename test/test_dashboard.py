@@ -293,3 +293,32 @@ def test_patch_hardening_panel_renders(server):
     assert "paraphrase" in html
     assert "add_benign_framing" in html
     assert "PASS" in html
+
+
+def test_dashboard_exposes_generalization_panel(tmp_path: Path):
+    """The dashboard surfaces per-patch round count, operators tried,
+    bypasses found and the final generalization status."""
+    from infra.database import Database
+    from infra.mcp_server import MCPServer
+    from interfaces.types import GeneralizationRoundInput
+
+    db_path = str(tmp_path / "gen.db")
+    db = Database(db_path)
+    try:
+        server = MCPServer(db)
+        server.log_generalization_round(GeneralizationRoundInput(
+            patch_id="P1", finding_id="F1", vuln_id="MC-2026-0001",
+            zone_id="PROMPT-INJ", round_index=0,
+            operators_tried=["paraphrase", "insert_untrusted_document"],
+            variants_total=2, variants_bypassed=1, variants_inconclusive=0,
+            bypass_operators=["paraphrase"], outcome="generalized"))
+    finally:
+        db.close()
+
+    client = TestClient(build_dashboard_app(db_path))
+    resp = client.get("/generalization")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "P1" in body
+    assert "paraphrase" in body
+    assert "generalized" in body
