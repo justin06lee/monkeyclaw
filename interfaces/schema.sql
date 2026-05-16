@@ -327,6 +327,38 @@ CREATE INDEX IF NOT EXISTS idx_model_runs_role
     ON model_runs(role, model, created_at);
 
 --------------------------------------------------------------------------------
+-- model_zone_winrate / model_tournament_rounds — model ideation tournament
+-- (model-ideation-tournament spec §9). Kept in sync with migration 0013.
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS model_zone_winrate (
+    zone_id          TEXT NOT NULL,
+    model_label      TEXT NOT NULL,
+    role             TEXT NOT NULL DEFAULT '',
+    h2h_wins         INTEGER NOT NULL DEFAULT 0,
+    h2h_comparisons  INTEGER NOT NULL DEFAULT 0,
+    confirmed        INTEGER NOT NULL DEFAULT 0,
+    suspicious       INTEGER NOT NULL DEFAULT 0,
+    ideas_executed   INTEGER NOT NULL DEFAULT 0,
+    winrate          REAL NOT NULL DEFAULT 0.5,
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (zone_id, model_label)
+);
+CREATE INDEX IF NOT EXISTS idx_model_zone_winrate_zone
+    ON model_zone_winrate(zone_id, winrate);
+
+CREATE TABLE IF NOT EXISTS model_tournament_rounds (
+    round_id      TEXT PRIMARY KEY,
+    cycle_id      INTEGER NOT NULL,
+    zone_id       TEXT NOT NULL,
+    entrants      TEXT NOT NULL DEFAULT '[]',
+    pairwise      TEXT NOT NULL DEFAULT '[]',
+    winner_label  TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_model_tournament_rounds_zone
+    ON model_tournament_rounds(zone_id, cycle_id);
+
+--------------------------------------------------------------------------------
 -- judge_votes — A2 multi-judge ensemble
 --------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS judge_votes (
@@ -672,7 +704,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 
 INSERT OR IGNORE INTO schema_meta(key, value) VALUES
-    ('schema_version', '12'),
+    ('schema_version', '13'),
     ('taxonomy_corpus_version', 'atlas-5.4.0+owasp-2025'),
     ('embedding_model', 'sentence-transformers/all-MiniLM-L6-v2'),
     ('embedding_dim',   '384');

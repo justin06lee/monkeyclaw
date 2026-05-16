@@ -423,3 +423,40 @@ def test_pipeline_runs_taxonomy_mode_when_enabled():
     assert tax_ideas
     assert all(i.source_mode == "taxonomy" for i in tax_ideas)
     assert any(getattr(i, "techniques", None) for i in tax_ideas)
+
+
+# ---------------------------------------------------------------------------
+# Model ideation tournament wiring (model-ideation-tournament spec §7, §8)
+# ---------------------------------------------------------------------------
+
+
+def _enabled_tournament():
+    from red_team.tournament import (
+        Entrant, ModelTournament, ModelTournamentConfig)
+    return ModelTournament(ModelTournamentConfig(
+        enabled=True,
+        entrants=[Entrant(role="red_ideation"),
+                  Entrant(role="frontier_creative_optional")]))
+
+
+def test_tournament_disabled_pipeline_is_single_model():
+    """Disabled tournament -> the single-model ideation path, unchanged."""
+    mcp = MockMCP(seed=0, verbose=False)
+    pipeline = Pipeline(mcp=mcp, llm=MockLLM())
+    assert pipeline.tournament.enabled is False
+    ideas = pipeline.generate_ideas(cycle_id=1, n_lanes=2)
+    assert ideas  # ideas produced, no tournament machinery touched
+    assert mcp.get_model_zone_winrate() == []
+    assert pipeline._pending_rounds == {}
+
+
+def test_tournament_enabled_pipeline_judges_and_persists_a_round():
+    """Enabled tournament -> entrants fan out, a head-to-head round is
+    judged and persisted, and a pending round is staged for the win-rate
+    fold."""
+    mcp = MockMCP(seed=0, verbose=False)
+    pipeline = Pipeline(mcp=mcp, llm=MockLLM(),
+                        tournament=_enabled_tournament())
+    pipeline.generate_ideas(cycle_id=1, n_lanes=2)
+    assert len(mcp._tournament_rounds) >= 1
+    assert pipeline._pending_rounds  # staged for record_zone_outcomes

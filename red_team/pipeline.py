@@ -48,8 +48,10 @@ from interfaces.types import (
 from red_team import archive_seed
 from red_team.archive import EliteArchive
 from red_team.dedup import deduplicate_and_log
+from red_team.entrant_selection import select_entrants
 from red_team.execution_agent import ExecutionAgent, ExecutionConfig
-from red_team.ideation import IdeationConfig, IdeationEngine, tournament_ideas
+from red_team.ideation import IdeationConfig, IdeationEngine
+from red_team.ideation_tournament import IdeationTournamentJudge
 from red_team.judge import Judge, JudgeConfig
 from red_team.mutation_engine import (
     MutationConfig,
@@ -93,6 +95,16 @@ class _PerIdeaContext:
     idea: IdeaObject
 
 
+@dataclass
+class _PendingRound:
+    """A judged head-to-head round awaiting its post-execution win-rate fold
+    (model-ideation-tournament spec §8)."""
+    cycle_id: int
+    judge: IdeationTournamentJudge
+    round: object
+    prior: dict
+
+
 class Pipeline:
     """Person 2's pipeline. Bound via `--red red_team.pipeline:Pipeline`."""
 
@@ -109,6 +121,7 @@ class Pipeline:
         judge_cfg: JudgeConfig | None = None,
         alert_severity_floor: str = "high",
         mutation_cfg: MutationConfig | None = None,
+        tournament: ModelTournament | None = None,
     ) -> None:
         if runtime is not None:
             self.mcp = runtime.mcp
@@ -166,7 +179,12 @@ class Pipeline:
         self._ideation_cfg = ideation_cfg
         # B9 — model tournament. Disabled unless `red_team.model_tournament`
         # is configured; when enabled, extra entrants also ideate per zone.
-        self.tournament = ModelTournament(load_tournament_config())
+        # Tests may inject an enabled tournament directly.
+        self.tournament = tournament or ModelTournament(
+            load_tournament_config())
+        # Head-to-head round + win-rate state, set per cycle when the
+        # tournament is enabled and consumed by record_zone_outcomes.
+        self._pending_rounds: dict[str, _PendingRound] = {}
         self.strategist = Strategist(_client("red_ideation"))
         self.execution = ExecutionAgent(_client("red_execution"), execution_cfg)
         self.judger = Judge(_client("semantic_judge"), self.policy, judge_cfg, mcp=self.mcp)
@@ -230,6 +248,87 @@ class Pipeline:
         return self.router.client_for(entrant.role)
 
     # ------------------------------------------------------------------
+    def _run_tournament_for_zone(
+        self, gap: CoverageGap, cycle_id: int,
+    ) -> list[IdeaObject]:
+        """Routed model-tournament ideation for one zone: select entrants by
+        per-zone win-rate, fan out, head-to-head judge the idea sets, persist
+        the round, and stash the win-rate prior for the post-execution fold.
+
+        A disabled tournament is a strict no-op — returns [] so the caller
+        falls back to the single-model path (model-ideation-tournament §7)."""
+        if not self.tournament.enabled:
+            return []
+        zone_id = gap.zone_id
+        # 1. route: which entrants run this zone this cycle.
+        winrates = []
+        try:
+            winrates = self.mcp.get_model_zone_winrate(zone_id)
+        except Exception as e:  # noqa: BLE001 - cold start tolerated
+            LOG.warning("could not load win-rates for %s: %r", zone_id, e)
+        self.tournament.load_winrates(winrates)
+        entrants = select_entrants(
+            zone_id, self.tournament.cfg.entrants, winrates,
+            exploration_floor=self.tournament.cfg.exploration_floor,
+            seed=cycle_id,
+        )
+        # 2. fan out: each selected entrant generates a tagged idea set.
+        per_entrant: dict[str, list[IdeaObject]] = {}
+
+        def _gen(entrant):
+            engine = IdeationEngine(
+                self._llm_for_entrant(entrant), self.mcp,
+                self._ideation_cfg)
+            ideas = engine.generate_for_zone(gap, cycle_id)
+            per_entrant[entrant.label] = ideas
+            return ideas
+
+        merged = self.tournament.generate_for(entrants, _gen)
+        # 3. head-to-head judge the entrant idea sets, persist the round.
+        judge = IdeationTournamentJudge(
+            self.router.client_for("semantic_judge"), mcp=self.mcp,
+            h2h_weight=self.tournament.cfg.h2h_weight,
+        )
+        rnd = judge.judge_round(zone_id, cycle_id, per_entrant)
+        self._pending_rounds[zone_id] = _PendingRound(
+            cycle_id=cycle_id, judge=judge, round=rnd,
+            prior={(w.zone_id, w.model_label): w for w in winrates},
+        )
+        return merged
+
+    def record_zone_outcomes(
+        self, zone_id: str,
+        judged: list[tuple[IdeaObject, JudgmentResult]],
+    ) -> None:
+        """Fold this zone's head-to-head round + execution verdicts into the
+        per-zone win-rate (model-ideation-tournament spec §8). `judged` is a
+        list of (idea, judgment) pairs. A no-op when the zone had no
+        tournament round this cycle."""
+        for idea, judgment in judged:
+            label = getattr(idea, "model_label", "")
+            if label:
+                self.tournament.record_outcome(
+                    label, verdict=judgment.verdict, zone_id=zone_id)
+        pending = self._pending_rounds.pop(zone_id, None)
+        if pending is None:
+            return
+        execution_outcomes: dict[str, dict[str, int]] = {}
+        for idea, judgment in judged:
+            label = getattr(idea, "model_label", "")
+            if not label:
+                continue
+            row = execution_outcomes.setdefault(
+                label, {"confirmed": 0, "suspicious": 0,
+                        "ideas_executed": 0})
+            row["ideas_executed"] += 1
+            if judgment.verdict == "confirmed":
+                row["confirmed"] += 1
+            elif judgment.verdict == "suspicious":
+                row["suspicious"] += 1
+        pending.judge.update_winrate(
+            pending.round, execution_outcomes, prior=pending.prior)
+
+    # ------------------------------------------------------------------
     # generate_ideas
     # ------------------------------------------------------------------
     def generate_ideas(self, cycle_id: int, n_lanes: int) -> list[IdeaObject]:
@@ -270,9 +369,7 @@ class Pipeline:
             # B9 — when the model tournament is enabled, extra entrant models
             # ideate the same zone; their ideas join the pool for dedup +
             # priority. A disabled tournament returns [] (no-op).
-            t_ideas = tournament_ideas(
-                self.tournament, self._llm_for_entrant, self.mcp, gap,
-                cycle_id, self._ideation_cfg)
+            t_ideas = self._run_tournament_for_zone(gap, cycle_id)
             ideas_generated += len(t_ideas)
             candidates.extend(t_ideas)
             # Estimate when we have enough — dedup typically halves the

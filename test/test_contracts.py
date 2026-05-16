@@ -187,3 +187,19 @@ def test_both_mcps_expose_mutation_learning_methods():
             assert callable(getattr(impl, name)), f"{impl.__name__}.{name}"
         sig = inspect.signature(impl.get_mutation_operator_stats)
         assert "zone_id" in sig.parameters
+
+
+def test_both_mcps_expose_tournament_methods():
+    """The real and mock MCP both satisfy the three tournament signatures."""
+    import inspect
+
+    from infra.mcp_server import MCPServer
+    from infra.mock_mcp import MockMCP
+
+    for impl in (MCPServer, MockMCP):
+        for name in ("get_model_zone_winrate",
+                     "update_model_zone_winrate",
+                     "log_tournament_round"):
+            assert callable(getattr(impl, name)), f"{impl.__name__}.{name}"
+        sig = inspect.signature(impl.get_model_zone_winrate)
+        assert "zone_id" in sig.parameters

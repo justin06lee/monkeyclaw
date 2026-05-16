@@ -30,7 +30,7 @@ from collections.abc import Callable
 
 import yaml
 
-from interfaces.types import IdeaObject
+from interfaces.types import IdeaObject, ModelZoneWinrate
 
 LOG = logging.getLogger("monkeyclaw.red.tournament")
 
@@ -57,6 +57,9 @@ class Entrant:
 class ModelTournamentConfig:
     enabled: bool = False
     entrants: list[Entrant] = field(default_factory=list)
+    tournament_zones_per_cycle: int = 1
+    h2h_weight: float = 0.6
+    exploration_floor: float = 0.1
 
 
 def _coerce_config(raw: object) -> ModelTournamentConfig:
@@ -78,6 +81,10 @@ def _coerce_config(raw: object) -> ModelTournamentConfig:
     return ModelTournamentConfig(
         enabled=bool(raw.get("enabled", False)),
         entrants=entrants,
+        tournament_zones_per_cycle=int(
+            raw.get("tournament_zones_per_cycle", 1)),
+        h2h_weight=float(raw.get("h2h_weight", 0.6)),
+        exploration_floor=float(raw.get("exploration_floor", 0.1)),
     )
 
 
@@ -118,34 +125,49 @@ def load_tournament_config(
 class ModelTournament:
     """Runs ideation across entrant models and tracks per-model performance."""
 
+    _GLOBAL_ZONE = "*"
+    _NEUTRAL_WINRATE = 0.5
+
     def __init__(self, cfg: ModelTournamentConfig | None = None) -> None:
         self.cfg = cfg or ModelTournamentConfig()
-        # model label -> {"ideas", "confirmed", "suspicious", "tokens"}
-        self._stats: dict[str, dict[str, int]] = {}
+        # (model_label, zone_id) -> {"ideas","confirmed","suspicious","tokens"}
+        self._stats: dict[tuple[str, str], dict[str, int]] = {}
+        # persisted per-(zone, model) win-rates, loaded via load_winrates().
+        self._winrates: dict[tuple[str, str], float] = {}
 
     @property
     def enabled(self) -> bool:
         return self.cfg.enabled and len(self.cfg.entrants) > 0
 
-    def _bump(self, label: str, **deltas: int) -> None:
+    def _bump(self, label: str, zone_id: str = _GLOBAL_ZONE,
+              **deltas: int) -> None:
         row = self._stats.setdefault(
-            label, {"ideas": 0, "confirmed": 0, "suspicious": 0, "tokens": 0})
+            (label, zone_id),
+            {"ideas": 0, "confirmed": 0, "suspicious": 0, "tokens": 0})
         for k, v in deltas.items():
             row[k] = row.get(k, 0) + v
 
     def generate(
         self, generate_fn: Callable[[Entrant], list[IdeaObject]],
     ) -> list[IdeaObject]:
-        """Run `generate_fn` for every entrant, tag each idea with its source
-        model on `idea.model_label`, and return the merged pool.
+        """Run `generate_fn` for every configured entrant. See `generate_for`."""
+        if not self.enabled:
+            return []
+        return self.generate_for(self.cfg.entrants, generate_fn)
+
+    def generate_for(
+        self, entrants: list[Entrant],
+        generate_fn: Callable[[Entrant], list[IdeaObject]],
+    ) -> list[IdeaObject]:
+        """Run `generate_fn` for every entrant in `entrants`, tag each idea
+        with its source model on `idea.model_label`, and return the merged
+        pool.
 
         The caller then dedups the merged list together (the existing
         `deduplicate_and_log` is model-agnostic) and runs the normal
         priority / strategist stages."""
-        if not self.enabled:
-            return []
         merged: list[IdeaObject] = []
-        for entrant in self.cfg.entrants:
+        for entrant in entrants:
             try:
                 ideas = generate_fn(entrant)
             except Exception as e:  # noqa: BLE001
@@ -163,26 +185,55 @@ class ModelTournament:
 
     def record_outcome(
         self, model_label: str, *, verdict: str, tokens: int = 0,
+        zone_id: str | None = None,
     ) -> None:
-        """Record a judged outcome against the model that produced the idea."""
+        """Record a judged outcome against the model that produced the idea,
+        bucketed by zone (the global bucket when zone_id is omitted)."""
         self._bump(
             model_label,
+            zone_id or self._GLOBAL_ZONE,
             confirmed=1 if verdict == "confirmed" else 0,
             suspicious=1 if verdict == "suspicious" else 0,
             tokens=tokens,
         )
 
-    def leaderboard(self) -> dict[str, dict[str, int]]:
-        """Per-model performance snapshot (for logging / the dashboard)."""
-        return {label: dict(row) for label, row in self._stats.items()}
+    def leaderboard(
+        self, zone_id: str | None = None,
+    ) -> dict[str, dict[str, int]]:
+        """Per-model performance snapshot. With `zone_id`, only that zone;
+        without it, the global rollup summed across every zone."""
+        out: dict[str, dict[str, int]] = {}
+        for (label, zid), row in self._stats.items():
+            if zone_id is not None and zid != zone_id:
+                continue
+            agg = out.setdefault(
+                label, {"ideas": 0, "confirmed": 0,
+                        "suspicious": 0, "tokens": 0})
+            for k, v in row.items():
+                agg[k] = agg.get(k, 0) + v
+        return out
+
+    def load_winrates(self, rows: list[ModelZoneWinrate]) -> None:
+        """Load persisted per-(zone, model) win-rates so routing decisions
+        read accumulated state. Replaces any previously loaded set."""
+        self._winrates = {
+            (r.zone_id, r.model_label): r.winrate for r in rows
+        }
+
+    def winrate(self, zone_id: str, model_label: str) -> float:
+        """The persisted win-rate for (zone, model), or the neutral prior
+        (0.5) for a pair with no history — the starvation-avoidance prior."""
+        return self._winrates.get(
+            (zone_id, model_label), self._NEUTRAL_WINRATE)
 
     def summary(self) -> str:
-        if not self._stats:
+        rollup = self.leaderboard()
+        if not rollup:
             return "model tournament: no entrants recorded"
         parts = [
             f"{label}: {row['confirmed']} confirmed / {row['ideas']} ideas, "
             f"{row['tokens']} tokens"
-            for label, row in sorted(self._stats.items())
+            for label, row in sorted(rollup.items())
         ]
         return "model tournament — " + "; ".join(parts)
 
