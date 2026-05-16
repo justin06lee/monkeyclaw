@@ -126,3 +126,41 @@ def test_route_judgment_without_archive_skips_persistence():
     mcp = MockMCP(verbose=False)
     route_judgment(_judgment("confirmed", "critical"), _idea(), mcp)
     assert mcp.get_archive_cells(None) == []
+
+
+def test_route_judgment_persists_the_trajectory():
+    from interfaces.types import Trajectory, TurnScore
+
+    mcp = MockMCP(verbose=False)
+    judgment = _judgment("clean", "low")
+    idea = _idea()
+    trj = Trajectory(
+        lane_id=judgment.lane_id, idea_id=judgment.idea_id,
+        zone_id=judgment.zone_id,
+        turn_scores=[TurnScore(turn_index=0, stage=2, stage_delta=2)],
+        max_stage=2, final_stage=2, erosion_slope=0.0,
+        stalled_at_turn=0, monotonic=True)
+    route_judgment(judgment, idea, mcp, trajectory=trj)
+    rows = mcp.get_trajectories(zone_id=judgment.zone_id)
+    assert len(rows) == 1 and rows[0].max_stage == 2
+
+
+def test_route_judgment_swallows_trajectory_persistence_failure():
+    from interfaces.types import Trajectory
+
+    base = MockMCP(verbose=False)
+
+    class BoomServer:
+        def __getattr__(self, name):
+            return getattr(base, name)
+
+        def log_trajectory(self, trajectory):
+            raise RuntimeError("db down")
+
+    judgment = _judgment("clean", "low")
+    idea = _idea()
+    trj = Trajectory(lane_id="LANE-1", idea_id=idea.idea_id,
+                     zone_id=judgment.zone_id)
+    # Must not raise — persistence failure is best-effort (spec §10).
+    fid = route_judgment(judgment, idea, BoomServer(), trajectory=trj)
+    assert fid  # routing still produced a finding
