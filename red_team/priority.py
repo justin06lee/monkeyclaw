@@ -21,6 +21,11 @@ from dataclasses import dataclass
 
 from interfaces.types import CoverageGap, IdeaObject
 
+from red_team.archive import (
+    INTERACTION_STYLES,
+    RESPONSE_MOVEMENTS,
+    EliteArchive,
+)
 from red_team.dedup import DedupOutcome
 
 LOG = logging.getLogger("monkeyclaw.red.priority")
@@ -102,14 +107,48 @@ def coverage_gap_for(zone: CoverageGap) -> float:
     return max(0.0, min(1.0, 1.0 - zone.coverage_score))
 
 
+# niche_gap multiplier band — config-overridable (red.archive.niche_gap_*).
+NICHE_GAP_LOW = 0.5
+NICHE_GAP_HIGH = 1.5
+
+
+def niche_gap_for(
+    archive: EliteArchive,
+    zone_id: str,
+    interaction_style: str,
+    low: float = NICHE_GAP_LOW,
+    high: float = NICHE_GAP_HIGH,
+) -> float:
+    """Exploration multiplier over the (zone, interaction_style) grid column.
+
+    response_movement is unknown pre-execution, so the gap is computed over
+    the column: more empty cells in the column → multiplier above 1.0 (boost
+    an unexplored style); a fully-occupied column → below 1.0 (damp a style
+    already well-mined). Linear in the column's empty fraction.
+    """
+    if interaction_style not in INTERACTION_STYLES:
+        return 1.0
+    empty = archive.empty_cells(zone_id, (interaction_style,),
+                                RESPONSE_MOVEMENTS)
+    total = len(RESPONSE_MOVEMENTS)
+    empty_fraction = len(empty) / total if total else 0.0
+    return round(low + (high - low) * empty_fraction, 4)
+
+
 def score_ideas(
     outcomes: list[DedupOutcome],
     zones_by_id: dict[str, CoverageGap],
+    archive: EliteArchive | None = None,
 ) -> list[PrioritizedIdea]:
     """Compute the priority score for every KEPT idea, sort descending.
 
     Discarded duplicates are not scored — they're already logged with
     `deduplicated=true` and would only pollute the prioritized list.
+
+    When ``archive`` is supplied a fifth factor ``niche_gap`` multiplies the
+    score — steering the search toward under-tested interaction styles within
+    a zone, complementing ``coverage_gap``'s pull toward under-tested zones.
+    Absent ``archive`` the score is byte-identical to the four-factor product.
     """
     out: list[PrioritizedIdea] = []
     for oc in outcomes:
@@ -125,16 +164,23 @@ def score_ideas(
         cg = coverage_gap_for(zone)
         sw = severity_weight_for(zone)
         score = novelty * impact * cg * sw
+        components = {
+            "novelty": novelty,
+            "impact": impact,
+            "coverage_gap": cg,
+            "severity_weight": sw,
+        }
+        if archive is not None:
+            tactics = getattr(oc.idea, "tactics", None)
+            style = getattr(tactics, "interaction_style", "direct")
+            ng = niche_gap_for(archive, oc.idea.zone_id, style)
+            score *= ng
+            components["niche_gap"] = ng
         oc.idea.priority_score = score
         out.append(PrioritizedIdea(
             idea=oc.idea,
             priority=score,
-            components={
-                "novelty": novelty,
-                "impact": impact,
-                "coverage_gap": cg,
-                "severity_weight": sw,
-            },
+            components=components,
         ))
     out.sort(key=lambda p: p.priority, reverse=True)
     return out
@@ -144,16 +190,20 @@ def select_top_n(
     outcomes: list[DedupOutcome],
     zones_by_id: dict[str, CoverageGap],
     n: int,
+    archive: EliteArchive | None = None,
 ) -> list[PrioritizedIdea]:
     """Score and pick the top-n. Convenience wrapper."""
-    return score_ideas(outcomes, zones_by_id)[:max(0, n)]
+    return score_ideas(outcomes, zones_by_id, archive=archive)[:max(0, n)]
 
 
 __all__ = [
     "IMPACT_WEIGHTS",
+    "NICHE_GAP_HIGH",
+    "NICHE_GAP_LOW",
     "PrioritizedIdea",
     "coverage_gap_for",
     "estimate_impact",
+    "niche_gap_for",
     "score_ideas",
     "select_top_n",
     "severity_weight_for",
