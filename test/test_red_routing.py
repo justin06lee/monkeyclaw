@@ -164,3 +164,20 @@ def test_route_judgment_swallows_trajectory_persistence_failure():
     # Must not raise — persistence failure is best-effort (spec §10).
     fid = route_judgment(judgment, idea, BoomServer(), trajectory=trj)
     assert fid  # routing still produced a finding
+
+
+def test_route_judgment_persists_each_near_miss():
+    from interfaces.types import NearMissInput
+
+    mcp = MockMCP(verbose=False)
+    judgment = _judgment("clean", "low")
+    idea = _idea()
+    nm = NearMissInput(
+        idea_id=idea.idea_id, lane_id=judgment.lane_id,
+        zone_id=judgment.zone_id, max_stage=3, stalled_at_turn=2,
+        erosion_excerpt="here's how", useful_components=["partial_lead"],
+        mutation_seeds=["concretize_final_request"])
+    route_judgment(judgment, idea, mcp, near_misses=[nm])
+    misses = mcp.search_near_misses(
+        zone=judgment.zone_id, only_unconsumed=True, top_k=10)
+    assert len(misses) == 1 and misses[0].max_stage == 3

@@ -29,6 +29,7 @@ from interfaces.types import (
     IdeaComponentInput,
     IdeaObject,
     JudgmentResult,
+    NearMissInput,
     Trajectory,
 )
 
@@ -189,6 +190,7 @@ def route_judgment(
     *,
     progress: ProgressScore | None = None,
     trajectory: Trajectory | None = None,
+    near_misses: list[NearMissInput] | None = None,
     archive: EliteArchive | None = None,
     alert_severity_floor: str = "high",
 ) -> str:
@@ -228,6 +230,13 @@ def route_judgment(
             mcp.log_trajectory(trajectory)
         except Exception as e:  # noqa: BLE001
             LOG.warning("trajectory persist failed for %s: %s", finding_id, e)
+
+    # Persist each near miss — best-effort, never aborts routing (spec §10).
+    for nm in (near_misses or []):
+        try:
+            mcp.log_near_miss(nm)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("near-miss persist failed for %s: %s", finding_id, e)
 
     score = search_score(progress) if progress is not None else 0.0
     floor_met = SEVERITY_ORDER.get(judgment.severity, 0) >= SEVERITY_ORDER.get(

@@ -50,6 +50,7 @@ from red_team.ideation import IdeationConfig, IdeationEngine, tournament_ideas
 from red_team.judge import Judge, JudgeConfig
 from red_team.priority import score_ideas
 from red_team.progress import score_progress, search_score
+from red_team.near_miss import extract_near_misses
 from red_team.routing import route_judgment
 from red_team.trajectory import score_trajectory
 from red_team.strategist import Strategist
@@ -371,10 +372,18 @@ class Pipeline:
         novelty_score = self._idea_novelty.get(lane_result.idea_id)
         progress = score_progress(
             lane_result, trajectory=trajectory, novelty_score=novelty_score)
+        near_misses = []
+        try:
+            near_misses = extract_near_misses(
+                idea, lane_result, progress, trajectory, judgment)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("near-miss extraction failed for lane %s: %s",
+                        lane_result.lane_id, e)
         finding_id = route_judgment(
             judgment, idea, self.mcp,
             progress=progress,
             trajectory=trajectory,
+            near_misses=near_misses,
             archive=self._archive,
             alert_severity_floor=self.alert_severity_floor,
         )
