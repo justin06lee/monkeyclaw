@@ -282,6 +282,12 @@ class PurpleConfig(BaseModel):
     # Run validate_full() + self_governance every N cycles (spec §10).
     full_sweep_every: int = 10
     self_governance_enabled: bool = True
+    # Telemetry adapter selector (native-event-adapter spec §8). The derived
+    # adapter stays the default so mock mode runs with zero credentials;
+    # "native" selects the OpenClaw hook-event NativeEventAdapter.
+    telemetry_adapter: str = "derived"  # "derived" | "native"
+    native_event_source: str = "~/.openclaw/logs/purple-telemetry.jsonl"
+    native_offset_store: str = "~/.openclaw/logs/purple-telemetry.offset"
 
 
 class ArchiveConfig(BaseModel):
