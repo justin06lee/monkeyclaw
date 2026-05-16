@@ -9,10 +9,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SCAN_DIRS = ["infra", "red_team", "blue_team"]
-# state_machine.py owns the one status-mutation path; the migration runner and
-# the versioned migration scripts in infra/migrations/ are the bootstrap path
-# and run before the engine exists, so they are also exempt.
-ALLOWED = {"infra/state_machine.py", "infra/migrations.py"}
+# state_machine.py owns the one status-mutation path; the migration runner
+# (infra/migrations/__init__.py) and the versioned migration scripts in
+# infra/migrations/ are the bootstrap path and run before the engine exists,
+# so they are also exempt — covered by the infra/migrations/ prefix below.
+ALLOWED = {"infra/state_machine.py"}
 
 
 def _is_allowed(rel: str) -> bool:
