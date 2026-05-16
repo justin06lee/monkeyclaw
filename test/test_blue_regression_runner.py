@@ -122,6 +122,40 @@ def test_regression_runner_flags_newly_failing(tmp_path: Path):
     assert r2.coverage_delta["SBX-NET"] < 0
 
 
+def test_regression_runner_marks_flaky_tests(tmp_path: Path):
+    """Spec C8: a test that oscillates pass -> fail -> pass is flaky."""
+    provisioner = _planted_provisioner(tmp_path / "a", tmp_path / "b")
+    mcp = MockMCP(seed=0, verbose=False)
+    tid = mcp.add_regression_test(RegressionTestInput(
+        vuln_id="MC-V1", zone_id="SBX-FS",
+        test_script=_always_passing_script(),
+        expected_result="vulnerability_blocked",
+        functionality_test_script=None,
+    ))
+    runner = RegressionRunner(mcp, provisioner, policy=default_policy())
+    runner.run()  # pass
+    mcp._regression_tests[tid].test_script = _always_failing_script()
+    runner.run()  # fail
+    mcp._regression_tests[tid].test_script = _always_passing_script()
+    r3 = runner.run()  # pass again -> oscillating
+    assert tid in r3.flaky_tests
+
+
+def test_regression_runner_stable_test_not_flaky(tmp_path: Path):
+    provisioner = _planted_provisioner(tmp_path / "a", tmp_path / "b")
+    mcp = MockMCP(seed=0, verbose=False)
+    mcp.add_regression_test(RegressionTestInput(
+        vuln_id="MC-V1", zone_id="SBX-FS",
+        test_script=_always_passing_script(),
+        expected_result="vulnerability_blocked",
+        functionality_test_script=None,
+    ))
+    runner = RegressionRunner(mcp, provisioner, policy=default_policy())
+    for _ in range(3):
+        result = runner.run()
+    assert result.flaky_tests == []
+
+
 def test_regression_runner_tracks_consecutive_passes(tmp_path: Path):
     provisioner = _planted_provisioner(tmp_path / "a", tmp_path / "b")
     mcp = MockMCP(seed=0, verbose=False)

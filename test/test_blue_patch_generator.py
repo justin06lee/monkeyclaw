@@ -108,6 +108,36 @@ def test_patch_generator_emits_multiple_alts_for_high_severity():
     assert candidates[0].zone_id == "SBX-FS"
 
 
+def test_patch_generator_carries_expected_tests_and_confidence():
+    """Spec C5: each candidate must include expected tests + confidence."""
+    llm = MockLLM()
+    llm.queue(
+        "### PATCH 1\n"
+        "label: Canonicalize\n"
+        "invasiveness: low\n"
+        "explanation: resolve symlinks\n"
+        "side_effects: none\n"
+        "expected_tests: symlink escape blocked, normal write still works\n"
+        "confidence: 0.8\n"
+        f"```diff\n{_GOOD_DIFF}\n```\n"
+    )
+    mcp = MockMCP(seed=0, verbose=False)
+    gen = PatchGenerator(llm, mcp)
+    [c] = gen.generate_for_task(_task("low"))
+    assert c.expected_tests == [
+        "symlink escape blocked", "normal write still works"]
+    assert c.confidence == 0.8
+
+
+def test_patch_generator_defaults_missing_expected_tests_and_confidence():
+    llm = MockLLM()
+    llm.queue(_patch_block(1, "x", "low", _GOOD_DIFF))
+    gen = PatchGenerator(llm, MockMCP(seed=0, verbose=False))
+    [c] = gen.generate_for_task(_task("low"))
+    assert c.expected_tests == []
+    assert 0.0 <= c.confidence <= 1.0
+
+
 def test_patch_generator_one_alt_for_low_severity():
     llm = MockLLM()
     llm.queue(_patch_block(1, "Add log", "low", _GOOD_DIFF, "log"))

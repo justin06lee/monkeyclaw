@@ -207,6 +207,89 @@ def _render_mitigations(mitigations: list[str]) -> str:
     return "\n".join(f"- {m}" for m in mitigations)
 
 
+def _render_confidence(inp: ReproWriterInput) -> str:
+    """Render the 'Confidence and Caveats' section (spec §C1).
+
+    Surfaces, in one place, how much the blue team should trust this
+    package: replay reliability, root-cause certainty (speculative or
+    not), and whether the finding rests on deterministic or semantic
+    evidence.
+    """
+    parts: list[str] = []
+
+    # --- Reproduction reliability -----------------------------------------
+    if inp.replays_total > 0:
+        rate_pct = inp.repro_rate * 100
+        ratio = f"{inp.replays_successful}/{inp.replays_total}"
+        if inp.repro_rate >= 0.8:
+            parts.append(
+                f"- **Reproduction:** high confidence — reproduced in "
+                f"{ratio} fresh replays ({rate_pct:.0f}%)."
+            )
+        else:
+            parts.append(
+                f"- **Reproduction:** moderate confidence — reproduced in "
+                f"{ratio} fresh replays ({rate_pct:.0f}%); treat as "
+                f"timing- or context-sensitive."
+            )
+    else:
+        parts.append(
+            "- **Reproduction:** no replay data recorded — reliability "
+            "is unknown."
+        )
+
+    # --- Root-cause certainty ---------------------------------------------
+    rc = inp.root_cause
+    if rc is None:
+        parts.append(
+            "- **Root cause:** not analyzed (severity below the automated "
+            "analysis threshold). Fix-site guidance is unavailable; the "
+            "patch generator must locate the fix itself."
+        )
+    elif rc.skipped:
+        parts.append(
+            "- **Root cause:** analysis skipped — "
+            f"{rc.notes or 'see the Root Cause Analysis section'}."
+        )
+    elif not rc.candidate_fix_sites:
+        parts.append(
+            "- **Root cause:** could not be determined — no fix site "
+            "reached the minimum confidence threshold. Any fix location "
+            "is **speculative**."
+        )
+    elif rc.root_cause_confidence < 0.5:
+        parts.append(
+            f"- **Root cause:** low confidence "
+            f"({rc.root_cause_confidence:.2f}). Candidate fix sites are "
+            f"**speculative** and must be verified manually before a "
+            f"patch derived from them is merged."
+        )
+    else:
+        parts.append(
+            f"- **Root cause:** confidence {rc.root_cause_confidence:.2f} "
+            f"— fix sites are a reasonable starting point but cross-file "
+            f"resolution is heuristic, not LSP-precise."
+        )
+
+    # --- Evidence basis ----------------------------------------------------
+    triggered = [c for c in inp.evidence if c.triggered]
+    if triggered:
+        parts.append(
+            f"- **Evidence:** {len(triggered)} programmatic (Tier 1) "
+            f"check(s) fired — the finding is backed by deterministic "
+            f"signals."
+        )
+    else:
+        parts.append(
+            "- **Evidence:** no programmatic (Tier 1) check fired — this "
+            "finding rests on **semantic** judgment and carries some "
+            "false-positive risk. Review the transcript in Raw Artifacts "
+            "before committing engineering time."
+        )
+
+    return "\n".join(parts)
+
+
 def _render_artifacts(transcript: list[Message]) -> str:
     if not transcript:
         return "_(no transcript available)_"
@@ -281,6 +364,9 @@ queue.
 
 ## Suggested Mitigations
 {_render_mitigations(inp.suggested_mitigations)}
+
+## Confidence and Caveats
+{_render_confidence(inp)}
 
 ## Raw Artifacts
 {_render_artifacts(inp.minimal_transcript)}

@@ -57,6 +57,11 @@ invasiveness: <low | medium | high>
 explanation: <one paragraph: why this patch eliminates the vulnerability>
 side_effects: <one paragraph: legitimate behavior changes, downstream
 impact, performance>
+expected_tests: <comma-separated short names of the test scenarios this
+patch should satisfy: the positive regression that should now pass, the
+functionality that must still work, any policy/telemetry assertion>
+confidence: <a number in [0, 1]: your confidence this patch eliminates the
+vulnerability without regressions>
 ```diff
 --- a/path/to/file.py
 +++ b/path/to/file.py
@@ -92,6 +97,24 @@ def _looks_like_diff(text: str) -> bool:
     if not text:
         return False
     return bool(_DIFF_HUNK_RE.search(text) and _DIFF_FILE_RE.search(text))
+
+
+def _coerce_expected_tests(value: object) -> list[str]:
+    """Normalize the model's `expected_tests` field into a list[str]."""
+    if isinstance(value, list):
+        return [str(v).strip()[:300] for v in value if str(v).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()[:300]]
+    return []
+
+
+def _coerce_confidence(value: object) -> float:
+    """Clamp the model's `confidence` field into [0.0, 1.0]."""
+    try:
+        c = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(c, 1.0))
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +296,9 @@ class PatchGenerator:
             invasiveness = _field(block, "invasiveness").lower()
             if invasiveness not in {"low", "medium", "high"}:
                 invasiveness = "medium"
+            raw_tests = _field(block, "expected_tests")
+            expected_tests = _coerce_expected_tests(
+                [t.strip() for t in raw_tests.split(",")] if raw_tests else [])
             candidates.append(PatchCandidate(
                 patch_id=random_id("PCH"),
                 vuln_ids=list(task.vuln_ids),
@@ -283,6 +309,8 @@ class PatchGenerator:
                 explanation=_field(block, "explanation")[:4000],
                 side_effects=_field(block, "side_effects")[:2000],
                 status="proposed",
+                expected_tests=expected_tests,
+                confidence=_coerce_confidence(_field(block, "confidence")),
             ))
 
         # Sort: low → medium → high invasiveness (spec wants least invasive
