@@ -15,6 +15,7 @@ the dashboard works against an empty DB and a live or pre-seeded one alike.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -80,12 +81,24 @@ def _cycles(db_path: str) -> list[dict[str, Any]]:
 
 
 def _ideas(db_path: str) -> list[dict[str, Any]]:
-    return _query(
+    rows = _query(
         db_path,
         "SELECT idea_id, cycle_id, zone_id, source_mode, title, approach, "
-        "priority_score, deduplicated, created_at FROM ideas "
+        "novelty_notes, priority_score, deduplicated, created_at FROM ideas "
         "ORDER BY created_at DESC, priority_score DESC LIMIT 24",
     )
+    for row in rows:
+        row["derived_from_skill"] = _derived_from_skill(
+            row.get("novelty_notes")
+        )
+    return rows
+
+
+def _derived_from_skill(novelty_notes: str | None) -> str:
+    if not novelty_notes:
+        return ""
+    match = re.search(r"\[skill=([A-Z0-9-]+)\]", novelty_notes)
+    return match.group(1) if match else ""
 
 
 def _activity(db_path: str) -> list[dict[str, Any]]:
@@ -324,6 +337,7 @@ _PAGE = r"""<!doctype html>
     --crit:#ff5c5c; --high:#ff9f43; --med:#ffd23f; --low:#54b8ff; --ok:#36d399;
     --creative:#c792ea; --code_grounded:#54b8ff; --history_informed:#36d399;
     --playbook:#f5a623; --strategist:#ff9f43; --policy_corpus:#c792ea;
+    --research_grounded:#ff6ac1;
     --mono:'IBM Plex Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;
     --sans:'IBM Plex Sans',-apple-system,system-ui,Segoe UI,sans-serif;
   }
@@ -605,7 +619,8 @@ const SEV={critical:"var(--crit)",high:"var(--high)",medium:"var(--med)",
   low:"var(--low)",info:"var(--dim)"};
 const MODE={creative:"var(--creative)",code_grounded:"var(--code_grounded)",
   history_informed:"var(--history_informed)",playbook:"var(--playbook)",
-  strategist:"var(--strategist)",policy_corpus:"var(--policy_corpus)"};
+  strategist:"var(--strategist)",policy_corpus:"var(--policy_corpus)",
+  research_grounded:"var(--research_grounded)"};
 const STATUS_C={confirmed:"var(--crit)",processing:"var(--low)",
   patching:"var(--low)",queued:"var(--med)",triaged:"var(--accent)",
   approved:"var(--ok)",verified:"var(--ok)",patched:"var(--ok)",
@@ -720,12 +735,14 @@ function renderIdeas(items){
     '<div class="empty">no ideas generated yet</div>');return;}
   set('ideas',items.map(x=>{
     const col=MODE[x.source_mode]||"var(--line)";
+    const skill=x.derived_from_skill
+      ?`<span class="chip mono">${esc(x.derived_from_skill)}</span>`:"";
     return `<div class="row ${x.deduplicated?'dedup':''}" `
       +`style="border-left-color:${col}">
       <div class="hd">${badge((x.source_mode||'').replace(/_/g,' '),col)}
         <span class="dim mono" style="font-size:11px">${esc(x.zone_id)} · `
         +`c${x.cycle_id} · p=${(x.priority_score||0).toFixed(2)}`
-        +`${x.deduplicated?' · duplicate':''}</span></div>
+        +`${x.deduplicated?' · duplicate':''}</span>${skill}</div>
       <div class="ti" style="margin-top:5px">${trunc(x.title,80)}</div>
       <div class="ap">${trunc(x.approach,130)}</div>
     </div>`;}).join(''));

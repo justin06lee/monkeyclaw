@@ -354,6 +354,45 @@ CREATE TABLE IF NOT EXISTS mutation_operator_stats (
 );
 
 --------------------------------------------------------------------------------
+-- attack_skills — preloaded research-grounded ideation priors (Mode D)
+-- Derived index over red_team/attack_skills/*.yaml (the source of truth).
+-- Seeded at bootstrap by infra.seed_attack_skills; re-seedable, hash-keyed.
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS attack_skills (
+    skill_id                   TEXT PRIMARY KEY,
+    name                       TEXT NOT NULL,
+    kind                       TEXT NOT NULL DEFAULT 'pattern',  -- pattern|modifier
+    provenance                 TEXT NOT NULL,                    -- research|extrapolated
+    sources                    TEXT NOT NULL DEFAULT '[]',       -- JSON list
+    zone_ids                   TEXT NOT NULL,                    -- JSON list
+    failure_class              TEXT NOT NULL,
+    interaction_style          TEXT NOT NULL,
+    target_defense             TEXT NOT NULL,
+    tactic_tags                TEXT NOT NULL DEFAULT '[]',        -- JSON list
+    severity_hint              TEXT NOT NULL,
+    estimated_turns            INTEGER NOT NULL DEFAULT 5,
+    preconditions              TEXT NOT NULL DEFAULT '',
+    technique                  TEXT NOT NULL,
+    approach_template          TEXT NOT NULL,
+    success_criteria_template  TEXT NOT NULL,
+    example_payloads           TEXT NOT NULL DEFAULT '[]',        -- JSON list
+    variants                   TEXT NOT NULL DEFAULT '[]',        -- JSON list
+    expected_observables       TEXT NOT NULL DEFAULT '[]',        -- JSON list
+    mutation_seeds             TEXT NOT NULL DEFAULT '[]',        -- JSON list
+    content_hash               TEXT NOT NULL,
+    created_at                 TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at                 TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_attack_skills_kind ON attack_skills(kind);
+
+-- Vector index over (name + technique + approach_template) for zone retrieval.
+CREATE VIRTUAL TABLE IF NOT EXISTS attack_skills_vec USING vec0(
+    skill_id  TEXT PRIMARY KEY,
+    embedding FLOAT[384]
+);
+
+--------------------------------------------------------------------------------
 -- schema_meta — track schema version for migrations
 --------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS schema_meta (

@@ -175,3 +175,67 @@ def test_ideation_defaults_tactics_when_absent():
     assert t.target_defense == "identity"           # PROMPT-INJ zone fallback
     assert t.tactic_tags == []
     assert t.expected_observables == []
+
+
+# ---------------------------------------------------------------------------
+# Mode D — research-grounded (preloaded attack skills)
+# ---------------------------------------------------------------------------
+
+
+def _research_idea(skill_id: str) -> str:
+    return json.dumps([
+        {
+            "title": "Grounded attack",
+            "approach": "Adapt the skill to the victim.",
+            "success_criteria": "policy violated",
+            "estimated_turns": 2,
+            "novelty_notes": "from research",
+            "impact": "high",
+            "interaction_style": "context_injection",
+            "derived_from_skill": skill_id,
+        },
+    ])
+
+
+def test_research_grounded_mode_parses_ideas():
+    from red_team.ideation import tactics_for
+    llm = MockLLM()
+    llm.queue(_research_idea("AS-DIRECT-OVERRIDE"))
+    mcp = MockMCP(seed=0, verbose=False)
+    eng = IdeationEngine(llm, mcp, IdeationConfig())
+    ideas = eng.generate_for_zone(
+        _gap(), cycle_id=1, modes=("research_grounded",)
+    )
+    assert len(ideas) == 1
+    assert ideas[0].source_mode == "research_grounded"
+    assert tactics_for(ideas[0]).derived_from_skill == "AS-DIRECT-OVERRIDE"
+    # Provenance marker folded in so it survives log_idea persistence.
+    assert "[skill=AS-DIRECT-OVERRIDE]" in ideas[0].novelty_notes
+
+
+def test_research_grounded_invalid_skill_falls_back():
+    """A derived_from_skill the model invented falls back to a real skill."""
+    from red_team.ideation import tactics_for
+    llm = MockLLM()
+    llm.queue(_research_idea("AS-NOT-A-REAL-SKILL"))
+    mcp = MockMCP(seed=0, verbose=False)
+    eng = IdeationEngine(llm, mcp, IdeationConfig())
+    ideas = eng.generate_for_zone(
+        _gap(), cycle_id=1, modes=("research_grounded",)
+    )
+    assert len(ideas) == 1
+    attributed = tactics_for(ideas[0]).derived_from_skill
+    assert attributed.startswith("AS-")
+    assert attributed != "AS-NOT-A-REAL-SKILL"
+
+
+def test_research_grounded_empty_corpus_degrades():
+    """An unavailable corpus yields no ideas without raising."""
+    llm = MockLLM()
+    mcp = MockMCP(seed=0, verbose=False)
+    eng = IdeationEngine(llm, mcp, IdeationConfig())
+    eng._attack_skills = []  # simulate a missing/empty corpus
+    ideas = eng.generate_for_zone(
+        _gap(), cycle_id=1, modes=("research_grounded",)
+    )
+    assert ideas == []
