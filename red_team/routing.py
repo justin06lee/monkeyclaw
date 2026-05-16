@@ -198,6 +198,7 @@ def route_judgment(
     trajectory: Trajectory | None = None,
     near_misses: list[NearMissInput] | None = None,
     archive: EliteArchive | None = None,
+    technique_coverage=None,
     alert_severity_floor: str = "high",
 ) -> str:
     """Apply the routing rules. Returns the finding_id."""
@@ -218,6 +219,24 @@ def route_judgment(
 
     # Always update coverage — the zone was tested regardless of outcome.
     mcp.update_zone_coverage(judgment.zone_id, COVERAGE_INCREMENT)
+
+    # Corpus-driven ideation — record technique attempts/confirmations and
+    # persist tags. Best-effort: a coverage failure must not abort routing.
+    refs = list(getattr(idea, "techniques", None) or [])
+    if refs:
+        try:
+            mcp.log_idea_techniques(judgment.idea_id, refs)
+            if technique_coverage is not None:
+                technique_coverage.record_attempt(judgment.zone_id, refs)
+            if judgment.verdict in ("confirmed", "suspicious"):
+                mcp.log_finding_techniques(finding_id, refs)
+                if (technique_coverage is not None
+                        and judgment.verdict == "confirmed"):
+                    technique_coverage.record_confirmation(
+                        judgment.zone_id, refs)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("technique-coverage update failed for %s: %s",
+                        finding_id, e)
 
     # Every routed attempt maps into the MAP-Elites archive so diverse
     # high-performing niches (including clean near-misses) are preserved.

@@ -1,0 +1,8 @@
+atlas_version: "5.4.0"
+owasp_version: "2025"
+refreshed_at: "2026-05-15T00:00:00Z"
+refreshed_by: "monkeyclaw-team (initial vendoring)"
+source_urls:
+  - "https://atlas.mitre.org/"
+  - "https://owasp.org/www-project-top-10-for-large-language-model-applications/"
+corpus_version: "atlas-5.4.0+owasp-2025"

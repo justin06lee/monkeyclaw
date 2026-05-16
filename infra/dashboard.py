@@ -421,6 +421,29 @@ def _sandbox_runs(db_path: str) -> list[dict[str, Any]]:
     )
 
 
+def render_technique_coverage(mcp) -> str:
+    """The technique-coverage heatmap — zones x ATLAS techniques, additive
+    alongside the existing attack-coverage heatmap (corpus-ideation §9)."""
+    from red_team.taxonomy import load_taxonomy
+    from red_team.technique_coverage import TechniqueCoverageModel
+
+    model = TechniqueCoverageModel(mcp, load_taxonomy())
+    rows = []
+    for cov in model.map():
+        rows.append(
+            f"<tr><td>{cov.zone_id}</td>"
+            f"<td>{cov.exercised}/{cov.total}</td>"
+            f"<td>{cov.confirmed}/{cov.total}</td>"
+            f"<td>{cov.exercised_ratio:.0%}</td>"
+            f"<td>{', '.join(cov.gap_technique_ids) or '—'}</td></tr>")
+    return (
+        "<section><h2>Technique Coverage (MITRE ATLAS / OWASP LLM)</h2>"
+        "<table><thead><tr><th>Zone</th><th>Exercised</th>"
+        "<th>Confirmed</th><th>Exercised %</th><th>Gap techniques</th>"
+        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table></section>"
+    )
+
+
 def _all(db_path: str) -> dict[str, Any]:
     """Single atomic snapshot — the page renders from one fetch."""
     return {
@@ -1226,6 +1249,18 @@ def build_dashboard_app(db_path: str):
     def api_all() -> dict[str, Any]:
         """One atomic snapshot — the page renders everything from this."""
         return _all(db_path)
+
+    @app.get("/technique-coverage", response_class=HTMLResponse)
+    def technique_coverage() -> str:
+        """The MITRE ATLAS / OWASP technique-coverage heatmap — additive
+        view alongside the attack-coverage heatmap (corpus-ideation §9)."""
+        from infra.database import Database
+        from infra.mcp_server import MCPServer
+        db = Database(db_path)
+        try:
+            return render_technique_coverage(MCPServer(db))
+        finally:
+            db.close()
 
     # Individual endpoints retained for ad-hoc queries / backward compatibility.
     @app.get("/api/status")

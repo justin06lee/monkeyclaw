@@ -192,3 +192,14 @@ def test_dashboard_exposes_appeal_and_elo_panels(server):
     assert state["judge_appeals"]["override_count"] == 1
     assert "attack_elo" in state
     assert state["attack_elo"][0]["attack_id"] == "F1"
+
+
+def test_technique_coverage_view_renders(server):
+    from infra.dashboard import render_technique_coverage
+
+    server.bump_technique_coverage(
+        "PROMPT-INJ", "atlas", "AML.T0051", attempts=2, confirmations=1)
+    html = render_technique_coverage(server)
+    assert "Technique Coverage" in html
+    assert "PROMPT-INJ" in html
+    assert "AML.T0051" in html

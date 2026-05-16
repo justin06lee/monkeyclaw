@@ -200,9 +200,13 @@ class Strategist:
         if zone not in zones_by_id:
             zone = srcs[0].zone_id if srcs else ideas[0].zone_id
 
-        # Source mode — the dominant mode among the fused ideas.
+        # Source mode — the dominant mode among the fused ideas. A taxonomy
+        # source is preserved so a systematic technique-walk chain is still
+        # recognisable downstream (corpus-driven-ideation §9).
         if srcs:
             mode = Counter(s.source_mode for s in srcs).most_common(1)[0][0]
+            if any(s.source_mode == "taxonomy" for s in srcs):
+                mode = "taxonomy"
         else:
             mode = ideas[0].source_mode
 
@@ -225,7 +229,7 @@ class Strategist:
         # Priority descends with the strategist's own ordering.
         priority = round(1.0 - (rank / max(1, total)), 4)
 
-        return IdeaObject(
+        chain = IdeaObject(
             idea_id=f"CHAIN-LOCAL-{uuid.uuid4().hex[:10]}",
             cycle_id=cycle_id,
             zone_id=zone,
@@ -241,6 +245,18 @@ class Strategist:
             variation_notes=(
                 f"Synthesized from {len(srcs)} raw idea(s)." if srcs else None),
         )
+        # Corpus-driven ideation — union the technique tags of the fused
+        # source ideas onto the chain, deduped by (kind, technique_id).
+        union: list = []
+        seen: set[tuple[str, str]] = set()
+        for s in srcs:
+            for ref in getattr(s, "techniques", None) or []:
+                key = (ref.kind, ref.technique_id)
+                if key not in seen:
+                    seen.add(key)
+                    union.append(ref)
+        chain.techniques = union
+        return chain
 
 
 # ---------------------------------------------------------------------------

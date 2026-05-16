@@ -1,0 +1,12 @@
+# OWASP LLM Top 10 (2025 edition) — vendored snapshot. Read-only at runtime.
+categories:
+  - {id: LLM01, name: Prompt Injection, description: "Crafted inputs that manipulate the LLM's behaviour."}
+  - {id: LLM02, name: Sensitive Information Disclosure, description: "The LLM reveals confidential data."}
+  - {id: LLM03, name: Supply Chain, description: "Compromised models, data, or plugins in the supply chain."}
+  - {id: LLM04, name: Data and Model Poisoning, description: "Adversarial manipulation of training or context data."}
+  - {id: LLM05, name: Improper Output Handling, description: "Insufficient validation of LLM output before downstream use."}
+  - {id: LLM06, name: Excessive Agency, description: "The LLM agent is granted more autonomy or permission than safe."}
+  - {id: LLM07, name: System Prompt Leakage, description: "The system prompt or its secrets are exposed."}
+  - {id: LLM08, name: Vector and Embedding Weaknesses, description: "Weaknesses in retrieval, memory, and embedding handling."}
+  - {id: LLM09, name: Misinformation, description: "The LLM produces false or manipulated information."}
+  - {id: LLM10, name: Unbounded Consumption, description: "Resource exhaustion via uncontrolled LLM use."}

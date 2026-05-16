@@ -53,3 +53,9 @@ def test_judge_config_block_present():
     assert "elo_noise_band" in judge
     assert "elo_k" in judge
     assert "pairwise_compare_budget" in judge
+
+
+def test_ideation_taxonomy_config_defaults():
+    cfg = load_config()
+    assert cfg.ideation.taxonomy_mode is True
+    assert cfg.ideation.taxonomy_gap_top_n == 4

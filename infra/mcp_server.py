@@ -1108,6 +1108,86 @@ class MCPServer(MonkeyClawMCP):
                 (near_miss_id,))
 
     # ------------------------------------------------------------------
+    # Corpus-driven ideation — technique tags + coverage axis
+    # ------------------------------------------------------------------
+    def log_idea_techniques(self, idea_id, refs):
+        self._emit_invoked("log_idea_techniques")
+        params = [
+            (idea_id, r.kind, r.technique_id, r.corpus_version, r.resolved_by)
+            for r in refs
+        ]
+        if not params:
+            return
+        with self.db.lock():
+            self.db.executemany(
+                "INSERT INTO idea_techniques (idea_id, technique_kind, "
+                "technique_id, corpus_version, resolved_by) "
+                "VALUES (?, ?, ?, ?, ?)",
+                params,
+            )
+
+    def get_idea_techniques(self, idea_id):
+        from interfaces.types import TechniqueRef
+        rows = self.db.fetchall(
+            "SELECT * FROM idea_techniques WHERE idea_id = ?", (idea_id,))
+        return [TechniqueRef(
+            kind=r["technique_kind"], technique_id=r["technique_id"],
+            name="", corpus_version=r["corpus_version"],
+            resolved_by=r["resolved_by"]) for r in rows]
+
+    def log_finding_techniques(self, finding_id, refs):
+        self._emit_invoked("log_finding_techniques")
+        params = [
+            (finding_id, r.kind, r.technique_id, r.corpus_version,
+             r.resolved_by)
+            for r in refs
+        ]
+        if not params:
+            return
+        with self.db.lock():
+            self.db.executemany(
+                "INSERT INTO finding_techniques (finding_id, technique_kind, "
+                "technique_id, corpus_version, resolved_by) "
+                "VALUES (?, ?, ?, ?, ?)",
+                params,
+            )
+
+    def get_finding_techniques(self, finding_id):
+        from interfaces.types import TechniqueRef
+        rows = self.db.fetchall(
+            "SELECT * FROM finding_techniques WHERE finding_id = ?",
+            (finding_id,))
+        return [TechniqueRef(
+            kind=r["technique_kind"], technique_id=r["technique_id"],
+            name="", corpus_version=r["corpus_version"],
+            resolved_by=r["resolved_by"]) for r in rows]
+
+    def bump_technique_coverage(self, zone_id, technique_kind, technique_id,
+                                *, attempts=0, confirmations=0):
+        self._emit_invoked("bump_technique_coverage")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO technique_coverage (zone_id, technique_kind, "
+                "technique_id, attempts, confirmations, last_seen_at) "
+                "VALUES (?, ?, ?, ?, ?, datetime('now')) "
+                "ON CONFLICT(zone_id, technique_kind, technique_id) "
+                "DO UPDATE SET "
+                "attempts = attempts + ?, confirmations = confirmations + ?, "
+                "last_seen_at = datetime('now')",
+                (zone_id, technique_kind, technique_id, attempts,
+                 confirmations, attempts, confirmations),
+            )
+
+    def get_technique_coverage_rows(self, zone_id=None):
+        if zone_id is None:
+            rows = self.db.fetchall("SELECT * FROM technique_coverage")
+        else:
+            rows = self.db.fetchall(
+                "SELECT * FROM technique_coverage WHERE zone_id = ?",
+                (zone_id,))
+        return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
     # Notifications
     # ------------------------------------------------------------------
     def send_alert(self, message: str, severity: str) -> None:

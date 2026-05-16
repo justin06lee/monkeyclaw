@@ -144,6 +144,8 @@ class Pipeline:
             temperature=self.cfg.ideation.temperature,
             max_tokens_per_mode=self.cfg.ideation.max_tokens_per_mode,
             retry_max=self.cfg.ideation.retry_max,
+            taxonomy_mode=self.cfg.ideation.taxonomy_mode,
+            taxonomy_gap_top_n=self.cfg.ideation.taxonomy_gap_top_n,
         )
         execution_cfg = execution_cfg or ExecutionConfig(
             max_turns=self.cfg.lanes.max_turns,
@@ -154,7 +156,13 @@ class Pipeline:
             tier2_zones=set(self.cfg.judgment.tier2_zones),
             tier2_confidence_threshold=self.cfg.judgment.tier2_confidence_threshold,
         )
-        self.ideation = IdeationEngine(_client("red_ideation"), self.mcp, ideation_cfg)
+        from red_team.taxonomy import load_taxonomy
+        from red_team.technique_coverage import TechniqueCoverageModel
+        self._technique_coverage = TechniqueCoverageModel(
+            self.mcp, load_taxonomy())
+        self.ideation = IdeationEngine(
+            _client("red_ideation"), self.mcp, ideation_cfg,
+            technique_coverage=self._technique_coverage)
         self._ideation_cfg = ideation_cfg
         # B9 — model tournament. Disabled unless `red_team.model_tournament`
         # is configured; when enabled, extra entrants also ideate per zone.
@@ -251,6 +259,12 @@ class Pipeline:
                 seed = ""
             new_ideas = self.ideation.generate_for_zone(
                 gap, cycle_id, seed=seed)
+            from red_team.ideation import taxonomy_ideas
+            tax_ideas = taxonomy_ideas(self.ideation, gap, cycle_id)
+            if tax_ideas:
+                LOG.info("ideation taxonomy mode produced %d ideas",
+                         len(tax_ideas))
+                new_ideas.extend(tax_ideas)
             ideas_generated += len(new_ideas)
             candidates.extend(new_ideas)
             # B9 — when the model tournament is enabled, extra entrant models
@@ -444,6 +458,7 @@ class Pipeline:
             trajectory=trajectory,
             near_misses=near_misses,
             archive=self._archive,
+            technique_coverage=self._technique_coverage,
             alert_severity_floor=self.alert_severity_floor,
         )
         LOG.info(

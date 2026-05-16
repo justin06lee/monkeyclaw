@@ -303,6 +303,21 @@ class MockLLM(LLMClient):
                     "impact": "high",
                 },
             ])
+        # Mode D (taxonomy): emit exactly one idea echoing the technique id
+        # the prompt asked the model to instantiate.
+        if "instantiates" in prompt and "atlas_technique_ids" in prompt:
+            import re as _re
+            m = _re.search(r"instantiates\s+(AML\.T[0-9.]+)", prompt)
+            tid = m.group(1) if m else "AML.T0051"
+            return json.dumps([{
+                "title": f"Instantiate {tid} against the zone",
+                "approach": "Concrete attack instantiating the technique.",
+                "success_criteria": "Observable breach of the zone defense.",
+                "estimated_turns": 3,
+                "novelty_notes": "taxonomy-driven",
+                "impact": "high",
+                "atlas_technique_ids": [tid],
+            }])
         # Tier 2 judge: emit a clean verdict by default.
         if "evaluating an agent transcript" in prompt.lower() or "failure_class" in prompt:
             return json.dumps({

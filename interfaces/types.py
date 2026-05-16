@@ -54,6 +54,8 @@ ControlValidationKind = Literal["inline", "full"]
 ControlValidationStatus = Literal["ok", "errored"]
 DetectionRuleStatus = Literal["active", "candidate", "retired"]
 SandboxMode = Literal["ephemeral", "recover_only", "mock"]
+TechniqueKind = Literal["atlas", "owasp"]
+ResolvedBy = Literal["model", "keyword"]
 
 HarmStage = Literal[
     "HARD_REFUSAL",
@@ -1092,6 +1094,43 @@ class MutationAttempt:
     created_at: str
 
 
+# ---------------------------------------------------------------------------
+# Corpus-driven ideation — technique tagging + technique-coverage axis
+# (corpus-driven-ideation spec §8)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TechniqueRef:
+    """One technique/category tag attached to an idea or finding.
+
+    `kind` is 'atlas' or 'owasp'; `resolved_by` records whether the model
+    self-reported the id ('model') or Taxonomy.resolve() backfilled it
+    from the idea text ('keyword'). `corpus_version` makes a coverage
+    report reproducible across a taxonomy refresh."""
+
+    kind: str  # TechniqueKind
+    technique_id: str
+    name: str
+    corpus_version: str
+    resolved_by: str  # ResolvedBy
+
+
+@dataclass
+class TechniqueCoverage:
+    """The per-zone second coverage axis over ATLAS techniques + OWASP
+    categories: how many mapped techniques have been exercised (an idea
+    tagged with them was executed) vs. confirmed (a finding tagged)."""
+
+    zone_id: str
+    total: int
+    exercised: int
+    confirmed: int
+    exercised_ratio: float  # 0..1
+    confirmed_ratio: float  # 0..1
+    gap_technique_ids: list[str] = field(default_factory=list)
+
+
 __all__ = [
     "AgentPolicy",
     "AppealVerdict",
@@ -1164,12 +1203,16 @@ __all__ = [
     "ReproPackage",
     "ReproPackageInput",
     "ReproQueueStatus",
+    "ResolvedBy",
     "STAGE_TO_RESPONSE_MOVEMENT",
     "SandboxMode",
     "SeccompProfile",
     "SelfGovernanceCheck",
     "SelfGovernanceReport",
     "SessionTimeline",
+    "TechniqueCoverage",
+    "TechniqueKind",
+    "TechniqueRef",
     "TelemetryEvent",
     "TelemetryEventInput",
     "TelemetryEventType",

@@ -1,0 +1,96 @@
+# MITRE ATLAS v5.4.0 — vendored snapshot. Read-only at runtime.
+# Regenerated only by scripts/refresh_taxonomy_corpus.py.
+techniques:
+  - id: AML.T0051
+    name: LLM Prompt Injection
+    tactic: Initial Access
+    parent_id: null
+    description: >-
+      An adversary crafts malicious prompts as inputs to an LLM, causing the
+      LLM to act in unintended ways.
+    is_agentic: true
+  - id: AML.T0051.000
+    name: "LLM Prompt Injection: Direct"
+    tactic: Initial Access
+    parent_id: AML.T0051
+    description: An adversary directly supplies the malicious prompt to the LLM.
+    is_agentic: true
+  - id: AML.T0051.001
+    name: "LLM Prompt Injection: Indirect"
+    tactic: Initial Access
+    parent_id: AML.T0051
+    description: >-
+      An adversary plants the malicious prompt in content the LLM later ingests.
+    is_agentic: true
+  - id: AML.T0057
+    name: LLM Data Leakage
+    tactic: Exfiltration
+    parent_id: null
+    description: An adversary induces the LLM to reveal sensitive information.
+    is_agentic: false
+  - id: AML.T0024
+    name: Exfiltration via ML Inference API
+    tactic: Exfiltration
+    parent_id: null
+    description: An adversary exfiltrates data through the inference API.
+    is_agentic: false
+  - id: AML.T0010
+    name: ML Supply Chain Compromise
+    tactic: Initial Access
+    parent_id: null
+    description: An adversary compromises an ML artefact in the supply chain.
+    is_agentic: false
+  - id: AML.T0053
+    name: LLM Plugin Compromise
+    tactic: Execution
+    parent_id: null
+    description: An adversary abuses an LLM plugin or tool to run actions.
+    is_agentic: true
+  - id: AML.T0070
+    name: Agent Memory Poisoning
+    tactic: Persistence
+    parent_id: null
+    description: >-
+      An adversary writes adversarial content into an agent's persistent or
+      shared memory to influence later sessions.
+    is_agentic: true
+  - id: AML.T0072
+    name: Command and Scripting Interpreter
+    tactic: Execution
+    parent_id: null
+    description: An adversary executes commands through a scripting interpreter.
+    is_agentic: false
+  - id: AML.T0073
+    name: Privilege Escalation
+    tactic: Privilege Escalation
+    parent_id: null
+    description: An adversary gains higher-level permissions than granted.
+    is_agentic: false
+  - id: AML.T0074
+    name: Defense Evasion
+    tactic: Defense Evasion
+    parent_id: null
+    description: An adversary avoids detection by the security controls.
+    is_agentic: false
+  - id: AML.T0075
+    name: Model Serving Interception
+    tactic: Collection
+    parent_id: null
+    description: An adversary intercepts or swaps the served model.
+    is_agentic: false
+  - id: AML.T0076
+    name: Agent Impersonation
+    tactic: Defense Evasion
+    parent_id: null
+    description: >-
+      An adversary spoofs the identity of a trusted agent in an agent-to-agent
+      exchange.
+    is_agentic: true
+  - id: AML.T0077
+    name: LLM Multi-Turn Manipulation
+    tactic: Initial Access
+    parent_id: null
+    description: >-
+      An adversary manipulates the LLM across multiple turns to erode its
+      guardrails gradually.
+    is_agentic: true

@@ -206,3 +206,13 @@ def test_load_corpus_empty_evidence_raises(tmp_path):
     )
     with pytest.raises(ValueError):
         load_corpus(str(bad))
+
+
+def test_corpus_ideas_carry_technique_tags():
+    from red_team.ideation import techniques_for
+    from red_team.policy_corpus import corpus_to_ideas
+    from red_team.taxonomy import load_taxonomy
+
+    ideas = corpus_to_ideas(cycle_id=1, taxonomy=load_taxonomy())
+    # At least one corpus case maps onto a recognised technique.
+    assert any(techniques_for(i) for i in ideas)
