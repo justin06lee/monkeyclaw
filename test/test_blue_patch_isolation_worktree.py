@@ -74,3 +74,46 @@ def test_diff_applies_rejects_a_conflicting_diff(tmp_path, db):
     assert result.checked is True
     assert result.applied is False
     assert result.stderr  # git apply --check emitted a reason
+
+
+def test_prepare_creates_then_tears_down_worktree(tmp_path, db):
+    from pathlib import Path
+
+    from blue_team.patch_isolation import PatchIsolation, PatchIsolationConfig
+    from infra.patch_builds_store import PatchBuildsStore
+    from test._git_repo_fixture import GOOD_DIFF, build_repo, make_patch
+
+    repo, base = build_repo(tmp_path / "nemoclaw")
+    iso = PatchIsolation(
+        provisioner=None, store=PatchBuildsStore(db),
+        cfg=PatchIsolationConfig(
+            nemoclaw_repo_path=repo, base_ref=base,
+            worktree_root=str(tmp_path / "wt")))
+    patch = make_patch("P1", GOOD_DIFF)
+    with iso.prepare(patch) as build:
+        wt = build.worktree_path
+        assert wt is not None
+        assert Path(wt).exists()
+        # provisioner is None -> no victim built, status records that.
+        assert build.build_status in ("built", "build_failed")
+    assert not Path(wt).exists()           # worktree gone after context exit
+    row = db.fetchone(
+        "SELECT * FROM patch_builds WHERE build_id = ?", (build.build_id,))
+    assert row["torn_down"] == 1
+
+
+def test_prepare_apply_failed_yields_apply_failed_status(tmp_path, db):
+    from blue_team.patch_isolation import PatchIsolation, PatchIsolationConfig
+    from infra.patch_builds_store import PatchBuildsStore
+    from test._git_repo_fixture import CONFLICTING_DIFF, build_repo, make_patch
+
+    repo, base = build_repo(tmp_path / "nemoclaw")
+    iso = PatchIsolation(
+        provisioner=None, store=PatchBuildsStore(db),
+        cfg=PatchIsolationConfig(
+            nemoclaw_repo_path=repo, base_ref=base,
+            worktree_root=str(tmp_path / "wt")))
+    patch = make_patch("P2", CONFLICTING_DIFF)
+    with iso.prepare(patch) as build:
+        assert build.build_status == "apply_failed"
+        assert build.diff_result.applied is False
