@@ -63,6 +63,10 @@ ChainTermination = Literal["completed", "chain_broken", "max_turns", "error"]
 IsolationMode = Literal["live", "mock"]
 PatchBuildStatus = Literal["built", "apply_failed", "build_failed", "mock"]
 ReproOutcome = Literal["reproduced", "flaky", "not_reproduced", "pending"]
+ApprovalDecision = Literal["ask", "allow", "deny", "expired"]
+GatePosture = Literal["auto_allow", "require_approval"]
+ApprovalOutcomeKind = Literal["ALLOW", "DENY", "PENDING"]
+ApprovalRequestStatus = Literal["pending", "resolved", "expired"]
 
 HarmStage = Literal[
     "HARD_REFUSAL",
@@ -1406,6 +1410,48 @@ class GeneralizationRound:
 
 
 # ---------------------------------------------------------------------------
+# Approval & PR service — severity-gated authorization (approval spec §9)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ApprovalRequest:
+    """A pending request for a human decision on a verified patch."""
+
+    request_id: str
+    patch_id: str
+    vuln_ids: list[str]
+    zone_id: str
+    severity: str
+    posture: str  # GatePosture
+    ask_expiry: str | None  # ISO timestamp, None for no expiry
+    generalization_status: str | None  # GeneralizationStatus | None
+    created_at: str
+    status: str  # ApprovalRequestStatus
+
+
+@dataclass
+class ApprovalEvent:
+    """One row of the append-only approval_events audit log (read shape)."""
+
+    event_id: str
+    request_id: str
+    patch_id: str
+    vuln_ids: list[str]
+    zone_id: str
+    severity: str
+    decision: str  # ApprovalDecision
+    posture: str  # GatePosture
+    approver: str  # operator id or "system"
+    reason: str
+    ask_expiry: str | None
+    grant_expiry: str | None
+    generalization_status: str | None
+    pr_url: str | None
+    created_at: str
+
+
+# ---------------------------------------------------------------------------
 # Learned ranking model — the structured trace dataset (spec §7)
 # ---------------------------------------------------------------------------
 
@@ -1515,8 +1561,54 @@ class Preference:
     created_at: str
 
 
+@dataclass
+class ApprovalEventInput:
+    """Write shape for an approval_events row — server fills event_id +
+    created_at."""
+
+    request_id: str
+    patch_id: str
+    vuln_ids: list[str]
+    zone_id: str
+    severity: str
+    decision: str  # ApprovalDecision
+    posture: str  # GatePosture
+    approver: str
+    reason: str
+    ask_expiry: str | None = None
+    grant_expiry: str | None = None
+    generalization_status: str | None = None
+    pr_url: str | None = None
+
+
+@dataclass
+class ApprovalOutcome:
+    """What approval_service.request() returns."""
+
+    decision: str  # ApprovalOutcomeKind
+    request_id: str
+    event: ApprovalEvent | None  # the allow event for an immediate auto-allow
+
+
+@dataclass
+class PullRequestDraft:
+    """The result of pr_generator.draft() for an approved patch."""
+
+    branch: str
+    pr_url: str
+    commit_sha: str
+    created_at: str
+
+
 __all__ = [
     "AgentPolicy",
+    "ApprovalDecision",
+    "ApprovalEvent",
+    "ApprovalEventInput",
+    "ApprovalOutcome",
+    "ApprovalOutcomeKind",
+    "ApprovalRequest",
+    "ApprovalRequestStatus",
     "AttackChain",
     "AppealVerdict",
     "ArchiveCell",
@@ -1564,6 +1656,7 @@ __all__ = [
     "GeneralizationResult",
     "GeneralizationRound",
     "GeneralizationRoundInput",
+    "GatePosture",
     "GeneralizationStatus",
     "GraphBackend",
     "HARM_LADDER",
@@ -1608,6 +1701,7 @@ __all__ = [
     "PreferenceInput",
     "Prevention",
     "ProcessEvent",
+    "PullRequestDraft",
     "PurpleCycleResult",
     "QueueState",
     "QueueTransition",

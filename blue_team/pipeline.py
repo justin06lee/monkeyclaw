@@ -98,6 +98,9 @@ from blue_team.repro_writer import ReproWriter, ReproWriterInput
 from blue_team.root_cause import RootCauseConfig, RootCauseLocator, RootCauseResult
 from blue_team.test_generator import RegressionTestPair, TestGenerator
 from blue_team.triage import FixTask, TriageAgent, TriageConfig
+from infra.approval_service import ApprovalService
+from infra.notifications import AlertDispatcher
+from infra.pr_generator import PRGenerator
 from purple_team.generalization_loop import (
     GeneralizationConfig,
     GeneralizationLoop,
@@ -275,6 +278,25 @@ class Pipeline:
             generalization_cfg or load_generalization_config())
         self.generalization_enabled = self.generalization_cfg.enabled
 
+        # Severity-gated approval service — verified patches route through
+        # this gate before being finalized (approval spec §11).
+        self.approval_service = ApprovalService(
+            mcp=self.mcp,
+            dispatcher=AlertDispatcher(self.cfg.notifications),
+            cfg=self.cfg.approvals,
+        )
+        # Patches held pending approval keep their PatchCandidate +
+        # RegressionTestPair + FixTask here so the resolved-request poll can
+        # finalize them later (the pipeline does not persist patch rows).
+        self._pending_patches: dict[str, PatchCandidate] = {}
+        self._pending_test_pairs: dict[str, RegressionTestPair] = {}
+        self._pending_tasks: dict[str, FixTask] = {}
+        self._pending_outcomes: dict[str, VerifyOutcome] = {}
+
+        # Optional post-approval PR drafting (approval spec §6.3).
+        self.pr_generator = PRGenerator(
+            base_branch=self.cfg.approvals.pr_base_branch)
+
     # ==================================================================
     # process_repro_queue
     # ==================================================================
@@ -410,14 +432,20 @@ class Pipeline:
         batch. Approved patches are committed via add_regression_test +
         coverage reset + alert.
         """
+        # Lapse stale requests and finalize any newly-resolved approvals
+        # before draining the queue (approval spec §11).
+        finalized_resolved = self._finalize_resolved_approvals()
+
         packages = list(self.mcp.get_blue_team_queue())
         if not packages:
-            return 0
+            return finalized_resolved
         tasks = self.triage.triage(packages)
-        approved = 0
+        approved = finalized_resolved
         for task in tasks:
             outcome = self._patch_task(task)
-            if outcome is not None and outcome.approved:
+            # Count only finalized patches — a verified-but-PENDING patch is
+            # held by the approval gate, not finalized (approval spec §11).
+            if outcome is not None and outcome.approved and outcome.finalized:
                 approved += 1
         return approved
 
@@ -463,10 +491,14 @@ class Pipeline:
                                 "%s — finalizing the verified patch",
                                 task.task_id, e)
                 if gen is None or gen.status == "generalized":
-                    self._on_patch_generalized(
+                    finalized = self._on_patch_generalized(
                         task, cand, pair, outcome, gen)
                 else:  # unconverged
-                    self._on_patch_unconverged(task, cand, pair, gen)
+                    finalized = self._on_patch_unconverged(
+                        task, cand, pair, outcome, gen)
+                # A PENDING patch passed verification but is not finalized;
+                # signal that to process_blue_queue via `finalized`.
+                outcome.finalized = finalized
                 return outcome
             LOG.info(
                 "task %s: patch %s rejected at %s — %s",
@@ -483,47 +515,189 @@ class Pipeline:
         patch: PatchCandidate,
         pair: RegressionTestPair,
         outcome: VerifyOutcome,
+    ) -> bool:
+        """A patch passed the six gates — gate it through the approval
+        service before finalizing (approval spec §11).
+
+        Returns True only when the patch was finalized this call (an
+        auto-allow); a PENDING patch is held and returns False.
+        """
+        generalization = getattr(outcome, "generalization_status", None)
+        try:
+            decision = self.approval_service.request(
+                patch, severity=task.severity, generalization=generalization)
+        except Exception as e:  # noqa: BLE001
+            # A service crash leaves the patch in the safe state — unfinalized.
+            LOG.exception("approval service failed for %s: %s",
+                          patch.patch_id, e)
+            self._safe_mark_patch(patch.patch_id, "pending_approval")
+            return False
+
+        if decision.decision == "ALLOW":
+            self._finalize_patch(
+                task.task_id, task.severity, list(task.vuln_ids),
+                patch.zone_id, patch, pair.positive_test, outcome.notes,
+                task.primary_package)
+            return True
+        if decision.decision == "PENDING":
+            LOG.info("patch %s held pending approval (request %s)",
+                     patch.patch_id, decision.request_id)
+            self._safe_mark_patch(patch.patch_id, "pending_approval")
+            self._pending_patches[patch.patch_id] = patch
+            self._pending_test_pairs[patch.patch_id] = pair
+            self._pending_tasks[patch.patch_id] = task
+            self._pending_outcomes[patch.patch_id] = outcome
+            return False
+        # DENY (cannot occur from request(), kept for completeness).
+        self._safe_mark_patch(patch.patch_id, "rejected")
+        self._on_task_exhausted(task)
+        return False
+
+    def _safe_mark_patch(self, patch_id: str, status: str) -> None:
+        """mark_patch_status, swallowing FSM/transition errors — used for the
+        approval-gate statuses which the patch may not have an FSM edge for."""
+        try:
+            self.mcp.mark_patch_status(patch_id, status)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("mark_patch_status(%s, %s) failed: %s",
+                        patch_id, status, e)
+
+    def _finalize_patch(
+        self,
+        task_id: str,
+        severity: str,
+        vuln_ids: list[str],
+        zone_id: str,
+        patch: PatchCandidate,
+        positive_test,  # noqa: ANN001 — RegressionTestInput
+        notes: str,
+        package,  # noqa: ANN001 — ReproPackage
     ) -> None:
+        """Commit an approved patch: regression test, coverage reset, alert,
+        lifecycle close. The original _on_patch_approved body."""
         # 1. Add the positive regression test to the permanent suite.
         try:
-            test_id = self.mcp.add_regression_test(pair.positive_test)
+            test_id = self.mcp.add_regression_test(positive_test)
         except Exception as e:  # noqa: BLE001
             LOG.warning("add_regression_test failed: %s", e)
             test_id = "(uncommitted)"
 
         # 2. Reset zone coverage to 0.3 per spec §4.4.
         try:
-            self._reset_zone_coverage(patch.zone_id)
+            self._reset_zone_coverage(zone_id)
         except Exception as e:  # noqa: BLE001
-            LOG.warning("coverage reset failed for %s: %s", patch.zone_id, e)
+            LOG.warning("coverage reset failed for %s: %s", zone_id, e)
 
         # 3. Send alert.
         self.mcp.send_alert(
-            f"[PATCH APPROVED / {task.severity}] task={task.task_id} "
+            f"[PATCH APPROVED / {severity}] task={task_id} "
             f"patch={patch.patch_id} approach={patch.approach!r} "
-            f"vulns={','.join(task.vuln_ids)} (zone {patch.zone_id})",
-            severity=task.severity,
+            f"vulns={','.join(vuln_ids)} (zone {zone_id})",
+            severity=severity,
         )
 
         LOG.info(
             "patch APPROVED: task=%s patch=%s test=%s vulns=%s notes=%s",
-            task.task_id, patch.patch_id, test_id,
-            task.vuln_ids, outcome.notes,
+            task_id, patch.patch_id, test_id, vuln_ids, notes,
         )
+
+        # 3b. Optional post-approval PR draft (approval spec §6.3).
+        if self.cfg.approvals.auto_pr:
+            self._maybe_open_pr(patch, package)
 
         # 4. Close the lifecycle loop: package patching->verified, and each
         #    linked finding in_progress->patched->verified.
-        pkg = task.primary_package
+        if package is not None:
+            try:
+                self.mcp.mark_repro_package_status(
+                    package.package_id, "verified")
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("mark package %s verified failed: %s",
+                            package.package_id, e)
+            try:
+                self.mcp.mark_finding_patched(package.finding_id)
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("finding %s verify transition failed: %s",
+                            package.finding_id, e)
+
+    def _maybe_open_pr(self, patch: PatchCandidate, package) -> None:  # noqa: ANN001
+        """Draft a PR for an approved patch — non-fatal on any failure."""
         try:
-            self.mcp.mark_repro_package_status(pkg.package_id, "verified")
+            events = self.mcp.get_approval_events(patch.patch_id)
+            allow = next((e for e in events if e.decision == "allow"), None)
+            if allow is None:
+                return
+            draft = self.pr_generator.draft(patch, package, allow)
+            if draft is None:
+                self.mcp.send_alert(
+                    f"[PR NOT OPENED] patch={patch.patch_id} — PR generation "
+                    f"failed; open the PR by hand. Approval still stands.",
+                    severity="medium")
+                return
+            LOG.info("PR drafted for %s: %s", patch.patch_id, draft.pr_url)
         except Exception as e:  # noqa: BLE001
-            LOG.warning("mark package %s verified failed: %s",
-                        pkg.package_id, e)
+            LOG.warning("auto-PR step failed for %s: %s", patch.patch_id, e)
+
+    def _finalize_resolved_approvals(self) -> int:
+        """Sweep expiry, then finalize patches whose approval is now `allow`.
+
+        Patches held pending approval are tracked on this Pipeline instance
+        (`_pending_patches`) — the pipeline does not persist patch rows, so
+        the resolved poll walks the stash and consults the approval audit
+        log for each. Returns the count finalized this pass.
+        """
         try:
-            self.mcp.mark_finding_patched(pkg.finding_id)
+            self.approval_service.expire_stale()
         except Exception as e:  # noqa: BLE001
-            LOG.warning("finding %s verify transition failed: %s",
-                        pkg.finding_id, e)
+            LOG.warning("expire_stale failed: %s", e)
+
+        finalized = 0
+        for patch_id in list(self._pending_patches.keys()):
+            patch = self._pending_patches[patch_id]
+            try:
+                events = self.mcp.get_approval_events(patch_id)
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("get_approval_events failed for %s: %s",
+                            patch_id, e)
+                continue
+            decisions = [e.decision for e in events]
+            if "expired" in decisions:
+                LOG.info("patch %s approval expired — abandoning", patch_id)
+                self._safe_mark_patch(patch_id, "rejected")
+                self._drop_pending(patch_id)
+            elif "deny" in decisions:
+                LOG.info("patch %s approval denied", patch_id)
+                self._safe_mark_patch(patch_id, "rejected")
+                self._drop_pending(patch_id)
+            elif "allow" in decisions:
+                self._safe_mark_patch(patch_id, "approved")
+                self._finalize_patch_by_id(patch)
+                finalized += 1
+        return finalized
+
+    def _drop_pending(self, patch_id: str) -> None:
+        self._pending_patches.pop(patch_id, None)
+        self._pending_test_pairs.pop(patch_id, None)
+        self._pending_tasks.pop(patch_id, None)
+        self._pending_outcomes.pop(patch_id, None)
+
+    def _finalize_patch_by_id(self, patch: PatchCandidate) -> None:
+        """Re-finalize a patch whose approval has resolved to `allow`, using
+        the RegressionTestPair / FixTask stashed when it went PENDING."""
+        pair = self._pending_test_pairs.get(patch.patch_id)
+        task = self._pending_tasks.get(patch.patch_id)
+        outcome = self._pending_outcomes.get(patch.patch_id)
+        self._drop_pending(patch.patch_id)
+        if pair is None or task is None:
+            LOG.warning(
+                "cannot finalize resolved patch %s: no stashed test pair/task",
+                patch.patch_id)
+            return
+        notes = outcome.notes if outcome is not None else ""
+        self._finalize_patch(
+            task.task_id, task.severity, list(task.vuln_ids),
+            patch.zone_id, patch, pair.positive_test, notes,
+            task.primary_package)
 
     # ==================================================================
     # Patch generalization loop (patch-generalization-loop spec §10)
@@ -579,14 +753,15 @@ class Pipeline:
             except Exception as e:  # noqa: BLE001
                 LOG.warning("generalization victim teardown failed: %s", e)
 
-    def _on_patch_generalized(self, task, patch, pair, outcome, gen):
+    def _on_patch_generalized(self, task, patch, pair, outcome, gen) -> bool:
         """Finalize a GENERALIZED patch. If a re-patch round happened (the
         patch changed from round 0), additionally commit one regression test
         per bypassed-and-now-closed operator so the closed bypasses stay
         closed (spec §10)."""
-        self._on_patch_approved(task, patch, pair, outcome)
+        outcome.generalization_status = "generalized" if gen is not None else None
+        finalized = self._on_patch_approved(task, patch, pair, outcome)
         if gen is None:
-            return
+            return finalized
         bypassed_ops: set[str] = set()
         for rnd in gen.rounds:
             bypassed_ops.update(rnd.bypass_operators)
@@ -598,6 +773,7 @@ class Pipeline:
             except Exception as e:  # noqa: BLE001
                 LOG.warning("closed-bypass test commit failed for %s: %s",
                             operator, e)
+        return finalized
 
     def _make_bypass_regression_test(self, task, pair, operator):
         """A regression test asserting the `operator`-mutated variant of the
@@ -612,7 +788,7 @@ class Pipeline:
             vuln_id=f"{base.vuln_id}-mut-{operator}",
         )
 
-    def _on_patch_unconverged(self, task, patch, pair, gen):
+    def _on_patch_unconverged(self, task, patch, pair, outcome, gen) -> bool:
         """An UNCONVERGED generalization result: the last verified patch is
         retained (it still blocks the original finding) but the zone is NOT
         proven fixed. No coverage reset; route to the approval service for
@@ -635,6 +811,8 @@ class Pipeline:
         LOG.warning("patch UNCONVERGED: task=%s patch=%s reason=%s "
                     "open_bypasses=%d", task.task_id, patch.patch_id,
                     gen.reason, len(gen.open_bypasses))
+        outcome.generalization_status = "unconverged"
+        return self._on_patch_approved(task, patch, pair, outcome)
 
     def _reset_zone_coverage(self, zone_id: str) -> None:
         """Snap the zone's coverage score to 0.3.

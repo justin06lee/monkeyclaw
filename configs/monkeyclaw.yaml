@@ -258,6 +258,18 @@ purple:
     enabled: true
     max_rounds: 3   # round 0 (initial) + this many re-patch rounds
 
+approvals:
+  posture:
+    critical: require_approval
+    high: require_approval
+    medium: auto_allow
+    low: auto_allow
+  ask_expiry_hours: 72
+  grant_expiry_hours: 0
+  auto_pr: false
+  operator_id: operator
+  pr_base_branch: master
+
 red:
   archive:
     # B5 MAP-Elites — niche_gap exploration multiplier band and seed breadth.

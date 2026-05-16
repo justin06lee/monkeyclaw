@@ -24,6 +24,9 @@ if TYPE_CHECKING:
     from infra.state_machine import TransitionEngine
 from interfaces.types import (
     AppealVerdict,
+    ApprovalEvent,
+    ApprovalEventInput,
+    ApprovalRequest,
     ArchiveCell,
     ArchiveUpdateInput,
     AttackChain,
@@ -56,6 +59,7 @@ from interfaces.types import (
     MutationOperatorStat,
     NearMiss,
     NearMissInput,
+    PatchCandidate,
     PatchCandidateInput,
     PolicyCorpusResult,
     PolicyCorpusResultInput,
@@ -993,6 +997,101 @@ class MCPServer(MonkeyClawMCP):
         self.transitions.transition(
             entity="finding", entity_id=finding_id, to_state="verified",
             actor="blue_pipeline", reason="patch approved",
+        )
+
+    # ------------------------------------------------------------------
+    # Approval service — severity-gated authorization audit log (spec §9)
+    # ------------------------------------------------------------------
+    def log_approval_event(self, event: ApprovalEventInput) -> str:
+        event_id = f"APE-{uuid.uuid4().hex[:14]}"
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO approval_events(event_id, request_id, patch_id, "
+                "vuln_ids, zone_id, severity, decision, posture, approver, "
+                "reason, ask_expiry, grant_expiry, generalization_status, "
+                "pr_url, created_at) VALUES "
+                "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))",
+                (event_id, event.request_id, event.patch_id,
+                 json.dumps(event.vuln_ids), event.zone_id, event.severity,
+                 event.decision, event.posture, event.approver, event.reason,
+                 event.ask_expiry, event.grant_expiry,
+                 event.generalization_status, event.pr_url),
+            )
+        return event_id
+
+    def get_approval_events(self, patch_id: str) -> list[ApprovalEvent]:
+        rows = self.db.fetchall(
+            "SELECT * FROM approval_events WHERE patch_id = ? "
+            "ORDER BY created_at ASC", (patch_id,))
+        return [self._row_to_approval_event(r) for r in rows]
+
+    def get_approval_events_by_request(
+        self, request_id: str,
+    ) -> list[ApprovalEvent]:
+        rows = self.db.fetchall(
+            "SELECT * FROM approval_events WHERE request_id = ? "
+            "ORDER BY created_at ASC", (request_id,))
+        return [self._row_to_approval_event(r) for r in rows]
+
+    def get_pending_approvals(self) -> list[ApprovalRequest]:
+        # request_ids with an `ask` row but no allow/deny/expired row.
+        rows = self.db.fetchall(
+            "SELECT * FROM approval_events WHERE decision = 'ask' "
+            "ORDER BY created_at ASC")
+        resolved = {r["request_id"] for r in self.db.fetchall(
+            "SELECT DISTINCT request_id FROM approval_events "
+            "WHERE decision IN ('allow', 'deny', 'expired')")}
+        out: list[ApprovalRequest] = []
+        for r in rows:
+            if r["request_id"] in resolved:
+                continue
+            out.append(ApprovalRequest(
+                request_id=r["request_id"], patch_id=r["patch_id"],
+                vuln_ids=json.loads(r["vuln_ids"]), zone_id=r["zone_id"],
+                severity=r["severity"], posture=r["posture"],
+                ask_expiry=r["ask_expiry"],
+                generalization_status=r["generalization_status"],
+                created_at=r["created_at"], status="pending",
+            ))
+        return out
+
+    def get_resolved_allows(self) -> list[ApprovalEvent]:
+        rows = self.db.fetchall(
+            "SELECT * FROM approval_events WHERE decision = 'allow' "
+            "AND grant_expiry IS NOT NULL ORDER BY created_at ASC")
+        expired = {r["request_id"] for r in self.db.fetchall(
+            "SELECT DISTINCT request_id FROM approval_events "
+            "WHERE decision = 'expired'")}
+        return [self._row_to_approval_event(r) for r in rows
+                if r["request_id"] not in expired]
+
+    def get_patches_by_status(self, status: str) -> list[PatchCandidate]:
+        rows = self.db.fetchall(
+            "SELECT * FROM patches WHERE status = ? ORDER BY created_at ASC",
+            (status,))
+        return [self._row_to_patch_candidate(r) for r in rows]
+
+    @staticmethod
+    def _row_to_approval_event(r) -> ApprovalEvent:  # noqa: ANN001
+        return ApprovalEvent(
+            event_id=r["event_id"], request_id=r["request_id"],
+            patch_id=r["patch_id"], vuln_ids=json.loads(r["vuln_ids"]),
+            zone_id=r["zone_id"], severity=r["severity"],
+            decision=r["decision"], posture=r["posture"],
+            approver=r["approver"], reason=r["reason"],
+            ask_expiry=r["ask_expiry"], grant_expiry=r["grant_expiry"],
+            generalization_status=r["generalization_status"],
+            pr_url=r["pr_url"], created_at=r["created_at"],
+        )
+
+    @staticmethod
+    def _row_to_patch_candidate(r) -> PatchCandidate:  # noqa: ANN001
+        return PatchCandidate(
+            patch_id=r["patch_id"], vuln_ids=json.loads(r["vuln_ids"]),
+            zone_id=r["zone_id"], approach=r["approach"],
+            invasiveness=r["invasiveness"], diff=r["diff"],
+            explanation=r["explanation"], side_effects=r["side_effects"] or "",
+            status=r["status"],
         )
 
     # ------------------------------------------------------------------

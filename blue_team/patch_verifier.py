@@ -303,6 +303,9 @@ class VerifyOutcome:
     variant_results: list = field(default_factory=list)
     detection_verdicts: list = field(default_factory=list)
     isolation_mode: str = "mock"  # IsolationMode — proven live or on mock surface
+    # Set by the pipeline after the approval gate: True only when the patch
+    # was finalized (auto-allowed); False while held pending approval.
+    finalized: bool = False
 
 
 @dataclass

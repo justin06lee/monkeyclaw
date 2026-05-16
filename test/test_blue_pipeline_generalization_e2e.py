@@ -147,6 +147,13 @@ def _build_pipeline_to_blue_queue(tmp_path: Path, gen_cfg):
     return pipeline
 
 
+def _auto_allow_high_severity(pipe: Pipeline) -> None:
+    """These generalization tests exercise the finalize path; the approval
+    branch separately covers high-severity pending behavior."""
+    pipe.cfg.approvals.posture.high = "auto_allow"
+    pipe.cfg.approvals.posture.critical = "auto_allow"
+
+
 def test_process_blue_queue_runs_the_generalization_loop(tmp_path):
     """An approved patch triggers a generalization loop run; the table is
     reachable and the loop is enabled on the pipeline."""
@@ -179,6 +186,7 @@ def test_unconverged_result_does_not_reset_coverage(tmp_path, monkeypatch):
 
     pipe = _build_pipeline_to_blue_queue(
         tmp_path, GeneralizationConfig(enabled=True))
+    _auto_allow_high_severity(pipe)
     monkeypatch.setattr(pipe, "_run_generalization", _fake_run)
     monkeypatch.setattr(pipe, "_reset_zone_coverage",
                         lambda zone: reset_calls.append(zone))
@@ -199,6 +207,7 @@ def test_generalized_result_runs_the_normal_approval_path(tmp_path,
 
     pipe = _build_pipeline_to_blue_queue(
         tmp_path, GeneralizationConfig(enabled=True))
+    _auto_allow_high_severity(pipe)
     monkeypatch.setattr(pipe, "_run_generalization", _fake_run)
     monkeypatch.setattr(pipe, "_reset_zone_coverage",
                         lambda zone: reset_calls.append(zone))
@@ -216,6 +225,7 @@ def test_generalized_after_a_bounce_commits_closed_bypass_tests(
 
     pipe = _build_pipeline_to_blue_queue(
         tmp_path, GeneralizationConfig(enabled=True))
+    _auto_allow_high_severity(pipe)
 
     committed = []
     monkeypatch.setattr(pipe.mcp, "add_regression_test",

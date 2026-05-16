@@ -207,6 +207,34 @@ CREATE INDEX IF NOT EXISTS idx_patches_zone   ON patches(zone_id);
 CREATE INDEX IF NOT EXISTS idx_patches_status ON patches(status);
 
 --------------------------------------------------------------------------------
+-- approval_events — severity-gated approval audit log (approval spec §9).
+-- Mirrored from migration 0019. Append-only at the application layer.
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS approval_events (
+    event_id              TEXT PRIMARY KEY,
+    request_id            TEXT NOT NULL,
+    patch_id              TEXT NOT NULL,
+    vuln_ids              TEXT NOT NULL DEFAULT '[]',  -- JSON list
+    zone_id               TEXT NOT NULL,
+    severity              TEXT NOT NULL,
+    decision              TEXT NOT NULL,            -- ask|allow|deny|expired
+    posture               TEXT NOT NULL,            -- auto_allow|require_approval
+    approver              TEXT NOT NULL,            -- operator id or 'system'
+    reason                TEXT NOT NULL DEFAULT '',
+    ask_expiry            TEXT,
+    grant_expiry          TEXT,
+    generalization_status TEXT,                     -- generalized|unconverged
+    pr_url                TEXT,
+    created_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_approval_events_decision
+    ON approval_events(decision, created_at);
+CREATE INDEX IF NOT EXISTS idx_approval_events_patch
+    ON approval_events(patch_id);
+CREATE INDEX IF NOT EXISTS idx_approval_events_request
+    ON approval_events(request_id);
+
+--------------------------------------------------------------------------------
 -- patch_variant_results / patch_detection_results — verifier gate hardening
 -- (verifier-gate-hardening spec §7). Mirrored from migration 0013.
 --------------------------------------------------------------------------------
@@ -867,7 +895,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 
 INSERT OR IGNORE INTO schema_meta(key, value) VALUES
-    ('schema_version', '18'),
+    ('schema_version', '19'),
     ('feature_schema_version', '1'),
     ('taxonomy_corpus_version', 'atlas-5.4.0+owasp-2025'),
     ('embedding_model', 'sentence-transformers/all-MiniLM-L6-v2'),

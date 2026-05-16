@@ -105,6 +105,20 @@ def _clean_mock(seed: int = 0) -> MockMCP:
     return mcp
 
 
+def _auto_allow_cfg():
+    """A MonkeyClawConfig whose approval posture auto-allows every severity —
+    these e2e tests exercise patch finalization, not the approval gate."""
+    from interfaces.config_schema import (
+        ApprovalPostureConfig,
+        ApprovalsConfig,
+        MonkeyClawConfig,
+    )
+    return MonkeyClawConfig(approvals=ApprovalsConfig(
+        posture=ApprovalPostureConfig(
+            critical="auto_allow", high="auto_allow",
+            medium="auto_allow", low="auto_allow")))
+
+
 def _seed_finding(mcp: MockMCP, escape: Path) -> str:
     """Plant a confirmed finding + push to repro queue. Returns finding_id."""
     fid = mcp.log_finding(FindingInput(
@@ -246,7 +260,8 @@ def test_process_blue_queue_approves_patch_and_adds_regression_test(tmp_path: Pa
 
     policy = default_policy()
     policy.allowed_paths = [str(allowed)]
-    pipeline = Pipeline(mcp=mcp, provisioner=provisioner, llm=llm, policy=policy)
+    pipeline = Pipeline(mcp=mcp, provisioner=provisioner, llm=llm,
+                        policy=policy, cfg=_auto_allow_cfg())
     pipeline.process_repro_queue()
     assert len(mcp._repro_packages) == 1
 
@@ -349,7 +364,8 @@ def test_run_regression_after_patch_approval(tmp_path: Path):
 
     policy = default_policy()
     policy.allowed_paths = [str(allowed)]
-    pipeline = Pipeline(mcp=mcp, provisioner=provisioner, llm=llm, policy=policy)
+    pipeline = Pipeline(mcp=mcp, provisioner=provisioner, llm=llm,
+                        policy=policy, cfg=_auto_allow_cfg())
     pipeline.process_repro_queue()
 
     pipeline.patch_verifier = PatchVerifier(
