@@ -1108,6 +1108,19 @@ _PAGE = r"""<!doctype html>
   </section>
 
   <section>
+    <div class="kicker">Judgment quality</div>
+    <h2>Appeals &amp; attack Elo</h2>
+    <div class="desc">Frontier-model appeal outcomes and per-zone attack Elo
+      ratings used to steer future red-team ideation.</div>
+    <div class="cols">
+      <div class="card"><h3>Judge appeals</h3>
+        <div class="scroll" id="judgeAppeals"></div></div>
+      <div class="card"><h3>Attack Elo</h3>
+        <div class="scroll" id="attackElo"></div></div>
+    </div>
+  </section>
+
+  <section>
     <div class="kicker">Evidence</div>
     <h2>Telemetry timeline</h2>
     <div class="desc">Tool requests, file / network / process events, MCP calls
@@ -1118,6 +1131,14 @@ _PAGE = r"""<!doctype html>
       <div class="card"><h3>Cycle history</h3>
         <div class="scroll" id="cycles"></div></div>
     </div>
+  </section>
+
+  <section>
+    <div class="kicker">Sandbox</div>
+    <h2>Provisioned runs</h2>
+    <div class="desc">Recent sandbox/victim sessions, their deterministic
+      capability posture, and teardown state.</div>
+    <div class="card"><div class="scroll" id="sandboxRuns"></div></div>
   </section>
 
   <section>
@@ -1393,6 +1414,40 @@ function renderJudges(jd){
     </div>`;}).join(''));
 }
 
+function renderJudgeAppeals(a){
+  if(!a||!a.appeal_count){set('judgeAppeals',
+    '<div class="empty">no judge appeals yet</div>');return;}
+  const rate=Math.round((a.override_rate||0)*100);
+  const head=`<div class="row" style="border-left-color:var(--accent)">
+    <div class="hd"><span class="ti">${a.appeal_count||0} appeals</span>
+      <span class="chip"><b>${a.override_count||0}</b> overrides</span>
+      <span class="chip">${rate}% override rate</span></div></div>`;
+  const rows=(a.recent||[]).map(x=>
+    `<div class="row" style="border-left-color:${x.appeal!==x.ensemble
+      ?'var(--high)':'var(--ok)'}">
+      <div class="hd"><span class="ti mono">${esc(x.lane_id)}</span>
+        <span class="chip">ensemble <b>${esc(x.ensemble)}</b></span>
+        <span class="chip">appeal <b>${esc(x.appeal)}</b></span></div>
+      <div class="mt">disagreement ${(x.disagreement||0).toFixed(2)}</div>
+    </div>`).join('');
+  set('judgeAppeals',head+rows);
+}
+
+function renderAttackElo(rows){
+  if(!rows||!rows.length){set('attackElo',
+    '<div class="empty">no attack Elo ratings yet</div>');return;}
+  set('attackElo',rows.map(x=>{
+    const rating=x.rating||1000;
+    const c=heat(Math.max(0,Math.min(1,(rating-900)/300)));
+    return `<div class="row" style="border-left-color:${c}">
+      <div class="hd"><span class="ti mono">${esc(x.zone_id)}</span>
+        <span class="chip">${esc(x.attack_id)}</span>
+        <span class="chip"><b>${rating.toFixed(0)}</b> Elo</span></div>
+      <div class="mt">${x.wins||0}W / ${x.losses||0}L · `
+        +`${x.comparisons||0} comparisons</div>
+    </div>`;}).join(''));
+}
+
 function renderTelemetry(t){
   if(!t||!t.length){set('telemetry',
     '<div class="empty">no telemetry events recorded yet</div>');return;}
@@ -1406,6 +1461,22 @@ function renderTelemetry(t){
       +`${x.target?(' → '+trunc(x.target,52)):''}`
       +`${x.reason_code?(' · '+esc(x.reason_code)):''}</div></div></div>`;
   }).join(''));
+}
+
+function renderSandboxRuns(rows){
+  if(!rows||!rows.length){set('sandboxRuns',
+    '<div class="empty">no sandbox runs recorded yet</div>');return;}
+  set('sandboxRuns',rows.map(x=>{
+    const torn=!!x.torn_down_at;
+    const col=torn?'var(--ok)':'var(--med)';
+    return `<div class="row" style="border-left-color:${col}">
+      <div class="hd">${badge(torn?'torn down':'active',col)}
+        <span class="ti mono" style="font-size:12px">${esc(x.lane_id)}</span>
+        <span class="chip">${esc(x.mode||'mock')}</span>
+        <span class="chip">${x.deterministic?'deterministic':'best effort'}</span>
+        ${x.patch_applied?'<span class="chip">patched</span>':''}</div>
+      <div class="mt">${esc(x.instance_id||'')} · ${ts(x.provisioned_at)}</div>
+    </div>`;}).join(''));
 }
 
 function renderCycles(c){
@@ -1502,7 +1573,9 @@ async function tick(){
   renderRepro(d.repro); renderPackages(d.packages); renderPatches(d.patches);
   renderRegression(d.regression); renderArchive(d.archive);
   renderOperators(d.operators); renderJudges(d.judges);
+  renderJudgeAppeals(d.judge_appeals); renderAttackElo(d.attack_elo);
   renderTelemetry(d.telemetry); renderCycles(d.cycles);
+  renderSandboxRuns(d.sandbox_runs);
   renderModels(d.models);
   renderPurpleHeatmap(d.purple_heatmap);
   renderPurpleReportCard(d.purple_report_card);

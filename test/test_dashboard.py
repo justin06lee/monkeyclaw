@@ -194,6 +194,20 @@ def test_dashboard_exposes_appeal_and_elo_panels(server):
     assert state["attack_elo"][0]["attack_id"] == "F1"
 
 
+def test_dashboard_page_renders_appeals_elo_and_sandbox_panels(tmp_path: Path):
+    client = TestClient(build_dashboard_app(str(tmp_path / "nope.db")))
+    html = client.get("/").text
+    assert 'id="judgeAppeals"' in html
+    assert 'id="attackElo"' in html
+    assert 'id="sandboxRuns"' in html
+    assert "function renderJudgeAppeals" in html
+    assert "function renderAttackElo" in html
+    assert "function renderSandboxRuns" in html
+    assert "renderJudgeAppeals(d.judge_appeals)" in html
+    assert "renderAttackElo(d.attack_elo)" in html
+    assert "renderSandboxRuns(d.sandbox_runs)" in html
+
+
 def test_technique_coverage_view_renders(server):
     from infra.dashboard import render_technique_coverage
 
