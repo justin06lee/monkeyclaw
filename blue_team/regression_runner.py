@@ -128,6 +128,11 @@ class RegressionRunner:
                 rec.transitions += 1
             rec.last_run_at = now_iso()
             rec.last_run_result = new_result
+            try:
+                self.mcp.record_regression_run(test.test_id, new_result)
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("record_regression_run(%s) failed: %s",
+                            test.test_id, e)
             if outcome:
                 rec.consecutive_passes += 1
                 passing += 1
@@ -167,6 +172,25 @@ class RegressionRunner:
                 self.cfg.flaky_min_transitions)
         )
 
+        for tid in flaky_tests:
+            try:
+                self.mcp.record_regression_run(tid, "fail", flaky=True)
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("quarantine(%s) failed: %s", tid, e)
+        # A newly-failing permanent regression test means a fixed vuln is
+        # live again — reopen the finding(s) behind it.
+        suite_by_id = {t.test_id: t for t in suite}
+        for tid in newly_failing:
+            test = suite_by_id.get(tid)
+            if test is None:
+                continue
+            for fid in self._finding_ids_for_vuln(test.vuln_id):
+                try:
+                    self.mcp.reopen_finding(
+                        fid, f"regression {tid} ({test.vuln_id}) failed")
+                except Exception as e:  # noqa: BLE001
+                    LOG.warning("reopen_finding(%s) failed: %s", fid, e)
+
         result = RegressionRunResult(
             total_tests=len(suite),
             tests_passing=passing,
@@ -185,6 +209,14 @@ class RegressionRunner:
             result.new_tests_since_last_run, result.run_duration_seconds,
         )
         return result
+
+    # ------------------------------------------------------------------
+    def _finding_ids_for_vuln(self, vuln_id: str) -> list[str]:
+        try:
+            return list(self.mcp.findings_for_vuln(vuln_id))
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("findings_for_vuln(%s) failed: %s", vuln_id, e)
+            return []
 
     # ------------------------------------------------------------------
     def _run_one(self, test: RegressionTest) -> bool:

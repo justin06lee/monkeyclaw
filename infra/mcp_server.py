@@ -15,9 +15,13 @@ import sys
 import uuid
 from dataclasses import asdict
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from infra.database import Database, EmbeddingModel
 from interfaces.mcp_tools import MonkeyClawMCP
+
+if TYPE_CHECKING:
+    from infra.state_machine import TransitionEngine
 from interfaces.types import (
     ArchiveCell,
     ArchiveUpdateInput,
@@ -70,6 +74,16 @@ class MCPServer(MonkeyClawMCP):
         self._code_backend = "python"
         self._argyph = None
         self._repo_path = "."
+
+    @property
+    def transitions(self) -> TransitionEngine:
+        """The shared transition engine for this server's DB."""
+        eng = getattr(self, "_transition_engine", None)
+        if eng is None:
+            from infra.state_machine import TransitionEngine
+            eng = TransitionEngine(self.db)
+            self._transition_engine = eng
+        return eng
 
     def set_code_context(self, backend: str = "python",
                          argyph_binary: str | None = None,
@@ -296,41 +310,44 @@ class MCPServer(MonkeyClawMCP):
         # Verify the finding exists
         if self.db.fetchone("SELECT 1 FROM findings WHERE finding_id = ?", (finding_id,)) is None:
             raise KeyError(f"unknown finding_id {finding_id}")
-        self.db.execute(
-            "INSERT OR REPLACE INTO repro_queue(finding_id, priority, status, enqueued_at) "
-            "VALUES (?, ?, 'queued', ?)",
-            (finding_id, priority, _now()),
-        )
-
-    def get_repro_queue(self) -> list[FindingRecord]:
-        """Atomically claim the next queued finding. Returns 0 or 1 record."""
-        worker = os.environ.get("MC_WORKER_ID") or _new_id("WK")
+        from infra.state_machine import new_transition_id  # noqa: PLC0415
         with self.db.lock():
             self.db.execute("BEGIN IMMEDIATE")
             try:
-                row = self.db.fetchone(
-                    "SELECT finding_id FROM repro_queue "
-                    "WHERE status = 'queued' "
-                    "ORDER BY CASE WHEN priority = 'high' THEN 0 ELSE 1 END, enqueued_at "
-                    "LIMIT 1"
-                )
-                if row is None:
-                    self.db.execute("COMMIT")
-                    return []
-                fid = row["finding_id"]
                 self.db.execute(
-                    "UPDATE repro_queue SET status = 'processing', dequeued_at = ?, worker_id = ? "
-                    "WHERE finding_id = ?",
-                    (_now(), worker, fid),
+                    "INSERT OR REPLACE INTO repro_queue("
+                    "finding_id, priority, status, enqueued_at) "
+                    "VALUES (?, ?, 'queued', ?)",
+                    (finding_id, priority, _now()),
+                )
+                self.db.execute(
+                    "INSERT INTO queue_transitions(transition_id, entity, "
+                    "entity_id, from_state, to_state, actor, reason) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    (new_transition_id(), "repro_queue", finding_id,
+                     None, "queued", "routing", f"enqueued ({priority})"),
                 )
                 self.db.execute("COMMIT")
             except Exception:
                 self.db.execute("ROLLBACK")
                 raise
-        finding_row = self.db.fetchone("SELECT * FROM findings WHERE finding_id = ?", (fid,))
+
+    def get_repro_queue(self) -> list[FindingRecord]:
+        """Atomically claim the next queued finding. Returns 0 or 1 record."""
+        worker = os.environ.get("MC_WORKER_ID") or _new_id("WK")
+        fid = self.transitions.claim_next_repro(worker)
+        if fid is None:
+            return []
+        finding_row = self.db.fetchone(
+            "SELECT * FROM findings WHERE finding_id = ?", (fid,))
         if finding_row is None:
             return []
         return [_finding_row_to_record(finding_row)]
+
+    def sweep_stale_claims(self, older_than_seconds: int) -> int:
+        """Requeue repro_queue rows stranded in 'processing' by a crashed
+        worker. Returns the count requeued."""
+        return self.transitions.sweep_stale_claims(older_than_seconds)
 
     # ------------------------------------------------------------------
     # Repro packages
@@ -353,30 +370,37 @@ class MCPServer(MonkeyClawMCP):
         transcripts = json.dumps({
             k: [asdict(m) for m in v] for k, v in package.transcripts.items()
         })
-        with self.db.lock():
-            self.db.execute(
-                "INSERT INTO repro_packages(package_id, finding_id, vuln_id, title, severity, "
-                "repro_rate, minimal_steps, affected_zone, affected_paths, ideas_used, "
-                "transcripts, suggested_mitigations, repro_document_md, cold_verified, "
-                "ready_for_blue, blue_team_status, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (pid, package.finding_id, vuln_id, package.title, package.severity,
-                 package.repro_rate, json.dumps(package.minimal_steps),
-                 package.affected_zone, affected_paths,
-                 json.dumps(package.ideas_used), transcripts,
-                 json.dumps(package.suggested_mitigations), package.repro_document_md,
-                 1 if package.cold_verified else 0,
-                 1 if package.ready_for_blue else 0, "queued", _now()),
-            )
-            self.db.execute(
-                "UPDATE findings SET repro_rate = ?, patch_status = 'in_progress' "
-                "WHERE finding_id = ?",
-                (package.repro_rate, package.finding_id),
-            )
-            self.db.execute(
-                "UPDATE repro_queue SET status = 'completed' WHERE finding_id = ?",
-                (package.finding_id,),
-            )
+        # The package INSERT, the findings.repro_rate UPDATE and both
+        # audited lifecycle transitions (repro_queue ->completed, finding
+        # ->in_progress) commit or roll back together as one atomic unit —
+        # a crash mid-way can no longer leave a package without its
+        # lifecycle transitions. The queue row may legally already be
+        # 'processing' (claimed): processing->completed is a valid edge.
+        insert_sql = (
+            "INSERT INTO repro_packages(package_id, finding_id, "
+            "vuln_id, title, severity, repro_rate, minimal_steps, "
+            "affected_zone, affected_paths, ideas_used, transcripts, "
+            "suggested_mitigations, repro_document_md, cold_verified, "
+            "ready_for_blue, blue_team_status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        insert_params = (
+            pid, package.finding_id, vuln_id, package.title,
+            package.severity, package.repro_rate,
+            json.dumps(package.minimal_steps), package.affected_zone,
+            affected_paths, json.dumps(package.ideas_used),
+            transcripts, json.dumps(package.suggested_mitigations),
+            package.repro_document_md,
+            1 if package.cold_verified else 0,
+            1 if package.ready_for_blue else 0, "queued", _now(),
+        )
+        self.transitions.store_repro_package(
+            insert_sql=insert_sql,
+            insert_params=insert_params,
+            finding_id=package.finding_id,
+            finding_repro_rate=package.repro_rate,
+            package_id=pid,
+        )
         return pid
 
     def get_blue_team_queue(self) -> list[ReproPackage]:
@@ -407,6 +431,55 @@ class MCPServer(MonkeyClawMCP):
              test.expected_result, test.functionality_test_script, _now()),
         )
         return tid
+
+    def record_regression_run(
+        self, test_id: str, result: str, *, flaky: bool = False,
+    ) -> str:
+        """Persist one regression test run. `result` is 'pass'|'fail'|'error'.
+        Transitions run_state via REGRESSION_FSM (pass->passing,
+        fail/error->failing) and writes last_run_at/last_run_result/
+        consecutive_passes. If `flaky`, the test is moved to 'quarantined'
+        instead. Returns the new run_state. Idempotent on the FSM: a
+        same-state run is recorded but writes no transition."""
+        row = self.db.fetchone(
+            "SELECT run_state, consecutive_passes FROM regression_tests "
+            "WHERE test_id = ?", (test_id,))
+        if row is None:
+            raise KeyError(f"unknown regression test {test_id!r}")
+        current = row["run_state"]
+        passed = result == "pass"
+        target = "quarantined" if flaky else ("passing" if passed else "failing")
+        new_passes = (row["consecutive_passes"] + 1) if passed else 0
+        # The run-fields UPDATE and the run_state FSM transition commit or
+        # roll back together — a crash can't leave last_run_result written
+        # without its matching run_state edge.
+        self.transitions.record_regression_run(
+            test_id=test_id,
+            update_sql=(
+                "UPDATE regression_tests SET last_run_at = ?, "
+                "last_run_result = ?, consecutive_passes = ? "
+                "WHERE test_id = ?"
+            ),
+            update_params=(_now(), result, new_passes, test_id),
+            target=target,
+            current=current,
+            reason=f"run result={result} flaky={flaky}",
+        )
+        return target
+
+    def reopen_finding(self, finding_id: str, reason: str) -> None:
+        """verified -> open: a regression for this finding's vuln failed."""
+        self.transitions.transition(
+            entity="finding", entity_id=finding_id, to_state="open",
+            actor="regression_runner", reason=reason,
+        )
+
+    def findings_for_vuln(self, vuln_id: str) -> list[str]:
+        """finding_ids of every repro package minted for this vuln_id."""
+        rows = self.db.fetchall(
+            "SELECT finding_id FROM repro_packages WHERE vuln_id = ?",
+            (vuln_id,))
+        return [r["finding_id"] for r in rows]
 
     # ------------------------------------------------------------------
     # Codebase search
@@ -548,23 +621,22 @@ class MCPServer(MonkeyClawMCP):
     def mark_repro_queue_status(
         self, finding_id: str, status: str, worker_id: str | None = None
     ) -> None:
-        with self.db.lock():
-            # Silent no-op if the row is absent — callers transition rows they already own.
-            self.db.execute(
-                "UPDATE repro_queue SET status=?, worker_id=COALESCE(?, worker_id) "
-                "WHERE finding_id=?",
-                (status, worker_id, finding_id),
-            )
+        """Transition a repro_queue row through the FSM. Raises
+        IllegalTransition on an illegal edge, KeyError on a missing row."""
+        self.transitions.transition(
+            entity="repro_queue", entity_id=finding_id, to_state=status,
+            actor=worker_id or "mcp", reason="mark_repro_queue_status",
+        )
 
     def mark_repro_package_status(
         self, package_id: str, blue_team_status: str
     ) -> None:
-        with self.db.lock():
-            # Silent no-op if the row is absent — callers transition rows they already own.
-            self.db.execute(
-                "UPDATE repro_packages SET blue_team_status=? WHERE package_id=?",
-                (blue_team_status, package_id),
-            )
+        """Transition a repro package through the REPRO_PKG_FSM."""
+        self.transitions.transition(
+            entity="repro_package", entity_id=package_id,
+            to_state=blue_team_status, actor="blue_pipeline",
+            reason="mark_repro_package_status",
+        )
 
     def log_patch_candidate(self, patch: PatchCandidateInput) -> str:
         pid = _new_id("PATCH")
@@ -583,14 +655,31 @@ class MCPServer(MonkeyClawMCP):
         self, patch_id: str, status: str,
         verification_results: dict | None = None,
     ) -> None:
-        with self.db.lock():
-            # Silent no-op if the row is absent — callers transition rows they already own.
-            vr = json.dumps(verification_results) if verification_results is not None else None
-            self.db.execute(
-                "UPDATE patches SET status=?, verification_results=? "
-                "WHERE patch_id=?",
-                (status, vr, patch_id),
-            )
+        """Transition a patch through the PATCH_FSM, optionally storing
+        verification results."""
+        self.transitions.transition(
+            entity="patch", entity_id=patch_id, to_state=status,
+            actor="patch_verifier", reason="mark_patch_status",
+        )
+        if verification_results is not None:
+            with self.db.lock():
+                self.db.execute(
+                    "UPDATE patches SET verification_results = ? "
+                    "WHERE patch_id = ?",
+                    (json.dumps(verification_results), patch_id),
+                )
+
+    def mark_finding_patched(self, finding_id: str) -> None:
+        """Advance a finding through patched then verified after its patch is
+        approved. in_progress -> patched -> verified, both edges audited."""
+        self.transitions.transition(
+            entity="finding", entity_id=finding_id, to_state="patched",
+            actor="blue_pipeline", reason="patch approved",
+        )
+        self.transitions.transition(
+            entity="finding", entity_id=finding_id, to_state="verified",
+            actor="blue_pipeline", reason="patch approved",
+        )
 
     # ------------------------------------------------------------------
     # MAP-Elites archive

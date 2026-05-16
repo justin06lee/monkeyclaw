@@ -32,7 +32,7 @@ FailureClass = Literal[
     "none",
 ]
 PatchStatus = Literal["open", "in_progress", "patched", "verified"]
-BlueTeamStatus = Literal["queued", "triaged", "patching", "verified"]
+BlueTeamStatus = Literal["queued", "triaged", "patching", "verified", "stuck"]
 QueuePriority = Literal["high", "low"]
 LaneTermination = Literal["idea_completed", "timeout", "error", "max_turns"]
 InferenceRoute = Literal["local_nemotron", "cloud"]
@@ -45,6 +45,7 @@ TelemetryEventType = Literal[
 ]
 PolicyDecisionType = Literal["allow", "deny", "ask"]
 ReproQueueStatus = Literal["queued", "processing", "completed", "failed"]
+RegressionTestStatus = Literal["untested", "passing", "failing", "quarantined"]
 JudgeRole = Literal["semantic", "safety", "programmatic"]
 
 # ---------------------------------------------------------------------------
@@ -569,6 +570,18 @@ class QueueState:
     updated_at: str
 
 
+@dataclass
+class QueueTransition:
+    transition_id: str
+    entity: str
+    entity_id: str
+    from_state: str | None
+    to_state: str
+    actor: str
+    reason: str
+    created_at: str
+
+
 # ---------------------------------------------------------------------------
 # Idea archive (MAP-Elites style — Person B consumes, Person A stores)
 # ---------------------------------------------------------------------------
@@ -738,9 +751,11 @@ __all__ = [
     "PolicyDecisionType",
     "ProcessEvent",
     "QueueState",
+    "QueueTransition",
     "RegressionRunResult",
     "RegressionTest",
     "RegressionTestInput",
+    "RegressionTestStatus",
     "ReproPackage",
     "ReproPackageInput",
     "ReproQueueStatus",

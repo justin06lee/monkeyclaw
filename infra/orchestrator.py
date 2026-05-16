@@ -169,6 +169,15 @@ class Orchestrator:
         results: list[LaneResult] = []
         ideas: list[IdeaObject] = []
         try:
+            # Recover crashed-worker repro claims before this cycle's work.
+            try:
+                requeued = self.rt.mcp.sweep_stale_claims(
+                    self.rt.cfg.orchestrator.stale_claim_timeout_s)
+                if requeued:
+                    LOG.warning("requeued %d stale repro claim(s)", requeued)
+            except Exception as e:  # noqa: BLE001
+                LOG.exception("stale-claim sweep failed in cycle %d: %s",
+                              cycle_id, e)
             ideas = self.red.generate_ideas(cycle_id, n)
             for idea in ideas:
                 self.scheduler.submit(idea)

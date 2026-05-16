@@ -266,6 +266,53 @@ class PatchVerifier:
         package: ReproPackage,
         test_pair: RegressionTestPair,
     ) -> VerifyOutcome:
+        """Run the six gates, driving the patch through the PATCH_FSM:
+        proposed -> testing -> approved/rejected. The candidate is persisted
+        via log_patch_candidate so the transitions have a DB row to act on."""
+        # Persist the candidate (status 'proposed') so the FSM has a row.
+        from interfaces.types import PatchCandidateInput
+        try:
+            db_patch_id = self.mcp.log_patch_candidate(PatchCandidateInput(
+                vuln_ids=patch.vuln_ids, zone_id=patch.zone_id,
+                approach=patch.approach, invasiveness=patch.invasiveness,
+                diff=patch.diff, explanation=patch.explanation,
+                side_effects=patch.side_effects,
+            ))
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("log_patch_candidate(%s) failed, falling back to "
+                        "in-memory patch_id: %s", patch.patch_id, e)
+            db_patch_id = patch.patch_id
+        # proposed -> testing before any gate runs.
+        try:
+            self.mcp.mark_patch_status(db_patch_id, "testing")
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("mark_patch_status(%s, testing) failed: %s",
+                        db_patch_id, e)
+        outcome = self._run_gates(patch=patch, package=package,
+                                  test_pair=test_pair)
+        # testing -> approved | rejected once the gates have spoken.
+        try:
+            self.mcp.mark_patch_status(
+                db_patch_id,
+                "approved" if outcome.approved else "rejected",
+                verification_results={
+                    "approved": outcome.approved,
+                    "failed_gate": outcome.failed_gate,
+                    "notes": outcome.notes,
+                },
+            )
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("mark_patch_status(%s, %s) failed: %s", db_patch_id,
+                        "approved" if outcome.approved else "rejected", e)
+        return outcome
+
+    def _run_gates(
+        self,
+        *,
+        patch: PatchCandidate,
+        package: ReproPackage,
+        test_pair: RegressionTestPair,
+    ) -> VerifyOutcome:
         gates: list[GateResult] = []
         replay_fn = self.patched_replay_factory(patch)
 

@@ -22,8 +22,7 @@ LOG = logging.getLogger("monkeyclaw.db")
 
 EMBEDDING_DIM = 384
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-CURRENT_SCHEMA_VERSION = 2
-SCHEMA_PATH = Path(__file__).resolve().parent.parent / "interfaces" / "schema.sql"
+SCHEMA_PATH =Path(__file__).resolve().parent.parent / "interfaces" / "schema.sql"
 
 
 def pack_vec(vec: Iterable[float]) -> bytes:
@@ -125,23 +124,15 @@ class Database:
         conn.executescript(sql)
 
     def _run_migrations(self, conn: sqlite3.Connection) -> None:
-        """Reconcile schema_version after the (idempotent) schema script runs.
+        """Apply pending versioned migrations from infra/migrations/.
 
-        schema.sql uses CREATE TABLE IF NOT EXISTS, so re-running it on an old
-        DB adds any missing tables. This step records that the DB is now at
-        CURRENT_SCHEMA_VERSION so future migrations can branch on it.
+        schema.sql ran first (it bootstraps an empty DB / is idempotent on an
+        existing one); run_pending then applies any migration past the
+        baseline and records each in schema_meta.
         """
-        row = conn.execute(
-            "SELECT value FROM schema_meta WHERE key='schema_version'"
-        ).fetchone()
-        current = int(row[0]) if row else 0
-        if current < CURRENT_SCHEMA_VERSION:
-            LOG.info("migrating DB schema %d -> %d", current, CURRENT_SCHEMA_VERSION)
-            conn.execute(
-                "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (str(CURRENT_SCHEMA_VERSION),),
-            )
+        from infra.migrations import run_pending
+
+        run_pending(conn)
 
     # ------------------------------------------------------------------
     @property
