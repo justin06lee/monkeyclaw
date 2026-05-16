@@ -205,12 +205,14 @@ def cases_for_zone(
 
 
 def corpus_to_ideas(
-    cycle_id: int, cases: list[PolicyCorpusCase] | None = None
+    cycle_id: int, cases: list[PolicyCorpusCase] | None = None,
+    *, taxonomy=None,
 ) -> list[IdeaObject]:
     """Lift each corpus case into a deterministic ``IdeaObject``.
 
     ``source_mode`` is ``"policy_corpus"``; ``idea_id`` is ``CORPUS-<case_id>``
-    so the mapping is stable across runs.
+    so the mapping is stable across runs. When a ``taxonomy`` is supplied
+    each idea is tagged with the technique refs its text resolves to.
     """
     if cases is None:
         cases = load_corpus()
@@ -245,6 +247,21 @@ def corpus_to_ideas(
                 ),
             )
         )
+        idea = ideas[-1]
+        if taxonomy is not None:
+            refs = taxonomy.resolve(f"{case.title} {approach}")
+            idea.techniques = refs
+            if refs:
+                atlas = ",".join(r.technique_id for r in refs
+                                 if r.kind == "atlas")
+                owasp = ",".join(r.technique_id for r in refs
+                                 if r.kind == "owasp")
+                idea.novelty_notes = (
+                    f"{idea.novelty_notes} "
+                    f"[atlas={atlas or 'none'}; owasp={owasp or 'none'}]"
+                ).strip()
+        else:
+            idea.techniques = []
     return ideas
 
 
