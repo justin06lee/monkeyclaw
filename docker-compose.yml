@@ -4,13 +4,17 @@
 # container at runtime -- the key is NOT baked into the image, so it never
 # lands in an image layer (.dockerignore also excludes .env from the build).
 #
-# Live path -- starts the inner Docker daemon, onboards NemoClaw, snapshots:
-#   docker compose run --rm monkeyclaw
-#   uv run monkeyclaw run --cycles 3 --target monkey-victim
+# The MonkeyClaw source is bind-mounted at /app, so editing Python on the host
+# takes effect immediately -- no image rebuild. NemoClaw's setup (the ~2.4 GB
+# sandbox image and onboarding state) is persisted on named volumes, so a
+# container restart recovers in seconds instead of re-onboarding.
+#
+# Live path -- first start onboards NemoClaw; later starts just recover:
+#   docker compose up -d monkeyclaw
+#   docker compose exec monkeyclaw uv run monkeyclaw run --cycles 3 --target monkey-victim
 #
 # Offline/mock path -- no key, no privileged needed:
-#   docker compose run --rm monkeyclaw-mock
-#   uv run monkeyclaw run --mock
+#   docker compose run --rm monkeyclaw-mock uv run monkeyclaw run --mock
 
 services:
   # Live path: NemoClaw setup runs automatically on start (entrypoint sees
@@ -30,12 +34,25 @@ services:
       - "7321:7321"         # mock MCP
       - "7322:7322"         # MCP server
     volumes:
+      # Live MonkeyClaw source -- edit .py on the host and it takes effect
+      # immediately (the package is editable-installed; the venv lives at
+      # /opt/venv, OUTSIDE /app, so this mount does not shadow it). Code
+      # changes never need an image rebuild.
+      - .:/app
       # Real (non-overlay) storage for the nested Docker daemon. Without this
       # the inner daemon stores at /var/lib/docker on the container's own
       # overlayfs; building the NemoClaw sandbox image then stacks overlayfs
       # on overlayfs, which the kernel rejects ("mount ... overlay ... invalid
-      # argument"). A named volume is ext4-backed, so inner overlay2 works.
+      # argument"). A named volume is ext4-backed, so inner overlay2 works --
+      # and the built ~2.4 GB sandbox image survives container recreation.
       - dind-storage:/var/lib/docker
+      # NemoClaw onboarding state -- gateway config, onboard session, model
+      # router, snapshots. Persisted so a restart recovers instead of
+      # re-onboarding from scratch.
+      - nemoclaw-state:/root/.nemoclaw
+      # Setup sentinel -- marks onboarding done so the entrypoint recovers
+      # (fast) rather than running a full onboard again.
+      - monkeyclaw-state:/var/lib/monkeyclaw
 
   # Offline/mock path: no key, no privileged. Reuses the same image; the
   # entrypoint skips NemoClaw setup when NVIDIA_API_KEY is absent.
@@ -46,9 +63,15 @@ services:
     image: monkeyclaw:latest
     environment:
       - NVIDIA_API_KEY=     # explicitly empty -> entrypoint skips live setup
+    volumes:
+      - .:/app              # live source, same as the live service
     stdin_open: true
     tty: true
 
 volumes:
   # Nested-Docker storage for the live `monkeyclaw` service (see its comment).
   dind-storage:
+  # NemoClaw onboarding state, persisted across container recreation.
+  nemoclaw-state:
+  # MonkeyClaw setup sentinel, persisted across container recreation.
+  monkeyclaw-state:

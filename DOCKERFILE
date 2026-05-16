@@ -8,9 +8,11 @@
 # daemon (it builds a ~2.4 GB sandbox image), so it cannot run at build time.
 # Instead the entrypoint prepares the environment automatically on container
 # start, then hands off to a shell:
-#   - with NVIDIA_API_KEY set -> runs the full NemoClaw setup (starts the inner
+#   - first run (NVIDIA_API_KEY set) -> full NemoClaw setup (starts the inner
 #     Docker daemon, installs + onboards NemoClaw, creates the clean-baseline
-#     snapshot);
+#     snapshot), then writes a sentinel;
+#   - later runs (sentinel present) -> nemoclaw-recover restarts the daemon /
+#     gateway / sandbox, reusing the cached sandbox image instead of rebuilding;
 #   - with no key -> setup is skipped; the offline mock path is ready.
 #
 # Live path -- one command brings the whole environment up:
@@ -61,7 +63,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 
 # uv - the MonkeyClaw project's Python package manager.
 RUN curl -fsSL https://astral.sh/uv/install.sh | sh
-ENV PATH=/root/.local/bin:/app/.venv/bin:$PATH
+# The project venv lives at /opt/venv -- deliberately OUTSIDE the /app WORKDIR
+# so a dev bind-mount of the source over /app (see docker-compose.yml) does not
+# shadow it. UV_PROJECT_ENVIRONMENT points every `uv sync` / `uv run` at it.
+ENV PATH=/root/.local/bin:/opt/venv/bin:$PATH \
+    UV_PROJECT_ENVIRONMENT=/opt/venv
 
 WORKDIR /app
 
@@ -82,9 +88,11 @@ RUN uv sync
 #   nemoclaw-setup       -- starts the nested Docker daemon, runs NemoClaw's
 #                           installer + onboarding, creates the clean-baseline
 #                           snapshot (deferred to runtime: needs a live daemon)
-#   docker-entrypoint.sh -- entrypoint; runs nemoclaw-setup on first start when
-#                           NVIDIA_API_KEY is set, then hands off to CMD
-RUN install -m 0755 scripts/nemoclaw-setup.sh /usr/local/bin/nemoclaw-setup \
+#   nemoclaw-recover     -- restarts the daemon / gateway / sandbox on a later
+#                           container start, reusing the cached sandbox image
+#   docker-entrypoint.sh -- entrypoint; runs setup on first start, recover after
+RUN install -m 0755 scripts/nemoclaw-setup.sh    /usr/local/bin/nemoclaw-setup \
+    && install -m 0755 scripts/nemoclaw-recover.sh  /usr/local/bin/nemoclaw-recover \
     && install -m 0755 scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # Dashboard 8787, MCP server 7322, mock MCP 7321 -- documented for reference.
@@ -92,8 +100,8 @@ RUN install -m 0755 scripts/nemoclaw-setup.sh /usr/local/bin/nemoclaw-setup \
 # expose them (the dashboard hardcodes 127.0.0.1 in dashboard.py).
 EXPOSE 8787 7321 7322
 
-# The entrypoint runs NemoClaw setup automatically when NVIDIA_API_KEY is set
-# (skipped otherwise, at most once per container), then execs CMD -- an
-# interactive shell by default.
+# The entrypoint runs NemoClaw setup on first start (NVIDIA_API_KEY set) and
+# nemoclaw-recover on later starts, then execs CMD -- an interactive shell by
+# default.
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["bash"]
