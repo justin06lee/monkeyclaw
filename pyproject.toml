@@ -23,6 +23,7 @@ dependencies = [
     "openai>=1.40",
     "websockets>=13.0",
     "cryptography>=43.0",
+    "spacy>=3.7",
 ]
 
 [project.scripts]

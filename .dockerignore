@@ -1,0 +1,20 @@
+# Keep `COPY . .` clean: never copy a host-built (Windows) venv, the git
+# history, runtime data/logs, or tool caches into the Linux image.
+.venv/
+.git/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+data/
+logs/
+.env
+*.egg-info/
+dist/
+build/
+.DS_Store
+
+# uv.lock excluded on purpose: the build resolves deps fresh from pyproject.toml
+# (a stale committed lock must not reach the image).
+uv.lock
