@@ -86,3 +86,9 @@ def test_red_chains_config_defaults():
     assert chains.enabled is True
     assert chains.n_chains == 2
     assert chains.max_turns == 30
+
+
+def test_ranker_config_defaults_to_heuristic():
+    cfg = load_config()
+    assert cfg.red.ranker.mode == "heuristic"
+    assert cfg.red.ranker.pairwise_budget >= 0

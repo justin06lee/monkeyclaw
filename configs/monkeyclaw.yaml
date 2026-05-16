@@ -265,3 +265,7 @@ red:
     enabled: true
     n_chains: 2
     max_turns: 30
+  ranker:
+    mode: heuristic            # heuristic | learned
+    artifact_path: data/ranker_artifact.json
+    pairwise_budget: 4         # max judge pairwise comparisons per cycle
