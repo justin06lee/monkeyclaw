@@ -349,6 +349,7 @@ class PatchVerifier:
         test_pair: RegressionTestPair,
     ) -> VerifyOutcome:
         gates: list[GateResult] = []
+        mode = self._isolation_mode()
         replay_fn = self.patched_replay_factory(patch)
 
         # ---- Gate: patch applies cleanly ----
@@ -357,7 +358,8 @@ class PatchVerifier:
         if not g0.passed:
             return self._reject("gate_diff_applies", patch, gates,
                                   "the candidate diff is empty, malformed, or "
-                                  "does not apply to the victim source")
+                                  "does not apply to the victim source",
+                                  isolation_mode=mode)
 
         # ---- Gate 1: positive regression ----
         g1 = self._run_script(
@@ -369,7 +371,7 @@ class PatchVerifier:
         if not g1.passed:
             return self._reject("gate1_regression", patch, gates,
                                   "the patch did not block the original "
-                                  "vulnerability")
+                                  "vulnerability", isolation_mode=mode)
 
         # ---- Gate 2: functionality ----
         if test_pair.negative_test_script:
@@ -382,7 +384,7 @@ class PatchVerifier:
             if not g2.passed:
                 return self._reject("gate2_functionality", patch, gates,
                                       "the patch broke legitimate adjacent "
-                                      "functionality")
+                                      "functionality", isolation_mode=mode)
         else:
             gates.append(GateResult(
                 name="gate2_functionality",
@@ -396,7 +398,8 @@ class PatchVerifier:
         if not suite_result.passed:
             return self._reject("gate3_full_suite", patch, gates,
                                   "patch caused at least one previously-"
-                                  "fixed vulnerability to regress")
+                                  "fixed vulnerability to regress",
+                                  isolation_mode=mode)
 
         # ---- Gate: control-plane weakening ----
         weaknesses = detect_control_plane_weakening(patch.diff)
@@ -408,7 +411,8 @@ class PatchVerifier:
         if weaknesses:
             return self._reject("gate_control_plane", patch, gates,
                                   "patch weakens the control plane: "
-                                  + "; ".join(weaknesses))
+                                  + "; ".join(weaknesses),
+                                  isolation_mode=mode)
 
         # ---- Gate: telemetry evidence (no silent bypass) ----
         if test_pair.policy_regression_test_script:
@@ -421,7 +425,8 @@ class PatchVerifier:
             if not g_tel.passed:
                 return self._reject("gate_telemetry", patch, gates,
                                       "patched run produced no security "
-                                      "telemetry — possible silent bypass")
+                                      "telemetry — possible silent bypass",
+                                      isolation_mode=mode)
         else:
             gates.append(GateResult(
                 name="gate_telemetry",
@@ -436,6 +441,7 @@ class PatchVerifier:
             gates=gates,
             patch_id=patch.patch_id,
             notes="all six gates passed",
+            isolation_mode=mode,
         )
 
     # ------------------------------------------------------------------
@@ -502,14 +508,24 @@ class PatchVerifier:
         )
 
     # ------------------------------------------------------------------
+    def _isolation_mode(self) -> str:
+        """live when a real isolation backend with a repo is wired, else mock.
+        """
+        if (self.isolation is not None
+                and getattr(self.isolation, "cfg", None) is not None
+                and self.isolation.cfg.nemoclaw_repo_path):
+            return "live"
+        return "mock"
+
     @staticmethod
     def _reject(
         gate: str, patch: PatchCandidate, gates: list[GateResult],
-        notes: str,
+        notes: str, isolation_mode: str = "mock",
     ) -> VerifyOutcome:
         return VerifyOutcome(
             approved=False, failed_gate=gate, gates=gates,
             patch_id=patch.patch_id, notes=notes,
+            isolation_mode=isolation_mode,
         )
 
 

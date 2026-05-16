@@ -394,3 +394,28 @@ def test_verifier_gate1_reflects_whether_the_patch_took_effect(real_mcp):
         mcp=real_mcp, provisioner=MockProvisioner(),
         isolation=_FakeIsolation(applies=False))
     assert verifier.isolation is not None
+
+
+def test_verify_stamps_isolation_mode_mock_without_backend(real_mcp):
+    from blue_team.patch_verifier import PatchVerifier
+    from infra.provisioning_nemoclaw import MockProvisioner
+
+    v = PatchVerifier(mcp=real_mcp, provisioner=MockProvisioner())
+    # No isolation backend -> the verifier reports mock isolation.
+    assert v._isolation_mode() == "mock"
+
+
+def test_verify_reports_live_isolation_mode_with_backend(real_mcp, tmp_path):
+    from blue_team.patch_isolation import PatchIsolation, PatchIsolationConfig
+    from blue_team.patch_verifier import PatchVerifier
+    from infra.provisioning_nemoclaw import MockProvisioner
+    from test._git_repo_fixture import build_repo
+
+    repo, base = build_repo(tmp_path / "nemoclaw")
+    iso = PatchIsolation(
+        provisioner=MockProvisioner(), store=None,
+        cfg=PatchIsolationConfig(nemoclaw_repo_path=repo, base_ref=base,
+                                 worktree_root=str(tmp_path / "wt")))
+    v = PatchVerifier(mcp=real_mcp, provisioner=MockProvisioner(),
+                      isolation=iso)
+    assert v._isolation_mode() == "live"
