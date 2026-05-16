@@ -62,6 +62,7 @@ def test_harness_lifecycle(tmp_path: Path):
     )
     with MonitoringHarness(cfg, "L1", "I1", "SBX-FS") as h:
         from datetime import UTC, datetime
+
         from interfaces.types import Message
         (tmp_path / "x").write_text("hello")
         h.record_message(Message(role="attacker", content="hi",

@@ -11,10 +11,9 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-import struct
 import threading
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 import sqlite_vec
@@ -48,10 +47,10 @@ class EmbeddingModel:
     """
 
     _lock = threading.Lock()
-    _instance: "EmbeddingModel | None" = None
+    _instance: EmbeddingModel | None = None
 
     @classmethod
-    def shared(cls) -> "EmbeddingModel":
+    def shared(cls) -> EmbeddingModel:
         with cls._lock:
             if cls._instance is None:
                 cls._instance = cls()
