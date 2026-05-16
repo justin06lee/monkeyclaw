@@ -5,8 +5,8 @@ from the triage agent. For severity ≥ high, generates 2-3 alternatives
 ranked by invasiveness (least invasive first). Does NOT auto-apply — that's
 the patch verifier's job (Deliverable 8).
 
-The model is asked for STRUCTURED JSON only — no raw diffs in prose. Each
-candidate carries:
+The model is asked to emit one `### PATCH n` block per candidate — no JSON,
+no raw diffs in prose. Each candidate carries:
 - label (short approach name)
 - invasiveness ("low" | "medium" | "high")
 - diff (unified diff string)
@@ -231,7 +231,8 @@ class PatchGenerator:
             f"# Source Files\n{chunks_block}\n\n"
             f"# Suggested Mitigations\n{mitigation_block}\n\n"
             f"Produce {n_alt} patch alternative(s) ranked least to most "
-            f"invasive. Output JSON only."
+            f"invasive. Emit each as a `### PATCH n` block exactly as "
+            f"specified above — no JSON, no commentary outside the blocks."
         )
 
     @staticmethod

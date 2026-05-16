@@ -102,22 +102,42 @@ _EGRESS_RE = re.compile(
 _PATHS_KEY_RE = re.compile(
     r"(allowed_paths|allow_?list|allowed_roots|writable_roots|denied_paths)",
     re.IGNORECASE)
-_BROAD_PATH_RE = re.compile(r"^[-+]?\s*[-=:]\s*[\"']?(/|/\*|\*)[\"']?\s*$")
+# Standalone broad-path list entry, e.g. `  - "/"` or `  = *`. Lines reach
+# this regex already stripped of the leading diff sign.
+_BROAD_PATH_RE = re.compile(r"^\s*[-=:]\s*[\"']?(/|/\*|\*)[\"']?\s*$")
+# Broad-path token appearing INLINE anywhere in an added line — a quoted
+# "/" / "/*" / "*" allow-list entry regardless of the surrounding key.
+_BROAD_PATH_INLINE_RE = re.compile(r"[\"'](/|/\*|\*)[\"']")
 _CHECK_DISABLE_RE = re.compile(
     r"(enabled\s*[:=]\s*(false|False)|\"enabled\"\s*:\s*false|"
     r"\bDISABLE|# *assert)")
 
 
 def _diff_lines(diff: str) -> tuple[list[str], list[str], list[str]]:
-    """Split a unified diff into (added, removed, file_paths)."""
+    """Split a unified diff into (added, removed, file_paths).
+
+    A `---`/`+++` line is only treated as a file header when it sits in the
+    proper unified-diff header position: a `--- ` line immediately followed
+    by a `+++ ` line. This avoids misparsing a removed content line such as
+    `-- DROP TABLE` (which a naive `startswith("---")` would swallow).
+    """
     added: list[str] = []
     removed: list[str] = []
     paths: list[str] = []
-    for line in diff.splitlines():
-        if line.startswith("+++") or line.startswith("---"):
-            p = line[3:].strip()
-            if p and p not in ("a", "b"):
-                paths.append(p.removeprefix("a/").removeprefix("b/"))
+    lines = diff.splitlines()
+    skip_next = False
+    for i, line in enumerate(lines):
+        if skip_next:
+            skip_next = False
+            continue
+        nxt = lines[i + 1] if i + 1 < len(lines) else ""
+        if line.startswith("--- ") and nxt.startswith("+++ "):
+            # Proper old-file/new-file header pair — consume both.
+            for header in (line, nxt):
+                p = header[3:].strip()
+                if p and p not in ("a", "b"):
+                    paths.append(p.removeprefix("a/").removeprefix("b/"))
+            skip_next = True
         elif line.startswith("diff --git"):
             paths.extend(line.split()[2:])
         elif line.startswith("+"):
@@ -150,7 +170,10 @@ def detect_control_plane_weakening(diff: str) -> list[str]:
     # 3. loosens allowed paths
     if any(_PATHS_KEY_RE.search(line) for line in added):
         reasons.append("edits an allowed/denied path list")
-    if any(_BROAD_PATH_RE.match(line) for line in added):
+    if any(
+        _BROAD_PATH_RE.match(line) or _BROAD_PATH_INLINE_RE.search(line)
+        for line in added
+    ):
         reasons.append("adds an overly-broad path entry ('/' or '*')")
 
     # 4. opens unknown network egress

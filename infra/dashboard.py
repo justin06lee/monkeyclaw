@@ -127,7 +127,8 @@ def _repro_queue(db_path: str) -> list[dict[str, Any]]:
         "f.severity, f.failure_class, f.zone_id "
         "FROM repro_queue q LEFT JOIN findings f ON f.finding_id = q.finding_id "
         "ORDER BY CASE q.status WHEN 'processing' THEN 0 WHEN 'queued' THEN 1 "
-        "ELSE 2 END, q.priority DESC, q.enqueued_at LIMIT 24",
+        "ELSE 2 END, CASE q.priority WHEN 'high' THEN 0 ELSE 1 END, "
+        "q.enqueued_at LIMIT 24",
     )
 
 
@@ -192,10 +193,19 @@ def _operators(db_path: str) -> list[dict[str, Any]]:
     )
 
 
-def _status(db_path: str) -> dict[str, Any]:
-    zones = _zones(db_path)
-    findings = _findings(db_path)
-    cycles = _cycles(db_path)
+def _status(
+    db_path: str,
+    zones: list[dict[str, Any]] | None = None,
+    findings: list[dict[str, Any]] | None = None,
+    cycles: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    # Accept precomputed lists so /api/all does not run these queries twice.
+    if zones is None:
+        zones = _zones(db_path)
+    if findings is None:
+        findings = _findings(db_path)
+    if cycles is None:
+        cycles = _cycles(db_path)
     tests = _query(
         db_path,
         "SELECT last_run_result FROM regression_tests WHERE deprecated = 0")
@@ -210,7 +220,9 @@ def _status(db_path: str) -> dict[str, Any]:
     blue_queued = _scalar(
         db_path, "SELECT COUNT(*) AS n FROM repro_packages "
                  "WHERE ready_for_blue = 1 AND blue_team_status = 'queued'") or 0
-    tokens = sum(c.get("total_tokens_used") or 0 for c in cycles)
+    tokens = _scalar(
+        db_path,
+        "SELECT SUM(COALESCE(total_tokens_used, 0)) FROM cycle_log") or 0
     patches_total = _scalar(db_path, "SELECT COUNT(*) AS n FROM patches") or 0
     patches_verified = _scalar(
         db_path,
@@ -238,9 +250,15 @@ def _status(db_path: str) -> dict[str, Any]:
         }
 
     return {
-        "cycles": len(_query(db_path, "SELECT cycle_id FROM cycle_log")),
-        "confirmed": sum(1 for f in findings if f["verdict"] == "confirmed"),
-        "suspicious": sum(1 for f in findings if f["verdict"] == "suspicious"),
+        "cycles": _scalar(db_path, "SELECT COUNT(*) FROM cycle_log") or 0,
+        "confirmed": _scalar(
+            db_path,
+            "SELECT COUNT(*) FROM findings WHERE verdict = ?",
+            ("confirmed",)) or 0,
+        "suspicious": _scalar(
+            db_path,
+            "SELECT COUNT(*) FROM findings WHERE verdict = ?",
+            ("suspicious",)) or 0,
         "regression_tests": len(tests),
         "regression_pass": reg_pass,
         "regression_rate": (reg_pass / len(tests)) if tests else 0.0,
@@ -262,11 +280,14 @@ def _status(db_path: str) -> dict[str, Any]:
 
 def _all(db_path: str) -> dict[str, Any]:
     """Single atomic snapshot — the page renders from one fetch."""
+    zones = _zones(db_path)
+    findings = _findings(db_path)
+    cycles = _cycles(db_path)
     return {
-        "status": _status(db_path),
-        "zones": _zones(db_path),
-        "findings": _findings(db_path),
-        "cycles": _cycles(db_path),
+        "status": _status(db_path, zones=zones, findings=findings, cycles=cycles),
+        "zones": zones,
+        "findings": findings,
+        "cycles": cycles,
         "ideas": _ideas(db_path),
         "repro": _repro_queue(db_path),
         "packages": _packages(db_path),

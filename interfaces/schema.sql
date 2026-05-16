@@ -118,8 +118,10 @@ CREATE INDEX IF NOT EXISTS idx_cycle_created ON cycle_log(created_at DESC);
 
 --------------------------------------------------------------------------------
 -- repro_queue — handoff between red team and repro pipeline
--- Implemented as a column on findings to enable atomic dequeue with a single
--- UPDATE ... RETURNING. status: queued|processing|completed|failed.
+-- A separate table keyed by finding_id (one queue row per finding), so the
+-- queue can be drained and re-prioritised without touching the findings row.
+-- Atomic dequeue uses UPDATE ... RETURNING on this table.
+-- status: queued|processing|completed|failed.
 --------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS repro_queue (
     finding_id   TEXT PRIMARY KEY REFERENCES findings(finding_id),
@@ -169,6 +171,9 @@ CREATE TABLE IF NOT EXISTS regression_tests (
     test_script                TEXT NOT NULL,
     expected_result            TEXT NOT NULL,
     functionality_test_script  TEXT,
+    -- spec C6 third test type: confirms the security telemetry / policy
+    -- decision record still exists after a patch (RegressionTestInput).
+    policy_regression_test_script TEXT,
     created_at                 TEXT NOT NULL DEFAULT (datetime('now')),
     deprecated                 INTEGER NOT NULL DEFAULT 0,
     last_run_at                TEXT,
@@ -191,7 +196,7 @@ CREATE TABLE IF NOT EXISTS patches (
     diff                  TEXT NOT NULL,
     explanation           TEXT NOT NULL,
     side_effects          TEXT,
-    status                TEXT NOT NULL DEFAULT 'proposed', -- proposed|testing|approved|rejected
+    status                TEXT NOT NULL DEFAULT 'proposed', -- proposed|testing|approved|rejected|verified
     verification_results  TEXT,                             -- JSON
     created_at            TEXT NOT NULL DEFAULT (datetime('now'))
 );

@@ -27,7 +27,6 @@ import logging
 import time
 from dataclasses import dataclass, field
 
-from interfaces.config_schema import LaneConfig
 from interfaces.mcp_tools import MonkeyClawMCP
 from interfaces.provisioning import VictimProvisioner
 from interfaces.types import (
@@ -133,18 +132,21 @@ class RegressionRunner:
                 passing += 1
             else:
                 # Newly failing: previously passing OR previously unrecorded
-                if previous_pass:
+                if previous_pass or not previous_result:
                     newly_failing.append(test.test_id)
                 rec.consecutive_passes = 0
                 failing += 1
 
         # Compute coverage delta and apply to MCP.
+        newly_failing_set = set(newly_failing)
+        regressed_zones = {
+            t.zone_id for t in suite if t.test_id in newly_failing_set
+        }
         coverage_delta: dict[str, float] = {}
         for zone, results in zones_seen.items():
             if all(results):
                 delta = self.cfg.coverage_bump_passing
-            elif any(not r for r in results) and zone in {t.zone_id for t in suite
-                                                          if t.test_id in newly_failing}:
+            elif any(not r for r in results) and zone in regressed_zones:
                 delta = self.cfg.coverage_penalty_regressed
             else:
                 # Mixed results, no new regression — neutral.
@@ -163,8 +165,7 @@ class RegressionRunner:
         # Flaky tests: still in the suite and oscillating across runs.
         flaky_tests = sorted(
             tid for tid in current_ids
-            if self._records.get(tid, _TestRunRecord()).is_flaky(
-                self.cfg.flaky_min_transitions)
+            if self._records[tid].is_flaky(self.cfg.flaky_min_transitions)
         )
 
         result = RegressionRunResult(

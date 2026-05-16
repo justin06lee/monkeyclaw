@@ -7,7 +7,8 @@ This directory holds the one-command hackathon demo (spec C10).
 | File | Purpose |
 |------|---------|
 | `run_hackathon_demo.sh` | One-command demo runner. Runs a real red-team cycle, the blue-team pipeline, then opens the dashboard. |
-| `victims/` | Planted-vulnerability victims — OpenClaw-agent-shaped targets with known flaws the pipeline exercises. |
+| `victims/` | Planted-vulnerability victims — OpenClaw-agent-shaped targets with known flaws the pipeline exercises, plus `registry.py` mapping profile names to victim classes. |
+| `attacks/` | YAML attack playbooks (deterministic, scripted turns) and the policy corpus the red team can replay without a model. |
 
 ## Running the demo
 

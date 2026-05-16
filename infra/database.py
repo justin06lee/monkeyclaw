@@ -25,6 +25,26 @@ EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 CURRENT_SCHEMA_VERSION = 2
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "interfaces" / "schema.sql"
 
+# Identifiers for the vec0 virtual tables. `table`/`key_col` are interpolated
+# into SQL (sqlite-vec MATCH does not accept bound identifiers), so they MUST
+# be validated against this allow-list of known schema objects.
+_VEC_TABLES: dict[str, str] = {
+    "findings_vec": "finding_id",
+    "ideas_vec": "idea_id",
+    "code_chunks_vec": "chunk_id",
+}
+
+
+def _validate_vec_target(table: str, key_col: str) -> None:
+    """Reject any table/column not in the hardcoded vec-table allow-list."""
+    expected = _VEC_TABLES.get(table)
+    if expected is None:
+        raise ValueError(f"unknown vector table: {table!r}")
+    if key_col != expected:
+        raise ValueError(
+            f"invalid key column {key_col!r} for table {table!r} "
+            f"(expected {expected!r})")
+
 
 def pack_vec(vec: Iterable[float]) -> bytes:
     """Pack a vector as little-endian float32 for sqlite-vec."""
@@ -34,10 +54,6 @@ def pack_vec(vec: Iterable[float]) -> bytes:
             f"embedding must be length {EMBEDDING_DIM}, got shape {arr.shape}"
         )
     return arr.tobytes()
-
-
-def unpack_vec(b: bytes) -> np.ndarray:
-    return np.frombuffer(b, dtype=np.float32)
 
 
 class EmbeddingModel:
@@ -96,14 +112,29 @@ class Database:
         self._conn = self._open()
 
     def _open(self) -> sqlite3.Connection:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        # `check_same_thread=False` lets us guard with our own RLock and serve
-        # both sync MCP calls and async orchestrator workers.
-        conn = sqlite3.connect(
-            self.path.as_posix(),
-            check_same_thread=False,
-            isolation_level=None,  # autocommit; we use explicit BEGIN where needed
-        )
+        if self.read_only:
+            # A genuine read-only connection: open via a file: URI with
+            # mode=ro so writes are rejected by SQLite itself. The file must
+            # already exist — `mode=ro` will not create it.
+            if not self.path.exists():
+                raise FileNotFoundError(
+                    f"read-only database does not exist: {self.path}")
+            dsn = f"file:{self.path.as_posix()}?mode=ro"
+            conn = sqlite3.connect(
+                dsn,
+                uri=True,
+                check_same_thread=False,
+                isolation_level=None,
+            )
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            # `check_same_thread=False` lets us guard with our own RLock and
+            # serve both sync MCP calls and async orchestrator workers.
+            conn = sqlite3.connect(
+                self.path.as_posix(),
+                check_same_thread=False,
+                isolation_level=None,  # autocommit; explicit BEGIN where needed
+            )
         conn.row_factory = sqlite3.Row
         conn.enable_load_extension(True)
         sqlite_vec.load(conn)
@@ -128,20 +159,38 @@ class Database:
         """Reconcile schema_version after the (idempotent) schema script runs.
 
         schema.sql uses CREATE TABLE IF NOT EXISTS, so re-running it on an old
-        DB adds any missing tables. This step records that the DB is now at
-        CURRENT_SCHEMA_VERSION so future migrations can branch on it.
+        DB adds any missing *tables* — but it does NOT add new columns to a
+        table that already exists. This step applies the few additive ALTERs
+        needed for that case and records the new schema_version.
         """
         row = conn.execute(
             "SELECT value FROM schema_meta WHERE key='schema_version'"
         ).fetchone()
         current = int(row[0]) if row else 0
-        if current < CURRENT_SCHEMA_VERSION:
-            LOG.info("migrating DB schema %d -> %d", current, CURRENT_SCHEMA_VERSION)
+        if current >= CURRENT_SCHEMA_VERSION:
+            return
+        LOG.info("reconciling DB schema %d -> %d: CREATE TABLE IF NOT EXISTS "
+                 "added any missing tables; applying additive column ALTERs. "
+                 "No row-level data migration is performed.",
+                 current, CURRENT_SCHEMA_VERSION)
+        # Additive column migration for pre-existing DBs: schema.sql gained
+        # `policy_regression_test_script` on regression_tests. A fresh DB
+        # already has it (CREATE TABLE), so guard the ALTER with a column
+        # existence check to avoid a duplicate-column error.
+        cols = {
+            r[1] for r in conn.execute(
+                "PRAGMA table_info(regression_tests)").fetchall()
+        }
+        if cols and "policy_regression_test_script" not in cols:
+            LOG.info("adding regression_tests.policy_regression_test_script")
             conn.execute(
-                "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (str(CURRENT_SCHEMA_VERSION),),
-            )
+                "ALTER TABLE regression_tests "
+                "ADD COLUMN policy_regression_test_script TEXT")
+        conn.execute(
+            "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (str(CURRENT_SCHEMA_VERSION),),
+        )
 
     # ------------------------------------------------------------------
     @property
@@ -179,7 +228,12 @@ class Database:
     # Vector helpers
     # ------------------------------------------------------------------
     def upsert_vector(self, table: str, key_col: str, key: str, embedding) -> None:
-        """Insert-or-replace an embedding in a vec0 virtual table."""
+        """Insert-or-replace an embedding in a vec0 virtual table.
+
+        `table`/`key_col` are interpolated into SQL and so are validated
+        against a hardcoded allow-list of known vec tables/columns.
+        """
+        _validate_vec_target(table, key_col)
         blob = pack_vec(embedding)
         with self._lock:
             self._conn.execute(f"DELETE FROM {table} WHERE {key_col} = ?", (key,))
@@ -190,7 +244,14 @@ class Database:
     def vector_search(self, table: str, key_col: str, embedding,
                        top_k: int, where_clause: str = "",
                        where_params: tuple = ()) -> list[tuple[str, float]]:
-        """KNN search returning [(key, distance), ...]. Lower distance == closer."""
+        """KNN search returning [(key, distance), ...]. Lower distance == closer.
+
+        `table`/`key_col` are interpolated into SQL and validated against a
+        hardcoded allow-list of known vec tables/columns. `where_clause` is
+        also interpolated verbatim — it MUST be a developer-supplied constant
+        and must NEVER contain user input (use `where_params` for values).
+        """
+        _validate_vec_target(table, key_col)
         blob = pack_vec(embedding)
         # sqlite-vec's MATCH operator runs KNN search.
         sql = (

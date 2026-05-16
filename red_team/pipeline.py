@@ -24,7 +24,6 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from dataclasses import dataclass
 
 from infra.bootstrap import Runtime
 from infra.monitoring_harness import MonitoringHarness
@@ -35,7 +34,6 @@ from interfaces.nemoclaw_policy import nemoclaw_policy_config
 from interfaces.provisioning import VictimInstance
 from interfaces.types import (
     CoverageGap,
-    CycleSummaryInput,
     IdeaInput,
     IdeaObject,
     LaneResult,
@@ -51,7 +49,11 @@ from red_team.priority import score_ideas
 from red_team.progress import score_progress, search_score
 from red_team.routing import route_judgment
 from red_team.strategist import Strategist
-from red_team.tournament import ModelTournament, load_tournament_config
+from red_team.tournament import (
+    ModelTournament,
+    ModelTournamentConfig,
+    load_tournament_config,
+)
 
 LOG = logging.getLogger("monkeyclaw.red.pipeline")
 
@@ -71,13 +73,6 @@ def policy_from_config(cfg: MonkeyClawConfig) -> PolicyConfig:
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class _PerIdeaContext:
-    """We need to remember each idea by ID to pair lane results with its
-    source on judgment. Built when generate_ideas runs, consulted in judge()."""
-    idea: IdeaObject
 
 
 class Pipeline:
@@ -128,7 +123,16 @@ class Pipeline:
         self._ideation_cfg = ideation_cfg
         # B9 — model tournament. Disabled unless `red_team.model_tournament`
         # is configured; when enabled, extra entrants also ideate per zone.
-        self.tournament = ModelTournament(load_tournament_config())
+        # A malformed tournament YAML must not crash pipeline construction —
+        # fall back to a disabled (default) config on any load failure.
+        try:
+            tournament_cfg = load_tournament_config()
+        except Exception as e:  # noqa: BLE001
+            LOG.warning(
+                "tournament config failed to load (%s) — tournament disabled",
+                e)
+            tournament_cfg = ModelTournamentConfig()
+        self.tournament = ModelTournament(tournament_cfg)
         self.strategist = Strategist(self.llm)
         self.execution = ExecutionAgent(self.llm, execution_cfg)
         self.judger = Judge(self.llm, self.policy, judge_cfg, mcp=self.mcp)
@@ -205,14 +209,15 @@ class Pipeline:
         ideas_deduped = sum(1 for o in outcomes if not o.keep)
 
         # Retry loop — if dedup chopped us below n_lanes, generate "unlike"
-        # ideas. Bounded by retry_max.
+        # ideas. Bounded by retry_max. Walk through `gaps` on each retry so we
+        # widen zone diversity instead of repeatedly mining `gaps[0]`.
         attempts = 0
         while (
             sum(1 for o in outcomes if o.keep) < n_lanes
             and attempts < self.cfg.ideation.retry_max
         ):
+            unlike_zone = gaps[attempts % len(gaps)]
             attempts += 1
-            unlike_zone = gaps[0]
             extra = self.ideation.generate_for_zone(unlike_zone, cycle_id)
             ideas_generated += len(extra)
             if not extra:

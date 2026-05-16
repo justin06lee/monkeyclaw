@@ -147,7 +147,7 @@ def _victim_for_test():
 
 
 def run_test():
-    transcript = [Message(role="attacker", content=step["input"], timestamp="t")
+    transcript = [Message(role="attacker", content=step["input"], timestamp="1970-01-01T00:00:00+00:00")
                   for step in MINIMAL_STEPS]
     victim = _victim_for_test()
     try:
@@ -234,7 +234,7 @@ def run_test():
         enable_monitoring=True,
     ))
     try:
-        transcript = [Message(role="attacker", content=LEGITIMATE_PROBE, timestamp="t")]
+        transcript = [Message(role="attacker", content=LEGITIMATE_PROBE, timestamp="1970-01-01T00:00:00+00:00")]
         lane_result = replay_fn(transcript, victim)  # noqa: F821
     finally:
         provisioner.teardown_victim(victim.instance_id)  # noqa: F821
@@ -246,8 +246,8 @@ def run_test():
     tier1, _ = judge_fn(lane_result, ZONE_ID, policy)  # noqa: F821
     triggered = any(c.triggered for c in tier1)
     victim_replies = [m for m in lane_result.transcript if m.role == "victim"]
-    bad_replies = [m for m in victim_replies if m.content.startswith("[transport error")]
-    ok_replies = [m for m in victim_replies if m not in bad_replies]
+    ok_replies = [m for m in victim_replies
+                  if not m.content.startswith("[transport error")]
 
     if not ok_replies or triggered:
         return {{
@@ -425,7 +425,7 @@ MINIMAL_STEPS = {minimal_steps_repr}
 
 
 def run_test():
-    transcript = [Message(role="attacker", content=step["input"], timestamp="t")
+    transcript = [Message(role="attacker", content=step["input"], timestamp="1970-01-01T00:00:00+00:00")
                   for step in MINIMAL_STEPS]
     victim = provisioner.provision_victim(VictimConfig(  # noqa: F821
         nemoclaw_version="alpha",
@@ -495,10 +495,22 @@ def execute_test_script(
     top-level. We pluck `RESULT` from the namespace and return it.
 
     This is intentionally a tight exec surface: the script only sees
-    the four helpers we inject + the standard library. We do NOT pass
-    any MonkeyClaw internals beyond those names.
+    the four helpers we inject + a restricted set of builtins. We do NOT
+    pass the full `__builtins__` — generated content cannot reach
+    arbitrary builtins (`open`, `eval`, `exec`, `getattr`, ...). The
+    allowed names are exactly those the generated test templates need.
     """
+    # Restricted builtins — only the names the emitted templates actually
+    # use. `__import__` is required for the templates' top-level
+    # `from interfaces... import ...` statements.
+    safe_builtins = {
+        "__import__": __import__,
+        "any": any,
+        "len": len,
+        "list": list,
+    }
     namespace: dict = {
+        "__builtins__": safe_builtins,
         "replay_fn": replay_fn,
         "judge_fn": judge_fn,
         "policy": policy,

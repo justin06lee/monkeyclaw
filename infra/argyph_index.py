@@ -91,19 +91,31 @@ class ArgyphIndex:
 
         `argyph index` indexes the current working directory and takes no
         arguments, so the repo path is passed via `cwd`.
+
+        NOTE: in the shipped Argyph milestone the `index` subcommand is a stub
+        that prints "not implemented" and exits 0 — a successful return here
+        does NOT guarantee anything was indexed. Callers must not treat this
+        as a substitute for the Python indexer.
         """
         if not self.available:
             raise RuntimeError("argyph binary not available")
+        if not os.path.isdir(repo_path):
+            raise RuntimeError(f"argyph index: repo path does not exist: {repo_path}")
         self._run(["index"], cwd=repo_path)
 
     def search(self, query: str, top_k: int, repo_path: str) -> list[CodeChunk]:
         """Semantic search; returns CodeChunk list. Empty list on any failure."""
         if not self.available:
             return []
+        if not os.path.isdir(repo_path):
+            LOG.warning("argyph search: repo path does not exist: %s", repo_path)
+            return []
         try:
             out = self._run(["search", query], cwd=repo_path)
-        except Exception:  # noqa: BLE001 - search must degrade, not crash
-            LOG.exception("argyph search failed")
+        except Exception as e:  # noqa: BLE001 - search must degrade, not crash
+            # Expected graceful degradation (stub CLI, missing index) — a
+            # warning, not a full traceback per failed search.
+            LOG.warning("argyph search failed, returning no hits: %s", e)
             return []
         return self._parse_search(out, top_k)
 

@@ -324,8 +324,10 @@ class _GatewayConnection:
     # and resend after a backoff. The patience is generous on purpose — the
     # victim may run a large model on CPU, so a single turn can take tens of
     # seconds; lanes run sequentially so the wall-time cost is acceptable.
-    _SEND_ATTEMPTS = 6
     _SEND_BACKOFF_S = (5.0, 12.0, 25.0, 40.0, 60.0)
+    # One attempt per backoff slot, plus the initial send (kept derived so the
+    # two can never drift out of sync).
+    _SEND_ATTEMPTS = len(_SEND_BACKOFF_S) + 1
 
     def send_message(self, text: str) -> str:
         """Send one turn via `chat.send`; return the agent's final reply text.
@@ -335,7 +337,16 @@ class _GatewayConnection:
         """
         if self._ws is None:
             raise GatewayError("gateway connection not established")
+        # Single wall-clock cap for the whole retry loop: per-attempt
+        # `_collect_reply` timeouts and backoff sleeps are clamped against it
+        # so a perpetually-busy gateway cannot stall a lane indefinitely.
+        deadline = time.monotonic() + self.response_timeout
         for attempt in range(self._SEND_ATTEMPTS):
+            if time.monotonic() >= deadline:
+                raise GatewayError(
+                    "gateway send exceeded the overall response-timeout budget "
+                    "(agent never picked up the message)"
+                )
             # The gateway echoes idempotencyKey back as runId, so we know the
             # run_id up front and filter this turn's events strictly —
             # trailing events from a prior turn may still be in flight on the
@@ -353,13 +364,18 @@ class _GatewayConnection:
                     "idempotencyKey": run_id,
                 },
             })
-            reply, agent_ran = self._collect_reply(req_id, run_id)
+            reply, agent_ran = self._collect_reply(req_id, run_id,
+                                                   hard_deadline=deadline)
             if agent_ran:
                 return reply
             if attempt + 1 < self._SEND_ATTEMPTS:
                 backoff = self._SEND_BACKOFF_S[
                     min(attempt, len(self._SEND_BACKOFF_S) - 1)
                 ]
+                # Never sleep past the overall budget — clamp to what's left.
+                backoff = min(backoff, max(0.0, deadline - time.monotonic()))
+                if backoff <= 0:
+                    break
                 LOG.debug("gateway no-op'd chat.send (agent busy); "
                           "retry %d after %.0fs", attempt + 2, backoff)
                 time.sleep(backoff)
@@ -372,7 +388,8 @@ class _GatewayConnection:
     # the agent run's lifecycle `phase:end` event (they arrive a few ms apart).
     _RUN_END_GRACE_S = 8.0
 
-    def _collect_reply(self, req_id: str, run_id: str) -> tuple[str, bool]:
+    def _collect_reply(self, req_id: str, run_id: str,
+                       *, hard_deadline: float | None = None) -> tuple[str, bool]:
         """Read frames until run `run_id` produces a final message.
 
         Returns `(reply_text, agent_ran)`. `agent_ran` is False when the
@@ -383,8 +400,13 @@ class _GatewayConnection:
         The agent's `lifecycle`/`phase:end` event arrives slightly *before*
         it, so we don't complete on `phase:end` — we only use it to start a
         short grace window guarding against a missing final frame.
+
+        `hard_deadline` (monotonic) caps this call against the caller's
+        overall retry budget, so a single attempt cannot outlast it.
         """
         deadline = time.monotonic() + self.response_timeout
+        if hard_deadline is not None:
+            deadline = min(deadline, hard_deadline)
         grace_deadline: float | None = None
         streamed: list[str] = []
         agent_ran = False
@@ -577,11 +599,11 @@ class VictimClient:
         The MTProto session is lazily created and reused across turns so a
         multi-turn attack is one continuous Telegram conversation.
         """
+        from interfaces.telegram_victim import (
+            TelegramVictimError,
+            TelegramVictimSession,
+        )
         if self._tg is None:
-            from interfaces.telegram_victim import (
-                TelegramVictimError,
-                TelegramVictimSession,
-            )
             try:
                 self._tg = TelegramVictimSession(
                     self.chat_endpoint, response_timeout_s=self.response_timeout_s)
@@ -590,7 +612,10 @@ class VictimClient:
                 raise VictimError(str(e)) from e
         try:
             return self._tg.send(message)
-        except Exception as e:  # noqa: BLE001
+        except TelegramVictimError as e:
+            # Only transport failures become VictimError; a programming bug
+            # (e.g. AttributeError) propagates so it is not silently masked
+            # as a refused/disconnected turn.
             raise VictimError(f"telegram transport error: {e}") from e
 
     # ------------------------------------------------------------------
@@ -635,15 +660,19 @@ class VictimClient:
             data = r.json()
         except (httpx.HTTPError, ValueError) as e:
             raise VictimError(f"http chat failed: {e}") from e
-        for k in ("reply", "response", "content", "message", "text"):
+        # "message" is the field WE sent; never treat it as the reply, or an
+        # echoing server hands the attacker's own prompt straight back.
+        for k in ("reply", "response", "content", "text"):
             v = data.get(k)
             if isinstance(v, str):
                 return v
         raise VictimError(f"http response missing reply field: {data}")
 
     def _send_ipc(self, message: str) -> str:
-        path = self.chat_endpoint[len("ipc://"):]
-        if not os.path.exists(path):
+        # `urlparse().path` so both `ipc:///abs/path.sock` (netloc empty) and
+        # `ipc:/abs/path.sock` resolve to the same socket path.
+        path = urllib.parse.urlparse(self.chat_endpoint).path
+        if not path or not os.path.exists(path):
             raise VictimError(f"ipc socket missing: {path}")
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
@@ -658,11 +687,17 @@ class VictimClient:
                     buf += chunk
         except OSError as e:
             raise VictimError(f"ipc chat failed: {e}") from e
+        # Peer closed without sending anything (or only whitespace): that is a
+        # disconnect, not a malformed reply — say so plainly.
+        if not buf.strip():
+            raise VictimError("ipc peer closed without sending a reply")
         try:
-            data = json.loads(buf.decode("utf-8").strip() or "{}")
+            data = json.loads(buf.decode("utf-8").strip())
         except json.JSONDecodeError as e:
             raise VictimError(f"ipc response not JSON: {e}") from e
-        for k in ("reply", "response", "content", "message", "text"):
+        # "message" is the field WE sent; excluding it stops an echoing peer
+        # from handing the attacker's own prompt back as the reply.
+        for k in ("reply", "response", "content", "text"):
             v = data.get(k)
             if isinstance(v, str):
                 return v

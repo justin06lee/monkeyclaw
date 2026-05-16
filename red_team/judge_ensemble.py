@@ -218,12 +218,26 @@ def _parse_role_response(role: str, text: str) -> RoleVote:
     turns = data.get("evidence_turns", [])
     if not isinstance(turns, list):
         turns = []
-    clean_turns = [int(t) for t in turns if isinstance(t, (int, float))]
+    # Accept ints/floats as well as digit strings — models sometimes return
+    # turn indices as strings (e.g. ["3", "7"]); coerce rather than drop them.
+    clean_turns = [_to_turn(t) for t in turns]
+    clean_turns = [t for t in clean_turns if t is not None]
     return RoleVote(
         role=role, verdict=verdict, score=score, confidence=confidence,
         reasoning=reasoning, evidence_turns=clean_turns,
         failure_class=failure_class, severity=severity,
     )
+
+
+def _to_turn(t: object) -> int | None:
+    """Coerce a turn index to int, accepting int/float or a digit string."""
+    if isinstance(t, bool):
+        return None
+    if isinstance(t, (int, float)):
+        return int(t)
+    if isinstance(t, str) and t.strip().isdigit():
+        return int(t.strip())
+    return None
 
 
 def _clamp01(v: object) -> float:
