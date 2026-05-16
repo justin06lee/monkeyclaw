@@ -30,6 +30,10 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from infra.telemetry import TelemetryEmitter
 
 from interfaces.types import (
     FsDiff,
@@ -286,7 +290,7 @@ class MonitoringHarness:
     """Per-lane monitoring. Use as a context manager; produces a LaneResult."""
 
     def __init__(self, cfg: HarnessConfig, lane_id: str, idea_id: str,
-                 zone_id: str, telemetry=None) -> None:
+                 zone_id: str, telemetry: TelemetryEmitter | None = None) -> None:
         self.cfg = cfg
         self.lane_id = lane_id
         self.idea_id = idea_id

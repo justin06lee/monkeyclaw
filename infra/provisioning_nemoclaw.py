@@ -24,6 +24,10 @@ import subprocess
 import tempfile
 import uuid
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from infra.telemetry import TelemetryEmitter
 
 from interfaces.provisioning import (
     ProvisioningError,
@@ -65,7 +69,7 @@ class NemoClawProvisioner(VictimProvisioner):
         gateway_container: str = "openshell-cluster-nemoclaw",
         snapshot_restore_timeout_s: int = 180,
         recover_timeout_s: int = 600,
-        telemetry=None,
+        telemetry: TelemetryEmitter | None = None,
     ) -> None:
         self.cli = cli_binary
         # Optional TelemetryEmitter. When set, provisioning emits A5
@@ -234,7 +238,7 @@ class NemoClawProvisioner(VictimProvisioner):
 class MockProvisioner(VictimProvisioner):
     """In-memory provisioner for tests and offline development."""
 
-    def __init__(self, telemetry=None) -> None:
+    def __init__(self, telemetry: TelemetryEmitter | None = None) -> None:
         self._instances: dict[str, VictimInstance] = {}
         # Optional TelemetryEmitter. Unset -> behavior is identical to before.
         self._telemetry = telemetry

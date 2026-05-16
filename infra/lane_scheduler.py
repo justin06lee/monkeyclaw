@@ -29,6 +29,10 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from queue import Empty, PriorityQueue
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from interfaces.mcp_tools import MonkeyClawMCP
 
 from infra.monitoring_harness import HarnessConfig, MonitoringHarness
 from infra.telemetry import TelemetryEmitter
@@ -71,7 +75,7 @@ class LaneScheduler:
         on_result: Callable[[LaneResult], None],
         on_error: Callable[[Exception, IdeaObject], None] | None = None,
         serial: bool = True,
-        mcp=None,
+        mcp: MonkeyClawMCP | None = None,
     ) -> None:
         self.lane_cfg = lane_cfg
         self.nemoclaw_cfg = nemoclaw_cfg
@@ -196,6 +200,7 @@ class LaneScheduler:
                 lane_id=lane_id,
                 idea_id=idea.idea_id,
                 zone_id=idea.zone_id,
+                telemetry=emitter,
             )
             with harness:
                 t = threading.Thread(
