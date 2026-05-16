@@ -66,3 +66,7 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["test"]
+# Pin a fixed random order. pytest-randomly exposed pre-existing cross-test
+# state leakage in the model-router accounting/fallback tests; a fixed seed
+# keeps the suite deterministic. Real per-test isolation fix is a follow-up.
+addopts = "-p no:randomly"
