@@ -112,3 +112,38 @@ def test_nemoclaw_config_has_work_area_fields():
     assert hasattr(c, "baseline_snapshot")
     assert hasattr(c, "work_area_dir")
     assert c.patch_build_timeout_s > 0
+
+
+def test_ephemeral_provision_clones_baseline_and_stamps_deterministic(
+    tmp_path: Path, monkeypatch):
+    from interfaces.provisioning import VictimConfig
+
+    calls = write_stub(tmp_path, monkeypatch, snapshots=True, recover=True)
+    p = NemoClawProvisioner(
+        sandbox_name="monkey-victim", clean_snapshot="clean-baseline",
+        work_area_dir=str(tmp_path / "work"))
+    inst = p.provision_victim(VictimConfig(
+        nemoclaw_version="v0", policy_path="p", agent_type="coding_assistant",
+        agent_config_path="c"))
+    assert inst.metadata["deterministic"] == "true"
+    assert inst.metadata["sandbox_mode"] == "ephemeral"
+    log = calls.read_text()
+    assert "snapshot restore clean-baseline" in log
+    assert "recover" in log
+    work = tmp_path / "work" / inst.instance_id
+    assert work.exists()
+    p.teardown_victim(inst.instance_id)
+    assert not work.exists()   # real teardown discards the work area
+
+
+def test_recover_only_provision_stamps_not_deterministic(
+    tmp_path: Path, monkeypatch):
+    from interfaces.provisioning import VictimConfig
+
+    write_stub(tmp_path, monkeypatch, snapshots=False, recover=True)
+    p = NemoClawProvisioner(sandbox_name="monkey-victim", clean_snapshot="")
+    inst = p.provision_victim(VictimConfig(
+        nemoclaw_version="v0", policy_path="p", agent_type="coding_assistant",
+        agent_config_path="c"))
+    assert inst.metadata["deterministic"] == "false"
+    assert inst.metadata["sandbox_mode"] == "recover_only"
