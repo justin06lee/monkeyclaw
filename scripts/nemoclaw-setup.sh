@@ -80,16 +80,30 @@ run_installer() {
         bash
 }
 
+# Run the installer, retrying through the known transient failure modes
+# (NemoClaw `latest` is brittle, and the persisted volumes can carry stale
+# state across container recreation). Each retry repairs what the previous
+# attempt revealed:
+#   - openshell-sandbox extracted as a directory -> flatten it;
+#   - sandbox already registered in the gateway  -> delete it.
 clean_stale_state
-if ! run_installer; then
-    # The openshell-sandbox regression aborts the installer at the gateway
-    # step. Repair the binary and retry once: the second run reuses the
-    # already-installed (now-flat) openshell and proceeds to onboard.
+attempt=1
+max_attempts=3
+until run_installer; do
+    if [ "${attempt}" -ge "${max_attempts}" ]; then
+        echo "[nemoclaw-setup] ERROR: onboarding failed after ${attempt} attempts." >&2
+        exit 1
+    fi
+    echo "[nemoclaw-setup] attempt ${attempt} failed -- repairing, then retrying..."
     repair_openshell_sandbox
+    # A prior or partial run can leave the sandbox registered in the gateway,
+    # so onboarding aborts "sandbox already exists". Drop it (best effort --
+    # the gateway is reachable once an attempt has reached the sandbox step)
+    # so the retry creates it fresh.
+    openshell sandbox delete "${SANDBOX}" 2>/dev/null || true
     clean_stale_state
-    echo "[nemoclaw-setup] installer failed -- retrying after openshell-sandbox repair..."
-    run_installer
-fi
+    attempt=$((attempt + 1))
+done
 
 # --- 3. clean-baseline snapshot -------------------------------------------
 # MonkeyClaw's provisioner resets the victim with
