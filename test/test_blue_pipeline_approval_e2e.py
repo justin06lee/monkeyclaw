@@ -116,3 +116,23 @@ def test_high_severity_patch_goes_pending_then_finalizes_on_resolve(
         approver="alice", reason="reviewed")
     approved2 = pipe.process_blue_queue()
     assert approved2 == 1
+
+
+def test_auto_pr_runs_on_allow_when_enabled(tmp_path: Path):
+    pipe = _pipeline_with_pending_patch(tmp_path, "low")
+    # Turn auto_pr on and inject a fake PR generator that records the call.
+    from interfaces.config_schema import ApprovalsConfig
+    pipe.cfg.approvals = ApprovalsConfig(auto_pr=True)
+    calls: list[str] = []
+
+    class _FakePR:
+        def draft(self, patch, package, approval_event):  # noqa: ANN001
+            calls.append(patch.patch_id)
+            from interfaces.types import PullRequestDraft
+            return PullRequestDraft(
+                branch="monkeyclaw/x", pr_url="https://x/pull/1",
+                commit_sha="abc", created_at="2026-05-15T00:00:00Z")
+
+    pipe.pr_generator = _FakePR()
+    pipe.process_blue_queue()
+    assert calls  # the PR generator ran for the auto-allowed low patch

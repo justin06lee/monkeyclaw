@@ -100,6 +100,7 @@ from blue_team.test_generator import RegressionTestPair, TestGenerator
 from blue_team.triage import FixTask, TriageAgent, TriageConfig
 from infra.approval_service import ApprovalService
 from infra.notifications import AlertDispatcher
+from infra.pr_generator import PRGenerator
 
 LOG = logging.getLogger("monkeyclaw.blue.pipeline")
 
@@ -280,6 +281,10 @@ class Pipeline:
         self._pending_test_pairs: dict[str, RegressionTestPair] = {}
         self._pending_tasks: dict[str, FixTask] = {}
         self._pending_outcomes: dict[str, VerifyOutcome] = {}
+
+        # Optional post-approval PR drafting (approval spec §6.3).
+        self.pr_generator = PRGenerator(
+            base_branch=self.cfg.approvals.pr_base_branch)
 
     # ==================================================================
     # process_repro_queue
@@ -572,6 +577,10 @@ class Pipeline:
             task_id, patch.patch_id, test_id, vuln_ids, notes,
         )
 
+        # 3b. Optional post-approval PR draft (approval spec §6.3).
+        if self.cfg.approvals.auto_pr:
+            self._maybe_open_pr(patch, package)
+
         # 4. Close the lifecycle loop: package patching->verified, and each
         #    linked finding in_progress->patched->verified.
         if package is not None:
@@ -586,6 +595,24 @@ class Pipeline:
             except Exception as e:  # noqa: BLE001
                 LOG.warning("finding %s verify transition failed: %s",
                             package.finding_id, e)
+
+    def _maybe_open_pr(self, patch: PatchCandidate, package) -> None:  # noqa: ANN001
+        """Draft a PR for an approved patch — non-fatal on any failure."""
+        try:
+            events = self.mcp.get_approval_events(patch.patch_id)
+            allow = next((e for e in events if e.decision == "allow"), None)
+            if allow is None:
+                return
+            draft = self.pr_generator.draft(patch, package, allow)
+            if draft is None:
+                self.mcp.send_alert(
+                    f"[PR NOT OPENED] patch={patch.patch_id} — PR generation "
+                    f"failed; open the PR by hand. Approval still stands.",
+                    severity="medium")
+                return
+            LOG.info("PR drafted for %s: %s", patch.patch_id, draft.pr_url)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("auto-PR step failed for %s: %s", patch.patch_id, e)
 
     def _finalize_resolved_approvals(self) -> int:
         """Sweep expiry, then finalize patches whose approval is now `allow`.
