@@ -95,3 +95,20 @@ def test_red_pipeline_uses_router_clients():
         assert isinstance(pipe.strategist.llm, RoutedClient)
     finally:
         rt.shutdown()
+
+
+def test_blue_pipeline_uses_router_clients():
+    from infra.bootstrap import boot
+    from blue_team.pipeline import Pipeline as BlueTeamPipeline
+    from interfaces.model_router import RoutedClient
+    rt = boot(use_mock_provisioner=True)
+    try:
+        pipe = BlueTeamPipeline(runtime=rt)
+        assert isinstance(pipe.root_cause.llm, RoutedClient)
+        assert pipe.root_cause.llm.role == "root_cause"
+        assert isinstance(pipe.cold_verifier.llm, RoutedClient)
+        assert pipe.cold_verifier.llm.role == "cold_verification"
+        assert isinstance(pipe.patch_generator.llm, RoutedClient)
+        assert pipe.patch_generator.llm.role == "patch_generation"
+    finally:
+        rt.shutdown()
