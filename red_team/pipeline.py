@@ -51,6 +51,7 @@ from red_team.judge import Judge, JudgeConfig
 from red_team.priority import score_ideas
 from red_team.progress import score_progress, search_score
 from red_team.routing import route_judgment
+from red_team.trajectory import score_trajectory
 from red_team.strategist import Strategist
 from red_team.tournament import ModelTournament, load_tournament_config
 
@@ -154,6 +155,9 @@ class Pipeline:
         # idea_id → IdeaObject (the synthesized chain) so judge() can look up
         # the source of a lane result.
         self._idea_book: dict[str, IdeaObject] = {}
+        # idea_id → dedup novelty_score, so judge() can feed score_progress
+        # a real novelty measurement instead of the self-assessment proxy.
+        self._idea_novelty: dict[str, float] = {}
         self._book_lock = threading.Lock()
         # MAP-Elites archive of diverse high-performing attempts (spec B5/B8);
         # routing maps every judged attempt into a niche cell.
@@ -244,6 +248,14 @@ class Pipeline:
             )
             ideas_deduped += sum(1 for o in extra_outcomes if not o.keep)
             outcomes.extend(extra_outcomes)
+
+        # Record each kept idea's dedup novelty so judge() can feed
+        # score_progress a real novelty measurement (trajectory spec §6.2).
+        for oc in outcomes:
+            if oc.keep:
+                self._idea_novelty[oc.idea.idea_id] = oc.novelty_score
+                if oc.logged_idea_id:
+                    self._idea_novelty[oc.logged_idea_id] = oc.novelty_score
 
         # Score every kept idea, then hand the whole batch to the strategist.
         # It synthesizes the raw ideas into `n_lanes` distinct deep-dive
@@ -346,13 +358,23 @@ class Pipeline:
             idea_summary=f"{idea.title}: {idea.approach}",
             success_criteria=idea.success_criteria,
         )
-        # B3/B8 — derive a calibrated progress score and route with it, so
-        # near-misses feed the MAP-Elites archive and the repro queue only
-        # receives confirmed/suspicious findings.
-        progress = score_progress(lane_result)
+        # B3/B8 — derive the per-turn trajectory, then a calibrated progress
+        # score, and route with both. The trajectory feeds three rubric
+        # dimensions; near-misses feed the MAP-Elites archive; the repro
+        # queue only receives confirmed/suspicious findings.
+        try:
+            trajectory = score_trajectory(lane_result, judgment)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("trajectory scoring failed for lane %s: %s — "
+                        "routing with trajectory=None", lane_result.lane_id, e)
+            trajectory = None
+        novelty_score = self._idea_novelty.get(lane_result.idea_id)
+        progress = score_progress(
+            lane_result, trajectory=trajectory, novelty_score=novelty_score)
         finding_id = route_judgment(
             judgment, idea, self.mcp,
             progress=progress,
+            trajectory=trajectory,
             archive=self._archive,
             alert_severity_floor=self.alert_severity_floor,
         )
