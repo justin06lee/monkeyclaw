@@ -119,3 +119,7 @@ guardrails:
   max_lanes_per_cycle: 64
   max_tokens_per_cycle: 5000000
   emergency_stop: false
+
+code_context:
+  backend: python   # set to 'argyph' to use the Argyph binary
+  argyph_binary: null

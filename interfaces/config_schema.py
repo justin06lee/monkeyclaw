@@ -143,6 +143,13 @@ class GuardrailsConfig(BaseModel):
     emergency_stop: bool = False
 
 
+class CodeContextConfig(BaseModel):
+    """Code-context search backend — Python indexer or Argyph."""
+
+    backend: str = "python"          # "python" | "argyph"
+    argyph_binary: str | None = None  # explicit path; None = autodetect
+
+
 class MonkeyClawConfig(BaseModel):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     ideation: IdeationConfig = Field(default_factory=IdeationConfig)
@@ -157,3 +164,4 @@ class MonkeyClawConfig(BaseModel):
     nemoclaw: NemoClawConfig = Field(default_factory=NemoClawConfig)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
+    code_context: CodeContextConfig = Field(default_factory=CodeContextConfig)
