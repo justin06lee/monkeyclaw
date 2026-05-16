@@ -21,6 +21,22 @@ def test_cli_help_lists_demo_command():
     assert "demo" in r.stdout
 
 
+def test_cli_run_accepts_llm_provider_flags():
+    from infra.cli import build_parser
+
+    args = build_parser().parse_args([
+        "run", "--cycles", "1", "--target", "x", "--claude",
+    ])
+    assert args.claude is True
+    assert args.func.__name__ == "_cmd_run"
+
+    args = build_parser().parse_args(["tg-attack", "--codex"])
+    assert args.codex is True
+
+    args = build_parser().parse_args(["blue-team", "--opencode"])
+    assert args.opencode is True
+
+
 def test_cli_demo_runs_planted_profile(tmp_path):
     r = _cli("demo", "--profile", "planted-filesystem",
              env_extra={"MC_STORAGE__DB_PATH": str(tmp_path / "demo.db"),

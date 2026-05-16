@@ -23,6 +23,7 @@ from interfaces.mcp_tools import MonkeyClawMCP
 if TYPE_CHECKING:
     from infra.state_machine import TransitionEngine
 from interfaces.types import (
+    AgentEventInput,
     AppealVerdict,
     ApprovalEvent,
     ApprovalEventInput,
@@ -293,16 +294,26 @@ class MCPServer(MonkeyClawMCP):
             (*ids, zone),
         )
         same_zone = {r["idea_id"] for r in rows}
+        # Examine ALL same-zone candidates and keep the highest similarity —
+        # the nearest KNN hit is not necessarily the most similar in-zone idea.
+        best_similarity = 0.0
+        best_idea_id: str | None = None
         for iid, dist in candidates:
-            if iid in same_zone:
-                similarity = 1.0 - dist  # vec0 returns squared L2 for normalized -> ~cosine
-                similarity = max(0.0, min(1.0, similarity))
-                return DupResult(
-                    is_duplicate=similarity >= threshold,
-                    max_similarity=similarity,
-                    matching_idea_id=iid if similarity >= threshold else None,
-                )
-        return DupResult(False, 0.0, None)
+            if iid not in same_zone:
+                continue
+            similarity = 1.0 - dist  # vec0 returns squared L2 for normalized -> ~cosine
+            similarity = max(0.0, min(1.0, similarity))
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_idea_id = iid
+        if best_idea_id is None:
+            return DupResult(False, 0.0, None)
+        is_dup = best_similarity >= threshold
+        return DupResult(
+            is_duplicate=is_dup,
+            max_similarity=best_similarity,
+            matching_idea_id=best_idea_id if is_dup else None,
+        )
 
     def log_idea(self, idea: IdeaInput) -> str:
         self._emit_invoked("log_idea")
@@ -384,14 +395,23 @@ class MCPServer(MonkeyClawMCP):
     def push_repro_package(self, package: ReproPackageInput) -> str:
         self._emit_invoked("push_repro_package")
         pid = _new_id("PKG")
+        caller_supplied = bool(package.vuln_id)
         vuln_id = package.vuln_id or _vuln_id()
         # `mint_vuln_id` on the blue side is a process-local counter, so
         # separate runs re-mint the same id (MC-2026-0001, ...). The DB's
-        # `vuln_id` column is UNIQUE — re-mint until we land a free one.
-        while self.db.fetchone(
-            "SELECT 1 FROM repro_packages WHERE vuln_id = ?", (vuln_id,)
-        ) is not None:
-            vuln_id = _vuln_id()
+        # `vuln_id` column is UNIQUE. Only re-mint when the id was
+        # auto-generated here — re-minting a caller-supplied id would silently
+        # lose it, so a caller collision is a hard error instead.
+        if caller_supplied:
+            if self.db.fetchone(
+                "SELECT 1 FROM repro_packages WHERE vuln_id = ?", (vuln_id,)
+            ) is not None:
+                raise ValueError(f"vuln_id {vuln_id!r} already exists")
+        else:
+            while self.db.fetchone(
+                "SELECT 1 FROM repro_packages WHERE vuln_id = ?", (vuln_id,)
+            ) is not None:
+                vuln_id = _vuln_id()
         affected_paths = (
             json.dumps([asdict(p) for p in package.affected_paths])
             if package.affected_paths is not None else None
@@ -677,6 +697,21 @@ class MCPServer(MonkeyClawMCP):
                  round.winner_label, _now()),
             )
         return round_id
+
+    def log_agent_event(self, event: AgentEventInput) -> str:
+        eid = _new_id("AGE")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO agent_events(event_id, session_id, agent_id, "
+                "agent_kind, event_type, role, cycle_id, lane_id, idea_id, "
+                "model, provider, text, tool_name, status, metadata, created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (eid, event.session_id, event.agent_id, event.agent_kind,
+                 event.event_type, event.role, event.cycle_id, event.lane_id,
+                 event.idea_id, event.model, event.provider, event.text,
+                 event.tool_name, event.status, json.dumps(event.metadata), _now()),
+            )
+        return eid
 
     # ------------------------------------------------------------------
     # Judge votes
@@ -1609,22 +1644,26 @@ class MCPServer(MonkeyClawMCP):
     # Notifications
     # ------------------------------------------------------------------
     def send_alert(self, message: str, severity: str) -> None:
-        self.db.execute(
-            "INSERT INTO alerts(message, severity, channel, delivered) VALUES (?, ?, ?, ?)",
-            (message, severity, "stdout" if self.alert_sink is None else "telegram", 0),
-        )
-        if self.alert_sink is not None:
-            try:
-                self.alert_sink(message, severity)
-                # mark the most recent alert delivered
-                self.db.execute(
-                    "UPDATE alerts SET delivered = 1 WHERE alert_id = "
-                    "(SELECT MAX(alert_id) FROM alerts)"
-                )
-            except Exception as e:
-                LOG.exception("alert delivery failed: %s", e)
-        else:
-            sys.stderr.write(f"[ALERT {severity.upper()}] {message}\n")
+        with self.db.lock():
+            cursor = self.db.execute(
+                "INSERT INTO alerts(message, severity, channel, delivered) "
+                "VALUES (?, ?, ?, ?)",
+                (message, severity,
+                 "stdout" if self.alert_sink is None else "telegram", 0),
+            )
+            alert_id = cursor.lastrowid
+            if self.alert_sink is not None:
+                try:
+                    self.alert_sink(message, severity)
+                    # mark this exact alert delivered — no MAX() race
+                    self.db.execute(
+                        "UPDATE alerts SET delivered = 1 WHERE alert_id = ?",
+                        (alert_id,),
+                    )
+                except Exception as e:
+                    LOG.exception("alert delivery failed: %s", e)
+            else:
+                sys.stderr.write(f"[ALERT {severity.upper()}] {message}\n")
 
     # ------------------------------------------------------------------
     # Mutation operator learning (mutation-operator-learning spec §8)
@@ -1791,6 +1830,21 @@ def _regression_row_to_test(r) -> RegressionTest:
 # ---------------------------------------------------------------------------
 
 
+# Explicit allow-list of MCP tool methods exposed over HTTP. Dynamic dispatch
+# via getattr would expose ANY public attribute to unauthenticated callers.
+_ALLOWED_TOOLS = frozenset({
+    "get_coverage_gaps", "update_zone_coverage", "log_finding", "search_findings",
+    "get_recent_summaries", "log_cycle_summary", "check_duplicate", "log_idea",
+    "push_to_repro_queue", "get_repro_queue", "push_repro_package",
+    "get_blue_team_queue", "get_regression_suite", "add_regression_test",
+    "search_codebase", "send_alert", "log_telemetry_event", "get_session_timeline",
+    "log_model_run", "log_agent_event", "log_judge_vote", "log_policy_corpus_result",
+    "get_policy_corpus_results", "mark_repro_queue_status", "mark_repro_package_status",
+    "log_patch_candidate", "mark_patch_status", "update_archive_cell",
+    "get_archive_cells", "store_idea_components", "get_idea_components",
+})
+
+
 def build_app(server: MCPServer):
     from fastapi import FastAPI, HTTPException
 
@@ -1803,8 +1857,10 @@ def build_app(server: MCPServer):
 
     @app.post("/tool/{name}")
     def call(name: str, payload: dict):
+        if name not in _ALLOWED_TOOLS:
+            raise HTTPException(status_code=404, detail=f"unknown tool {name}")
         tool = getattr(server, name, None)
-        if tool is None or name.startswith("_") or not callable(tool):
+        if not callable(tool):
             raise HTTPException(status_code=404, detail=f"unknown tool {name}")
         try:
             result = tool(**payload)
@@ -1840,7 +1896,10 @@ def main(argv: list[str] | None = None) -> int:
     server = MCPServer(db)
 
     if args.smoke:
-        return _smoke(server)
+        try:
+            return _smoke(server)
+        finally:
+            db.close()
 
     import uvicorn
     uvicorn.run(build_app(server), host=args.host, port=args.port, log_level="info")

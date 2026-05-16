@@ -112,6 +112,11 @@ class LaneScheduler:
                                          thread_name_prefix="mc-lane")
         self._seq_lock = threading.Lock()
         self._seq = 0
+        # `_inflight` and `_lanes_dispatched` are touched by the dispatcher
+        # thread, the worker done-callback, and `drain()` — guard them all.
+        # Reentrant: `add_done_callback` runs the callback inline (same
+        # thread, lock still held) when the future is already complete.
+        self._inflight_lock = threading.RLock()
         self._inflight: dict[str, Future] = {}
         self._stop = threading.Event()
         self._dispatcher: threading.Thread | None = None
@@ -143,13 +148,19 @@ class LaneScheduler:
         """Block until the queue is empty AND all inflight lanes complete."""
         deadline = time.time() + timeout if timeout is not None else None
         while not self._stop.is_set():
-            if self._queue.empty() and not self._inflight:
+            with self._inflight_lock:
+                inflight = len(self._inflight)
+            if self._queue.empty() and inflight == 0:
                 return
             if deadline is not None and time.time() > deadline:
                 LOG.warning("drain timed out; %d queued, %d inflight",
-                             self._queue.qsize(), len(self._inflight))
+                             self._queue.qsize(), inflight)
                 return
             time.sleep(0.1)
+
+    def _inflight_pop(self, iid: str) -> None:
+        with self._inflight_lock:
+            self._inflight.pop(iid, None)
 
     # ------------------------------------------------------------------
     def _dispatch_loop(self) -> None:
@@ -158,21 +169,30 @@ class LaneScheduler:
                 job = self._queue.get(timeout=0.5)
             except Empty:
                 continue
+            with self._inflight_lock:
+                lanes_dispatched = self._lanes_dispatched
             if self._enforcer is not None:
                 if self._enforcer.emergency_stopped():
                     LOG.warning("emergency stop active — halting lane dispatch "
                                 "(idea %s left undispatched)", job.idea.idea_id)
                     break
-                budget = self._enforcer.check_lane_budget(self._lanes_dispatched)
+                budget = self._enforcer.check_lane_budget(lanes_dispatched)
                 if budget.decision == "deny":
                     LOG.warning("lane budget exhausted (%s) — halting lane "
                                 "dispatch (idea %s left undispatched)",
                                 budget.reason_code, job.idea.idea_id)
                     break
-            self._lanes_dispatched += 1
-            fut = self._pool.submit(self._run_lane, job.idea)
-            self._inflight[job.idea.idea_id] = fut
-            fut.add_done_callback(lambda f, iid=job.idea.idea_id: self._inflight.pop(iid, None))
+            # Submit and register the future under the lock, and attach the
+            # done-callback only after registration. The callback also takes
+            # `_inflight_lock`, so it cannot pop the entry before this insert
+            # completes — even for a lane that finishes near-instantly.
+            iid = job.idea.idea_id
+            with self._inflight_lock:
+                self._lanes_dispatched += 1
+                fut = self._pool.submit(self._run_lane, job.idea)
+                self._inflight[iid] = fut
+                fut.add_done_callback(
+                    lambda f, iid=iid: self._inflight_pop(iid))
             if self.serial:
                 # Block until this lane fully completes (including victim
                 # teardown) before dispatching the next — the single sandbox
@@ -246,10 +266,15 @@ class LaneScheduler:
                 telemetry=emitter,
             )
             with harness:
+                # daemon=True: on a lane timeout this thread is abandoned. A
+                # non-daemon thread would keep running — and keep mutating the
+                # victim sandbox — after the lane is judged. A daemon thread
+                # cannot block process exit.
                 t = threading.Thread(
                     target=self._executor_wrapper,
                     args=(idea, instance, harness),
                     name=f"{lane_id}-exec",
+                    daemon=True,
                 )
                 t.start()
                 t.join(timeout=self.lane_cfg.lane_timeout_seconds)

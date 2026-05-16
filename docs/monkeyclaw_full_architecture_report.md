@@ -1,461 +1,480 @@
 # MonkeyClaw Full Architecture Report
 
-Date: 2026-05-15
-
-## Inputs Reviewed
-
-- Repository: `justin06lee/monkeyclaw`, cloned into `/Volumes/Neural/monkeyclaw`.
-- Architecture sketch: `/Users/ezzyrappeport/Desktop/Untitled-2026-05-15-1150.excalidraw`.
-- Security whitepaper: `/Users/ezzyrappeport/Desktop/Securing_Coding_Agents_General_Analysis_1.0.pdf`.
-- Product/spec notes: `/Users/ezzyrappeport/Desktop/billion dollar idea copy.docx`.
-- External research: NVIDIA Nemotron official materials, OpenAI Codex/GPT-5.x docs, Anthropic Claude Opus 4.7 pages, OWASP LLM Top 10, Microsoft PyRIT, MITRE ATLAS, and WhiteRabbitNeo model listings.
+Date: 2026-05-16
+Status: As-built — reflects the system after the 17-spec upgrade program.
 
 ## Executive Summary
 
-MonkeyClaw is intended to be a continuous adversarial security hardening system for NemoClaw/OpenClaw. It should run a perpetual red -> judge -> repro -> blue -> regression loop: generate attacks, execute them against fresh victim sandboxes, verify outcomes with evidence, minimize confirmed repros, produce patch candidates and regression tests, verify fixes, then feed everything back into a coverage-driven knowledge base.
-
-The current repo is a strong scaffold, not a finished security product. It already contains the expected directory split, shared dataclasses, SQLite schema, MCP protocol, mock/real MCP implementations, red-team pipeline, blue-team pipeline, orchestrator, CLI, dashboard, and tests. The largest gaps are real NemoClaw/OpenClaw integration, production-grade telemetry/guardrails, atomic status transitions for blue-team queues, richer scoring/search dynamics from the DOCX, and a clear model routing policy.
-
-The Excalidraw file had a complete red/repro concept and only a blue-team heading. I updated it with the missing blue-team architecture: repro intake, triage/grouping, root-cause context, patch generation, test generation, verifier gates, human/PR gate, regression suite, knowledge update, and control-plane guardrails.
-
-## Current Repo Map
-
-### `interfaces/`
-
-This is the contract layer and the right architectural anchor. It contains:
-
-- `types.py`: shared dataclasses for ideas, lane results, judgments, findings, repro packages, patches, tests, policy config, and observability primitives.
-- `mcp_tools.py`: protocol for all MCP tools.
-- `schema.sql`: SQLite schema with 18 seeded attack-surface zones, vector tables, queues, findings, repro packages, patches, regression tests, code chunks, and alerts.
-- `provisioning.py`, `victim_client.py`, `nemoclaw_policy.py`: victim runtime contracts and policy adapters.
-
-Assessment: the boundary is correct. It should remain the merge-conflict firewall.
-
-### `infra/`
-
-Infrastructure is mostly present:
-
-- `database.py`: SQLite/sqlite-vec wrapper and embedding model loader.
-- `mcp_server.py`: real MCP protocol implementation over SQLite.
-- `mock_mcp.py`: mock server for tests/demo.
-- `orchestrator.py`: cycle loop and red/blue cadence.
-- `lane_scheduler.py`: parallel victim lane scheduling.
-- `monitoring_harness.py`: observable capture abstraction.
-- `provisioning_nemoclaw.py`: NemoClaw provisioner.
-- `codebase_indexer.py`: code indexing.
-- `notifications.py`: Telegram/webhook alert path.
-- `cli.py`, `dashboard.py`: operator surfaces.
-
-Assessment: the structure is correct, but real production behavior needs harder state management, stronger telemetry, security policy evidence, and cloud/hybrid backend options.
-
-### `red_team/`
-
-The red-team pipeline is implemented as the spec describes:
-
-- `ideation.py`: three prompt modes: creative, code-grounded, history-informed.
-- `dedup.py`, `priority.py`: duplicate filtering and priority selection.
-- `execution_agent.py`: attacker-victim execution driver.
-- `checks.py`: Tier 1 programmatic checks.
-- `judge.py`: Tier 1 plus semantic Tier 2 for prompt/social/memory zones.
-- `routing.py`: finding logging, repro queue push, coverage update, alerts.
-- `pipeline.py`: assembled red-team pipeline.
-
-Assessment: good MVP shape. It lacks the richer progress trajectory scoring, MAP-Elites archive, mutation operator learning, judge ensemble, and pairwise/Elo ranking described in the DOCX.
-
-### `blue_team/`
-
-The blue-team/repro side is scaffolded:
-
-- `replay_minimizer.py`: replay and delta-minimize.
-- `root_cause.py`: code-search-assisted fix-site locator.
-- `repro_writer.py`: structured repro document generator.
-- `cold_verifier.py`: fresh-agent verification loop.
-- `triage.py`: severity/blast-radius/fix-complexity grouping.
-- `patch_generator.py`: diff candidate generation.
-- `test_generator.py`: positive regression plus negative functionality tests.
-- `patch_verifier.py`: verifier gates.
-- `regression_runner.py`: permanent regression suite execution.
-- `pipeline.py`: assembled repro + blue + regression pipeline.
-
-Assessment: this is the area the Excalidraw sketch was missing. The code exists, but the architecture still needs explicit data/status transitions, patch application isolation, human approval/PR handling, and verified rollback behavior.
-
-### `.agents/` and `skill/`
-
-The `.agents` docs mirror the DOCX closely: three-person split, timeline, interface contracts, and implementation responsibilities. `skill/SKILL.md` packages MonkeyClaw as an OpenClaw skill.
-
-## Source Document Synthesis
-
-### DOCX
-
-The DOCX contains the real product vision. The most important additions beyond the current code are:
-
-- Use a staged progress rubric, not binary success/failure.
-- Score attack trajectories across turns: refusal strength, specificity, steerability, boundary erosion, transferability, novelty, robustness, and cost.
-- Store ideas as structured objects with tactic tags, useful components, failure modes, parent ideas, transfer scores, and mutation suggestions.
-- Use pairwise comparison or Elo-style ranking when absolute scoring is noisy.
-- Use MAP-Elites archives so the system preserves diverse high-performing ideas across niches instead of converging on one attack family.
-- Score mutation operators: paraphrase, benign framing, multi-turn split, persona shift, combine ideas, sequence reversal, abstraction/concretization.
-- Use a judge ensemble: safety, progress, novelty, robustness, forensics.
-
-Recommendation: implement this as a second-generation `red_team/search_memory.py` + schema expansion, not as prompt-only behavior.
-
-### PDF
-
-The PDF is a deployment security blueprint for coding agents. It should influence MonkeyClaw in two ways:
-
-1. MonkeyClaw should test the controls it names: filesystem scope, shell execution, network egress, MCP governance, identity/OAuth scope, approvals, telemetry, hook decisions, browser/desktop surfaces, repository control-plane edits, package scripts, and CI/deploy authority.
-2. MonkeyClaw itself must obey these controls, because it is an intentionally adversarial agent system.
-
-Add required evidence objects for:
-
-- Tool request and decision.
-- File read/write.
-- Shell started/finished.
-- Network request/proxy decision.
-- MCP invocation/schema hash/OAuth scopes.
-- Approval requested/resolved.
-- Session started/finished.
-
-The PDF's evaluation corpus should become a built-in policy test suite. Cases T01-T25 map cleanly to MonkeyClaw zones and should become canned fixtures.
-
-### Excalidraw
-
-The original sketch covered:
-
-- Red team idea sources: high-temp/creative model, source analyzer + Argyph, previous-data contrastive agent, NemoClaw codebase, Argyph.
-- Strategist with citations.
-- MAP-Elites/idea combination.
-- Execution model loop.
-- Judge and full attack object.
-- Knowledge table, SQLite/vector memory, librarian.
-- Repro module: replayer, minimizer, root-cause locator + Argyph, writer, verifier, blue-team handoff.
-
-Missing piece was the blue-team architecture. Added in the file:
-
-- Repro queue intake.
-- Triage and grouping.
-- Root-cause context.
-- Patch generator.
-- Test generator.
-- Patch verifier.
-- Human/PR gate.
-- Regression suite.
-- Knowledge table and coverage updates.
-- Control-plane guardrails from the PDF.
-
-## Full Target Architecture
-
-### 1. Control Plane
-
-Owns configuration, policy, lifecycle, and operator controls.
-
-Required components:
-
-- Config loader with environment overrides.
-- Model routing policy.
-- Cycle scheduler.
-- Lane scheduler.
-- Queue state machine.
-- Budget manager.
-- Approval policy.
-- Secrets policy.
-- Network phase policy.
-- MCP server allowlist/schema hash registry.
-- Telemetry schema and retention policy.
-
-### 2. Data Plane
-
-Owns all persistent state.
-
-MVP:
-
-- SQLite + sqlite-vec.
-- Tables already present: surface zones, findings, ideas, cycle log, repro queue, repro packages, regression tests, patches, code chunks, alerts.
-
-Needed additions:
-
-- `idea_components`: extracted tactics/components from each idea.
-- `idea_archive_cells`: MAP-Elites bins.
-- `idea_pairwise_results`: comparison outcomes.
-- `mutation_operator_stats`: learned operator utility.
-- `judge_votes`: ensemble judge results.
-- `policy_events`: PDF-derived tool/network/MCP/file/shell decisions.
-- `model_runs`: model, prompt class, token use, cost, latency, verdict.
-- `approval_events`: human/service approval audit.
-
-Production:
-
-- PostgreSQL + pgvector for concurrency.
-- Object storage for transcripts/artifacts.
-- Signed, immutable audit logs for security-relevant events.
-
-### 3. Red Team
-
-MVP pipeline:
-
-1. Get coverage gaps.
-2. Generate ideas from three modes.
-3. Deduplicate and score.
-4. Execute top ideas in parallel.
-5. Run Tier 1 checks.
-6. Run Tier 2 semantic judge when needed.
-7. Route findings to repro queue.
-
-Target pipeline additions:
-
-- Staged risk/progress rubric.
-- Trajectory slope scoring.
-- Near-miss extraction.
-- Component extraction from prompts and transcripts.
-- MAP-Elites archive update.
-- Mutation operator learning.
-- Pairwise/Elo idea ranking.
-- Multi-model ideation tournament for selected zones.
-- OWASP/MITRE/PDF corpus-driven attack generation.
-
-### 4. Repro Pipeline
-
-Required flow:
-
-1. Dequeue confirmed/suspicious finding.
-2. Replay on fresh victim N times.
-3. Compute repro rate.
-4. Delta-minimize turns/tool calls/payloads.
-5. Root-cause locate for high-severity findings.
-6. Write structured repro doc.
-7. Cold-verify using a fresh agent with no prior context.
-8. Push package to blue-team queue and knowledge table.
-
-Needed hardening:
-
-- Queue completion/failure status updates.
-- Artifact capture paths.
-- Repro flake classification.
-- Deterministic victim snapshots.
-- Clear downgrade path for non-reproducible findings.
-
-### 5. Blue Team
-
-Required flow:
-
-1. Pull ready repro packages.
-2. Triage and group by zone/root cause.
-3. Generate patch candidates.
-4. Generate positive regression tests and negative functionality tests.
-5. Verify patch in isolated branch/worktree/sandbox.
-6. Run full regression suite.
-7. Mark package/finding/patch statuses.
-8. Add permanent regression tests.
-9. Alert and update coverage.
-
-Needed hardening:
-
-- Patch application should happen only in disposable branches/worktrees.
-- Human review should be optional but default for high/critical.
-- Auto-PR generation should be post-MVP.
-- Patch verifier must reject patches that remove tests, loosen policy, bypass hooks, or only suppress evidence.
-- Regression suite should include PDF policy tests, not just vulnerability repros.
-
-### 6. Monitoring and Evidence
-
-Current observability primitives are right but need production emitters.
-
-Required evidence:
-
-- Filesystem diff: created, modified, deleted, accessed, outside allowed paths.
-- Network log: destination, method, bytes, response, blocked/allowed.
-- Process log: executable, syscall, args class, blocked, inside sandbox.
-- Memory diff: keys and value classes, not raw secrets.
-- Inference routing log: local/cloud route, PII class, content hash/excerpt.
-- MCP calls: server/tool/schema hash/OAuth scope/input hash.
-- Approval decisions: allow/deny/ask, reason, approver, expiry.
-
-### 7. Dashboard and Reports
-
-Dashboard should show:
-
-- Global and per-zone coverage.
-- Current lanes.
-- Finding timeline.
-- Repro queue and blue-team queue.
-- Regression pass rate.
-- Token/cost burn.
-- Model performance by role.
-- Mutation operator success.
-- MAP-Elites archive heatmap.
-- Policy evidence completeness.
-
-Reports should include:
-
-- Security report card per defense layer.
-- Repro documents.
-- Patch verification results.
-- Regression suite deltas.
-- Control-plane audit summary.
-
-## Model Routing Recommendation
-
-Do not use one model for everything. Use model routing by task risk and complexity.
-
-### Frontier reasoning/coding
-
-Use Claude Opus 4.7, GPT-5.3-Codex, or equivalent frontier coding/reasoning models for:
-
-- Patch generation.
-- High-severity root-cause analysis.
-- Complex code-grounded ideation.
-- Difficult semantic judgment appeals.
-- Architecture/spec generation.
-
-Reason: these tasks need long-context reasoning, code changes, and low hallucination tolerance.
-
-### Nemotron
-
-Use NVIDIA Nemotron for most high-volume agent work.
-
-Recommended split:
-
-- Nemotron 3 Nano: cheap summarization, structured extraction, log normalization, simple cold-verifier following, queue triage prefilter, mutation proposal prefilter.
-- Nemotron 3 Super: main local/enterprise workhorse for ideation, semantic judging, repro writing, and most execution-agent planning. It is a 120B total / 12B active MoE model and fits the current repo's config direction.
-- Nemotron 3 Ultra: reserve for hard long-horizon agent planning or when local frontier-like reasoning is needed and infrastructure can support it.
-- Nemotron content-safety reasoning 4B: use as a specialized auxiliary judge for content-safety/policy classification, not as the main attacker or patcher.
-
-The current repo config names `nvidia/nemotron-3-super-120b-a12b`; that is a sensible default for serious local agentic work. Add explicit per-role model config instead of one global ideation/judgment model.
-
-### Cyber-specialized open models
-
-WhiteRabbitNeo-13B-v1 is outdated as a default. Its Hugging Face listing is from early 2024, and newer WhiteRabbitNeo models exist, including Qwen-2.5-Coder-based variants. Use cyber-specialized models only as optional tournament entrants or auxiliary idea generators, not as authoritative judges or patchers.
-
-For offensive/defensive cyber reasoning, prefer a controlled internal model route:
-
-- Run cyber models only in isolated red-team lanes.
-- Log all outputs and block direct exfiltration.
-- Use programmatic checks and cold repro as the source of truth.
-- Never accept "uncensored" as a quality signal. The system needs effective adversarial exploration with evidence, not unbounded compliance.
-
-### OpenAI/Codex
-
-Use GPT-5.3-Codex or the current Codex-specialized model for:
-
-- Codebase-wide implementation planning.
-- Patch candidate generation.
-- Test generation.
-- Refactors that must preserve behavior.
-
-### Embeddings
-
-The repo currently uses `sentence-transformers/all-MiniLM-L6-v2` at 384 dimensions. The DOCX recommends `nomic-embed-text` or OpenAI embeddings. Pick one per deployment and keep it stable. For MVP, keep MiniLM if tests already depend on 384 dimensions. For production, migrate through a schema version to a stronger 768/1536-dimensional embedding model if retrieval quality becomes a blocker.
-
-## Should MonkeyClaw Train Its Own Small Model?
-
-Yes, but not for initial vulnerability discovery or patch generation.
-
-Recommended custom model:
-
-- A small ranking/preference model or LoRA adapter that predicts idea/component usefulness from structured traces.
-- Inputs: idea summary, tactic tags, zone, transcript-derived trajectory features, judge ensemble scores, repro outcome, token cost, mutation operator.
-- Outputs: usefulness score, likely mutation operators, archive niche, and likely failure mode.
-
-Why this is beneficial:
-
-- MonkeyClaw will generate thousands of labeled attempts naturally.
-- The label is cheap and concrete: repro success, progress delta, Tier 1/Tier 2 verdict, pairwise preference, mutation improvement.
-- A small model can replace expensive LLM calls for pre-ranking and mutation selection.
-- This directly improves token efficiency and exploration quality.
-
-Do not train first. Collect at least hundreds to thousands of attempts, build the structured dataset, then train/evaluate offline. Until then, use heuristics plus pairwise judge comparisons.
-
-## MVP Build Spec
-
-### Phase 0: Environment and Verification
-
-- Add setup docs for systems without `uv`.
-- Add CI that runs `uv sync`, `pytest`, and `ruff`.
-- Add a minimal smoke test that can run without live NemoClaw.
-- Pin dependency versions that matter for sqlite-vec and sentence-transformers.
-
-### Phase 1: State Machine and Data Integrity
-
-- Add explicit statuses for findings, repro queue, repro packages, patches, and regression tests.
-- Make queue completion/failure atomic.
-- Add migrations instead of editing `schema.sql` after release.
-- Add structured event logging tables.
-- Add model run/token/cost tracking.
-
-### Phase 2: Real NemoClaw/OpenClaw Integration
-
-- Confirm live NemoClaw CLI/gateway commands.
-- Implement provision/connect/recover/snapshot lifecycle.
-- Capture real fs/network/process/inference telemetry.
-- Add planted-vulnerability victim profiles.
-- Add policy fixtures for the 18 zones.
-
-### Phase 3: Red Team Search Dynamics
-
-- Implement staged progress scoring.
-- Store near misses.
-- Add idea component extraction.
-- Add MAP-Elites archive.
-- Add mutation operator stats.
-- Add judge ensemble results.
-- Add model tournament mode behind a config flag.
-
-### Phase 4: Repro Quality
-
-- Persist replay artifacts.
-- Add flake classification.
-- Make cold verifier revisions traceable.
-- Require repro docs to include environment, steps, expected/actual, evidence, affected paths, mitigations, and confidence.
-
-### Phase 5: Blue Team
-
-- Apply patch candidates in disposable worktrees/sandboxes.
-- Run positive and negative tests.
-- Run full regression before approving.
-- Add optional human approval.
-- Add PR generation later.
-- Update coverage and knowledge table after verified fixes.
-
-### Phase 6: Security Controls from PDF
-
-- Add policy test corpus T01-T25.
-- Add network phase allowlist tests.
-- Add MCP schema drift tests.
-- Add secret-read and control-plane edit tests.
-- Add telemetry completeness scoring.
-- Add CODEOWNERS recommendations for control-plane files.
-
-### Phase 7: Dashboard and Reporting
-
-- Coverage heatmap.
-- Queue status.
-- Findings and repro timeline.
-- Regression trend.
-- Cost/model usage.
-- MAP-Elites archive.
-- Policy evidence completeness.
-
-## Key Gaps and Risks
-
-- Verification could not be run locally because `uv`, pytest, ruff, and most Python dependencies are missing.
-- Real NemoClaw integration is the highest-risk unknown.
-- Blue-team code needs stronger queue lifecycle and patch isolation.
-- Current schema does not yet represent MAP-Elites, mutation stats, judge votes, policy events, or model runs.
-- Current model config is too coarse; role-based routing is needed.
-- PDF-derived security controls are not yet built into the harness.
-- Auto-patching without human review would be premature for high/critical vulnerabilities.
-- Argyph should stay referenced as a future root-cause/code-analysis helper. Do not add its MCP server until that project is stable.
+MonkeyClaw is a continuous adversarial security-hardening system for
+NemoClaw / OpenClaw. It runs a perpetual **red → judge → repro → blue →
+purple** loop: it generates attacks, executes them against victim sandboxes,
+verifies outcomes with evidence, minimizes confirmed repros, produces patch
+candidates and regression tests, verifies the fixes through eight gates, then
+checks — through a dedicated purple-team layer — that the defense is not only
+*effective* but *observable*. Everything folds back into a coverage-driven
+SQLite knowledge base that steers the next cycle at the weakest zone.
+
+An earlier version of this report (2026-05-15) described MonkeyClaw as "a
+strong scaffold, not a finished security product" and laid out a seven-phase
+build spec to close the gap. **That program has been executed.** It was
+sequenced as 17 design specs across four dependency-ordered waves and is
+complete: the migration runner, queue state machines, per-role model routing,
+the purple team, MAP-Elites search, trajectory scoring, mutation-operator
+learning, the judge ensemble, corpus-driven ideation, cross-zone chaining, the
+learned-ranker data path, real root-cause analysis, real patch isolation, the
+hardened eight-gate verifier, the patch-generalization loop, and the approval
+& PR service all landed. This report documents the system as built.
+
+The single design decision that most distinguishes MonkeyClaw is
+**detection-as-pass**: a control that blocks an attack but emits no telemetry
+is not treated as a passing control. The purple team scores defense on two
+independent axes — prevention and observability — and a `PASS` requires both.
+
+## System Overview
+
+```text
+red_team/    attack generation, execution, judgment, search memory
+blue_team/   repro pipeline + patch generation, verification, regression
+purple_team/ detection scoring, coverage, validation, report card, generalization
+infra/       orchestrator, MCP server, migrations, routing, provisioning, dashboard
+interfaces/  the contract layer — schema, types, MCP signatures, model router
+```
+
+The orchestrator (`infra/orchestrator.py`) runs cycles. Each cycle picks the
+lowest-coverage zones, runs a red batch, judges results, drains the repro and
+blue queues, and runs one purple pass. Coverage is dual-axis — an *attack*
+coverage score and a *detection* coverage score per zone — and purple's
+detection-gap signal is fed back into red's idea-priority scoring, so the loop
+hunts both undefended and undetected zones.
+
+## The Attack-Surface Registry
+
+MonkeyClaw probes **18 NemoClaw attack-surface zones**, seeded in
+`interfaces/schema.sql`:
+
+| Group | Zones |
+|---|---|
+| Sandbox | `SBX-FS`, `SBX-NET`, `SBX-PROC`, `SBX-IPC` |
+| Privacy | `PRV-ROUTE`, `PRV-LEAK` |
+| Permissions | `PERM-MODEL`, `PERM-RUNTIME` |
+| Skills | `SKILL-INSTALL`, `SKILL-EXEC`, `SKILL-SUPPLY` |
+| Memory | `MEM-STATE`, `MEM-SHARED` |
+| Inference | `INF-ROUTE`, `INF-LOCAL` |
+| Agent / human | `AGENT-COMM`, `PROMPT-INJ`, `SOCIAL-ENG` |
+
+Each zone carries a severity weight and a coverage decay rate — coverage
+erodes over time so a zone tested long ago resurfaces for re-testing. The
+zone → failure-class map is in `docs/zone_failure_class_mapping.md`; the
+zone → detection-signature map is in `docs/zone_detection_mapping.md`.
+
+## 1. Control Plane (`infra/`)
+
+### Configuration
+
+`infra/config.py` is a layered loader: `defaults → configs/monkeyclaw.yaml →
+--config file → MC_* env vars`, with double-underscore nesting for env
+overrides. The schema lives in `interfaces/config_schema.py`.
+
+### Model routing
+
+`interfaces/model_router.py` `ModelRouter` resolves a **role** (e.g.
+`red_ideation`, `semantic_judge`, `patch_generation`, `cold_verification`) to
+a routed client. `client_for(role)` builds an ordered fallback chain:
+explicit per-role route → policy-tier route (`cheap` / `workhorse` / `heavy`
+/ `frontier`) → local backend → an unconditional mock terminal. A model
+outage degrades quality but never halts the loop. Every model attempt writes
+a `model_runs` row — role, model, tokens, latency, USD cost from the
+per-Mtok `pricing` table — and the orchestrator surfaces a per-role cost
+rollup in each cycle summary.
+
+The default routing puts high-volume agent work on Nemotron 3 Super (120B
+total / 12B active MoE), cheap extraction / summarization / cold-verification
+on Nemotron 3 Nano, content-safety judging on
+`nemotron-content-safety-reasoning-4b`, and code-heavy work
+(root cause, patch generation, code-grounded ideation) on a frontier coding
+route.
+
+### Migrations
+
+`infra/migrations/` is a forward-only, ordinal-validated runner. Files are
+`NNNN_name.sql` or `NNNN_name.py`; `.sql` runs via `executescript` in a
+transaction, `.py` exports `migrate(conn)`. Each applied migration records a
+`migration:NNNN` row in `schema_meta` and bumps `schema_version`; migrations
+are applied on `Database` open and never re-run. **19 migrations** ship:
+
+| # | Adds |
+|---|---|
+| 0001 | Baseline ledger entry for schema.sql-bootstrapped DBs |
+| 0002 | FSM covering indexes on the queue tables |
+| 0003 | `queue_transitions` status-transition audit table |
+| 0004 | `regression_tests.run_state` column + backfill |
+| 0005 | Purple-team detection tables |
+| 0006 | Real-provisioner snapshot / sandbox-run tables |
+| 0007 | MAP-Elites `niche_descriptors` column |
+| 0008 | Trajectory-score + near-miss tables |
+| 0009 | Mutation-operator stats (per-zone) + attempt tables |
+| 0010 | Judge-ensemble appeal + attack-Elo tables |
+| 0011 | `idea_techniques` (ATLAS/OWASP tagging) |
+| 0012 | `code_symbols` / `code_edges` / `executed_paths` code graph |
+| 0013 | Model-ideation-tournament win-rate tables |
+| 0014 | `attack_chains` / `chain_findings` / step results |
+| 0015 | Patch variant + detection result hardening tables |
+| 0016 | `patch_builds` worktree-build audit table |
+| 0017 | `generalization_rounds` table |
+| 0018 | `attempt_traces` learned-ranking feature tables |
+| 0019 | `approval_events` append-only approval audit table |
+
+### Queue state machines
+
+`infra/state_machine.py` defines five frozen FSMs; every status change goes
+through `TransitionEngine`, which performs an atomic status `UPDATE` plus a
+`queue_transitions` audit row inside `BEGIN IMMEDIATE`. No code outside this
+module issues raw status updates — this is what eliminates the
+lost/stranded-item bugs the prior report flagged.
+
+| FSM | Column | States |
+|---|---|---|
+| `REPRO_QUEUE_FSM` | `repro_queue.status` | queued → processing → completed/failed/queued |
+| `REPRO_PKG_FSM` | `repro_packages.blue_team_status` | queued → triaged → patching → verified/stuck |
+| `FINDING_FSM` | `findings.patch_status` | open → in_progress → patched → verified → open |
+| `PATCH_FSM` | `patches.status` | proposed → testing → approved/rejected |
+| `REGRESSION_FSM` | `regression_tests.run_state` | untested → passing/failing ↔ quarantined |
+
+### Provisioning
+
+`infra/provisioning_nemoclaw.py` ships both `NemoClawProvisioner` (real) and
+`MockProvisioner` (in-memory). The real provisioner uses a snapshot-restore
+strategy against a persistent sandbox: it restores, recovers, fetches the
+gateway token, and capability-probes the build to branch `ephemeral`
+(deterministic per-lane disposable work area) vs `recover_only` (snapshots
+unavailable). At bootstrap (`infra/bootstrap.py`) the real provisioner is the
+default, with automatic fallback to the mock when the `nemoclaw` CLI is not
+on `PATH`. The `demo` and `blue-team` paths always use the mock.
+
+### Approval & PR service
+
+`infra/approval_service.py` `ApprovalService` is stateless beyond the
+append-only `approval_events` table. `request()` resolves a posture via
+`GatePolicy.posture_for` (default-deny: unknown severity or an unconverged
+generalization → `require_approval`). Default postures: critical/high →
+`require_approval`, medium/low → `auto_allow`. `require_approval` logs an
+`ask` row with an expiry, dispatches a notification, and returns `PENDING`;
+the blue pipeline stashes the patch and polls the audit log each cycle.
+`PRGenerator` (`infra/pr_generator.py`) optionally opens a draft PR via the
+`gh` CLI — branch, apply, commit, push, `gh pr create --draft` — when
+`approvals.auto_pr` is enabled (off by default).
+
+## 2. Data Plane
+
+SQLite + sqlite-vec is the MVP backend. Beyond the original tables
+(surface zones, findings, ideas, cycle log, repro queue/packages, regression
+tests, patches, code chunks, alerts), the upgrade program added:
+
+- `idea_archive_cells` + `idea_components` — MAP-Elites archive.
+- `trajectory_scores` + near-miss tables.
+- `mutation_operator_stats` (+ per-zone) + `mutation_attempts`.
+- `judge_votes` (ensemble), `appeal_verdicts`, `attack_elo`.
+- `idea_techniques` — ATLAS/OWASP technique tags.
+- `code_symbols` / `code_edges` / `executed_paths` — the root-cause graph.
+- `model_zone_winrate` — ideation-tournament results.
+- `attack_chains` / `chain_findings` / `chain_step_results`.
+- `detection_rules` / `detection_results` / `detection_coverage` /
+  `control_validation_runs` / `report_cards` — purple team.
+- `patch_variant_results` / `patch_detection_results` / `patch_builds`.
+- `generalization_rounds`, `attempt_traces`, `model_runs`, `approval_events`,
+  `queue_transitions`, `telemetry_events`.
+
+A production deployment migrates to PostgreSQL + pgvector for cross-lane
+concurrency, object storage for transcripts/artifacts, and signed immutable
+audit logs.
+
+## 3. Red Team (`red_team/`)
+
+`red_team/pipeline.py` `Pipeline` exposes `generate_ideas`, `execute_lane`,
+and `judge` to the orchestrator.
+
+### Ideation — four modes
+
+`IdeationEngine` runs three prompt modes — creative (high-temp), code-grounded
+(reads NemoClaw source), history-informed (queries past findings) — plus
+**Mode D**, a deterministic systematic walk over the least-covered MITRE
+ATLAS / OWASP-LLM techniques for the zone (`taxonomy.py`,
+`technique_coverage.py`). The corpus is vendored under `red_team/corpora/`
+(ATLAS v5.4.0 + OWASP LLM Top 10); a malformed corpus aborts startup. Every
+idea is tagged with `atlas_technique_ids` / `owasp_category_ids`. Mode D is
+additionally seeded by a preloaded 33-skill attack corpus
+(`red_team/attack_skills/`, loaded via `attack_skills_loader.py` and seeded
+into the `attack_skills` table at bootstrap).
+
+### MAP-Elites archive
+
+`red_team/archive.py` keeps a diversity-preserving archive keyed by the
+3-tuple `(zone, interaction_style, response_movement)` — 18 zones × 6 styles
+× 6 movements = 648 cells. `EliteArchive.consider` keeps only the
+single best-scoring entry per cell, and only on a strictly higher score, so a
+strong attack in one niche can never displace a different niche.
+`archive_seed.py` renders a per-zone seed into the ideation prompts: elite
+recall, cross-cell recombination pairs, and explicit empty-niche targets.
+
+### Dedup, priority, chaining
+
+Embedding similarity drops duplicates (`dedup.py`); `priority.py` scores kept
+ideas as `novelty × impact × coverage_gap × severity_weight`, then applies a
+detection-gap boost (`1.0 + 0.5 × det_gap`, so a fully-blind zone multiplies
+priority by 1.5) and a per-zone attack-Elo signal. `strategist.py` +
+`chain_composer.py` compose single-zone primitives into multi-zone kill
+chains with capability-token preconditions (every required token must be
+produced by an earlier step); each chain runs in its own lane.
+
+### Execution
+
+`execution_agent.py` drives a multi-turn attack against a live victim over
+the OpenClaw gateway WebSocket; `chain_executor.py` walks chain steps,
+carrying produced capability tokens and step output into the next step.
+
+### Judgment
+
+`judge.py` is the Tier 1 + Tier 2 dispatcher. **Tier 1** is six pure
+programmatic checks in `checks.py` — filesystem breach, network violation,
+process escape, permission escalation, PII-in-cloud-route, policy
+modification; any trigger yields a `confirmed` verdict at confidence 1.0.
+**Tier 2** fires only when Tier 1 is clean and the zone is in
+`{PROMPT-INJ, SOCIAL-ENG, MEM-STATE, MEM-SHARED}`: a **five-role judge
+ensemble** (`judge_ensemble.py`) — safety, progress, novelty, robustness,
+forensics. `confirmed` requires the safety judge to vote confirmed above
+threshold; `suspicious` requires progress and forensics to both see movement.
+A contested case (high disagreement or low aggregate confidence) can escalate
+to a single frontier model via `appeal_judge.py` (gated off by default).
+`judge_ranking.py` runs pairwise Elo for same-zone attacks whose absolute
+scores are too close to separate.
+
+### Search memory
+
+Every judged attempt feeds `trajectory.py` (a per-turn harm-ladder staged
+rubric — stages 0–5 — replacing binary success/failure), `progress.py` (a
+multi-dimensional progress score: refusal strength, specificity, boundary
+erosion, steerability, novelty, transferability, robustness, cost), and
+`near_miss.py` (extracts mutation-worthy near-misses). The
+mutation-operator bandit (`mutation_engine.py`, `mutation_policy.py`) selects
+from **12 deterministic operators** — paraphrase, benign framing, multi-turn
+split, persona shift, add constraints, combine ideas, reverse order,
+abstract/concretize, inject untrusted document, move-instruction-into-tool-
+output, move-instruction-into-dependency-metadata — using a Thompson-sampling
+policy by default and learning per-operator utility from judged lift.
+`trace_collector.py` writes a labelled `AttemptTrace` per attempt;
+`dataset_readiness.py` gates the offline learned-ranker trainer on a
+five-criterion readiness check. `heuristic_ranker.py` ships day one;
+`learned_ranker.py` falls back to it until a trained artifact passes the gate.
+
+## 4. Repro Pipeline (`blue_team/`)
+
+`Pipeline.process_repro_queue` processes confirmed/suspicious findings:
+
+1. **Replay + minimize** (`replay_minimizer.py`) — provision N=5 fresh
+   victims, replay the transcript; `repro_rate < 0.5` downgrades to
+   suspicious and parks the item. Otherwise delta-debug drops turns and
+   simplifies payloads (capped at 30 iterations).
+2. **Root cause** (`root_cause.py`), severity-gated to `>= high`. When the
+   code graph is enabled, `path_tracer.py` runs a real four-stage executed-
+   path trace — anchor (triggered checks + victim-log identifiers → entry
+   symbols), seed (semantic search → sink symbols), walk (bounded BFS over
+   `code_symbols`/`code_edges`), rank (`0.5·proximity + 0.35·centrality +
+   0.15·evidence_touch`). The LLM may cite only files on the traced path;
+   it degrades to semantic-search-only when the graph is empty.
+3. **Repro document** (`repro_writer.py`) — a fixed-section markdown vuln doc.
+4. **Cold verify** (`cold_verifier.py`) — a fresh, context-free agent
+   reproduces the vuln from the document alone, up to 3 attempts.
+5. **Publish** — push the repro package, bump zone coverage, alert.
+
+## 5. Blue Team (`blue_team/`)
+
+`Pipeline.process_blue_queue` patches verified repro packages: triage →
+patch generation → test generation (positive, negative, policy) →
+verification → optional generalization loop → approval gate → finalize
+(commit a regression test, reset coverage, alert, optional auto-PR).
+
+### The eight verifier gates
+
+`patch_verifier.py` runs eight gates in order; the first failure rejects:
+
+1. **Diff applies** — real `git apply --check` in a worktree when isolation
+   is enabled, else a shape check.
+2. **Regression** — the positive test passes: the vulnerability no longer
+   triggers on the patched victim.
+3. **Mutation robustness** — replays ≤8 deterministically-mutated attack
+   variants; passes only if *every* variant is blocked.
+4. **Functionality** — the negative test passes: legitimate adjacent
+   functionality still works.
+5. **Full suite** — every active regression test still passes.
+6. **Control plane** — the diff is scanned for seven weakening classes
+   (deleted tests, skip markers, removed asserts/checks, loosened path lists,
+   new egress, removed telemetry, MCP allowlist or CI/deploy edits).
+7. **Telemetry** — the policy test passes: the patched run still emits Tier 1
+   decision records — no silent bypass.
+8. **Detection** — the recorded repro is replayed against a monitored
+   patched victim and scored by the purple-team detection oracle; the gate
+   passes only if every touched surface is still `observed`. Auto-skips when
+   purple is disabled.
+
+### Real patch isolation
+
+`patch_isolation.py` (gated on `blue_team.patch_isolation.enabled`) does a
+real `git worktree add --detach` off a pinned base ref, applies the diff,
+rebuilds the victim against the worktree, and yields a `PatchBuild` to the
+verifier — then tears the worktree and victim down. Disabled by default; the
+verifier runs against the mock replay surface as a first-class fallback. A
+startup janitor reclaims orphaned `mc-patch-*` worktrees.
+
+## 6. Purple Team (`purple_team/`)
+
+Purple is neither attacker nor patcher — it scores defense behavior.
+`PurplePipeline.run` executes once per cycle:
+
+1. **Derived-evidence adapter** (`derived_adapter.py`) — infers
+   `TelemetryEvent` and `ControlDecision` records from monitoring-harness
+   side-effects (network/fs/process/inference logs). It is the dense producer
+   of the `telemetry_events` table.
+2. **Detection oracle** (`detection_oracle.py`) — the core of
+   detection-as-pass. It scores each execution on two axes:
+   - **prevention** — `blocked` vs `succeeded` (derived from the red verdict).
+   - **observability** — `observed` / `silent` / `unknown` (derived from
+     control-decision records).
+
+   The 2×2 quadrant:
+
+   | | observed | silent / unknown |
+   |---|---|---|
+   | **blocked** | `PASS` | `WEAK` |
+   | **succeeded** | `PARTIAL` | `FAIL` |
+
+   Blocking an attack alone yields only `WEAK` — "works today, regresses
+   tomorrow undetected." Missing or malformed telemetry degrades to
+   `observability=unknown` and is never upgraded to `PASS`.
+3. **Coverage model** (`coverage_model.py`) — folds verdicts into per-zone
+   detection coverage and produces a joint attack × detection heatmap.
+4. **Control validator** (`control_validator.py`) — re-runs the policy corpus
+   against the live victim build (inline every cycle, full sweep every
+   `full_sweep_every` cycles) and flags cases that regressed from a prior
+   `PASS`.
+5. **Detection synthesizer** (`detection_synthesizer.py`) — turns confirmed
+   findings into reusable `DetectionRule`s in the whitepaper Appendix D shape.
+6. **Report card** (`report_card.py`) — a measured score across seven
+   whitepaper rubric dimensions (secret protection, network governance,
+   approval precision, MCP governance, prompt-injection handling, audit
+   completeness, developer usability). Targets are stated policy goals,
+   explicitly flagged aspirational — never asserted as verified fact.
+7. **Self-governance** (`self_governance.py`) — on full sweeps, points the
+   detection machinery at MonkeyClaw's *own* agents (attacker, cold-verifier,
+   patch-generator, judge), checking bounded egress, sandboxed execution, no
+   secret-path reads, and a complete audit trail.
+8. **Feedback router** (`feedback_router.py`) — routes `FAIL`/`WEAK` zones
+   into the red detection-gap signal and `PARTIAL`/regressed cases into the
+   blue queue.
+
+`correlator.py` joins per-session findings, telemetry, decisions, patches,
+and detection rules into the dashboard's evidence timeline.
+
+### The generalization loop
+
+`generalization_loop.py` runs *after* blue verifies a patch. Per round
+(round 0 + up to `max_rounds` re-patch rounds, default 3):
+`operator_budget.py` picks mutation operators, `mutation_replayer.py` mutates
+the minimal transcript and replays each variant against the *patched* victim,
+and `bypass_detector.py` scores each replay `bypassed` / `blocked` /
+`inconclusive`. No bypass → `GENERALIZED`. A surviving bypass →
+`bounce_builder.py` turns the worst bypass into a `BypassConstraint`, augments
+the fix task, and re-runs patch generation + the eight-gate verifier. Out of
+budget with an open bypass → `unconverged` (and the patch is held for
+approval). The loop is provably bounded.
+
+## 7. Monitoring, Telemetry, and the Dashboard
+
+`infra/monitoring_harness.py` captures sandbox observables (fs diff via the
+gateway, network/process/inference logs); `infra/telemetry.py` and
+`sandbox_telemetry.py` normalize them. The purple derived-evidence adapter
+turns these into the structured telemetry/decision records the detection
+oracle consumes.
+
+`infra/dashboard.py` serves an eleven-panel single-page dashboard:
+
+1. Run status / pipeline flow
+2. Coverage heatmap (all 18 zones)
+3. Ideas & finding timeline
+4. Repro queue & packages
+5. Patch candidates & regression suite
+6. Search intelligence — MAP-Elites archive, mutation operators, judge ensemble
+7. Judge appeals & attack Elo
+8. Evidence (telemetry) timeline & cycle history
+9. Provisioned sandbox runs
+10. Model usage & cost per role
+11. Detection coverage & the security report card
+
+## 8. Security Posture of MonkeyClaw Itself
+
+Because MonkeyClaw is an intentionally adversarial agent system, it obeys the
+same controls it tests. `infra/guardrails.py` enforces a denied-host-path
+list (`~/.ssh`, `~/.aws`, gcloud config, `/etc/shadow`), a phased network
+allowlist (default / analysis / setup), a model-route allowlist, an MCP-tool
+allowlist, and per-cycle lane/token caps with an emergency stop. The
+purple-team self-governance audit runs the detection machinery against
+MonkeyClaw's own agents. Patch isolation confines diff application to
+disposable worktrees. The approval service gates high-severity patches behind
+a human decision recorded in an append-only audit log.
+
+## 9. Provenance — the 17-Spec Upgrade Program
+
+The upgrade roadmap (`docs/superpowers/specs/2026-05-15-upgrade-roadmap.md`)
+sequenced 17 design specs into four waves. Each spec was taken through a
+plan-and-execute process with review checkpoints; each implementation plan
+and design spec is preserved under `docs/superpowers/`.
+
+| Wave | Specs |
+|---|---|
+| **0 — Foundation** | data-integrity & migrations; model-routing |
+| **1 — Enablers** | purple-team; real-nemoclaw-provisioner; map-elites-archive; trajectory-and-progress-scoring; mutation-operator-learning; judge-ensemble; corpus-driven-ideation; real-root-cause-analysis |
+| **2 — Dependents** | model-ideation-tournament; cross-zone-attack-chaining; verifier-gate-hardening; real-patch-isolation |
+| **3 — Top of tree** | patch-generalization-loop; learned-ranking-model; approval-and-pr-service |
+
+Cross-spec coordination rules (migration versions assigned at execution time,
+`interfaces/` as the single merge point, shared vocabulary defined once,
+purple landing before its consumers, and every spec preserving the
+zero-credential mock path) kept the parallel work from colliding.
+
+## 10. Mock vs. Real — What Ships in the Demo
+
+The demo runs with zero model credentials and a deterministic mock path; the
+real paths are implemented and gated:
+
+| Capability | Default | Real path |
+|---|---|---|
+| Victim provisioner | Mock (auto-fallback) | `NemoClawProvisioner`, default when `nemoclaw` CLI present |
+| Patch isolation | Mock replay surface | Worktree build + rebuilt victim (`patch_isolation.enabled`) |
+| Model-ideation tournament | Off | `model_tournament.enabled` + entrants |
+| Frontier judge appeal | Off | `red_team.judge.appeal.enabled` |
+| Learned ranker | Heuristic | Trained artifact behind a dataset-readiness gate |
+| Auto-PR | Off | `gh`-CLI draft PR (`approvals.auto_pr`) |
+
+## 11. Tests
+
+The repository ships a comprehensive automated suite — 1000+ tests across
+red, purple, blue, infra, the migration runner (including a schema-parity
+check between `schema.sql` and the migration ledger), and the dashboard. Run
+`uv run pytest` and `uv run ruff check .`.
+
+## 12. Remaining Production Work
+
+- PostgreSQL + pgvector backend for cross-lane concurrency.
+- Object storage for transcripts/artifacts; signed immutable audit logs.
+- A trained learned ranker once enough labelled traces accumulate.
+- SIEM/telemetry export and a hardened external approval service.
+- A persistent event store behind the evidence timeline (today it is derived
+  from telemetry events + finding evidence).
 
 ## External References
 
 - NVIDIA Nemotron model families: https://blogs.nvidia.com/blog/nemotron-model-families/
-- NVIDIA Nemotron 3 family: https://research.nvidia.com/labs/nemotron/Nemotron-3/
 - NVIDIA Nemotron 3 Super: https://research.nvidia.com/labs/nemotron/Nemotron-3-Super/
 - NVIDIA Nemotron content-safety reasoning 4B: https://build.nvidia.com/nvidia/nemotron-content-safety-reasoning-4b/modelcard
-- OpenAI GPT-5.2 model docs: https://platform.openai.com/docs/models/gpt-5.2/
-- OpenAI Codex app: https://openai.com/index/introducing-the-codex-app/
-- Anthropic Claude Opus 4.7: https://www.anthropic.com/claude/opus
 - OWASP LLM Top 10: https://owasp.org/www-project-top-10-for-large-language-model-applications/
+- MITRE ATLAS: https://ctid.mitre.org/blog/2026/05/06/secure-ai-v2-release/
 - Microsoft PyRIT: https://github.com/microsoft/PyRIT
-- MITRE ATLAS update: https://ctid.mitre.org/blog/2026/05/06/secure-ai-v2-release/
-- WhiteRabbitNeo models: https://huggingface.co/WhiteRabbitNeo/models

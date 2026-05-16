@@ -52,36 +52,40 @@ def _env_overrides(prefix: str = ENV_PREFIX) -> dict[str, Any]:
 
 
 def _coerce(v: str) -> Any:
-    """Best-effort scalar coercion for env vars."""
+    """Light scalar coercion for env vars.
+
+    Only obvious booleans are coerced here. Numeric-looking strings are left
+    as strings on purpose: force-coercing them would corrupt string-typed
+    config fields (e.g. a zero-padded ID like "007"). Pydantic performs the
+    correct per-field type coercion/validation when the model is constructed.
+    """
     if v.lower() in ("true", "false"):
         return v.lower() == "true"
-    try:
-        return int(v)
-    except ValueError:
-        pass
-    try:
-        return float(v)
-    except ValueError:
-        pass
     return v
 
 
 def load_config(path: str | Path | None = None) -> MonkeyClawConfig:
     """Load layered config: defaults → file → env."""
     merged: dict[str, Any] = {}
-    candidates = []
+    # (path, is_explicit): an auto-discovered DEFAULT_PATH is optional, but an
+    # explicitly-requested config (--config / MC_CONFIG) that is missing is a
+    # hard error — silently ignoring it would run with the wrong settings.
+    candidates: list[tuple[Path, bool]] = []
     if DEFAULT_PATH.exists():
-        candidates.append(DEFAULT_PATH)
+        candidates.append((DEFAULT_PATH, False))
     if path is not None:
-        candidates.append(Path(path))
+        candidates.append((Path(path), True))
     env_path = os.environ.get("MC_CONFIG")
     if env_path:
-        candidates.append(Path(env_path))
-    for p in candidates:
+        candidates.append((Path(env_path), True))
+    for p, explicit in candidates:
         if not p.exists():
+            if explicit:
+                raise FileNotFoundError(
+                    f"explicitly-requested config file not found: {p}")
             LOG.warning("config %s not found, skipping", p)
             continue
-        with p.open() as f:
+        with p.open(encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         merged = _deep_merge(merged, data)
     merged = _deep_merge(merged, _env_overrides())

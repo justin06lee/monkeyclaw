@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from interfaces.nemoclaw_policy import NEMOCLAW_MONITORED_PATHS
+
 
 class EmbeddingConfig(BaseModel):
     model: str = "sentence-transformers/all-MiniLM-L6-v2"
@@ -121,7 +123,11 @@ class NemoClawConfig(BaseModel):
     sandbox_create_timeout_s: int = 120
     default_policy_path: str = "configs/default_policy.yaml"
     default_agent_config_path: str = "configs/default_agent.yaml"
-    monitored_paths: list[str] = ["/tmp/openshell", "~/.nemoclaw"]
+    # Single source of truth: the harness fs-diff roots are defined once in
+    # interfaces/nemoclaw_policy.py. `default_factory` copies the list so a
+    # config instance cannot mutate the shared policy constant.
+    monitored_paths: list[str] = Field(
+        default_factory=lambda: list(NEMOCLAW_MONITORED_PATHS))
     allowed_paths: list[str] = ["/tmp/openshell"]
     # --- live snapshot-based sandbox (the `monkey-victim` instance) ---
     # The real provisioner resets this sandbox to a clean snapshot per lane

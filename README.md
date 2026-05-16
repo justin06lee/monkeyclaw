@@ -10,6 +10,13 @@
 
 **Autonomous red / purple / blue security agent for NVIDIA NemoClaw.**
 
+![Python](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
+![attack zones](https://img.shields.io/badge/attack%20zones-18-d64531)
+![verifier gates](https://img.shields.io/badge/verifier%20gates-8-2563c9)
+![migrations](https://img.shields.io/badge/migrations-20-7c3aed)
+![tests](https://img.shields.io/badge/tests-1000%2B-2da44e)
+![LLM](https://img.shields.io/badge/LLM-NVIDIA%20Nemotron-76B900?logo=nvidia&logoColor=white)
+
 </div>
 
 MonkeyClaw is an OpenClaw agent that continuously probes NemoClaw's security
@@ -37,6 +44,16 @@ telemetry "works today and regresses tomorrow undetected." MonkeyClaw scores
 defense on two axes — *was the attack blocked* **and** *did the runtime say
 so* — and only counts a control as passing when both are true. This is
 **detection-as-pass**.
+
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/detection-as-pass-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="assets/detection-as-pass-light.svg">
+  <img alt="Detection-as-pass — the prevention × observability scoring quadrant" src="assets/detection-as-pass-light.svg" width="420">
+</picture>
+
+</div>
 
 ## Quick Start
 
@@ -73,6 +90,11 @@ uv run monkeyclaw blue-team
 # live demo dashboard — http://127.0.0.1:8787
 uv run monkeyclaw dashboard
 ```
+
+NVIDIA/Nemotron is the default LLM provider. For local agent-harness runs,
+commands that invoke the pipeline also accept `--claude`, `--codex`, or
+`--opencode`, mapping to `claude --print`, `codex exec`, and `opencode run`
+respectively. The same selection can be made with `MC_LLM_BACKEND`.
 
 No live NemoClaw sandbox handy? Add `--mock` to `run` / `repro` to drive the
 in-memory mock provisioner and planted-vulnerability victim instead. The
@@ -121,42 +143,25 @@ The `monkeyclaw` command is the single entrypoint for the whole loop.
 | `findings` | List all confirmed / suspicious findings, severity-sorted |
 | `repro <finding_id>` | Run the repro pipeline on a finding (replay-minimize → root-cause → cold-verify) |
 | `blue-team [vuln_id]` | Demo mode: triage → patch → test for queued repros (output only, nothing applied) |
-| `demo [--profile <name>]` | Full end-to-end pipeline demo, or a single planted-profile mock cycle |
+| `demo [--profile <name>]` | One-shot demo: full end-to-end pipeline, or a mock cycle vs a planted profile |
 | `probe [-m "<msg>"] [--reset]` | Talk directly to the victim — interactive or one-shot, for ad-hoc probing |
-| `tg-probe` / `tg-attack` | Probe / attack the victim over its Telegram channel (MTProto) |
+| `tg-probe [--bot <handle>] [-m "<msg>"]` | Talk to the victim agent over Telegram, manually |
+| `tg-attack [--bot <handle>] [--turns N] [--zone <id>]` | Run an automated red-team attack over the victim's Telegram channel |
 | `approvals [resolve <id> --allow\|--deny]` | List pending patch approvals; record a human decision |
 | `test notification` | Self-check: send a test message through the Telegram alert path |
 | `dashboard [--port 8787]` | Start the live web dashboard |
 
 ## Architecture
 
-```text
-        ┌───────────────────────────── red team ────────────────────────────────┐
-        │  ideation (4 modes) → MAP-Elites seed → dedup/priority → chain compose  │
-        │  → execution → judge (Tier 1 + Tier 2 ensemble) → trajectory/near-miss  │
-        └──────────────────────────────────┬─────────────────────────────────────┘
-                                            │ confirmed / suspicious finding
-                                            ▼
-        ┌──────────────────────────── repro pipeline ──────────────────────────────┐
-        │  replay-minimize → root-cause (code graph + path tracer) → repro writer   │
-        │  → cold verifier                                                          │
-        └──────────────────────────────────┬───────────────────────────────────────┘
-                                            │ cold-verified repro package
-                                            ▼
-        ┌────────────────────────────── blue team ─────────────────────────────────┐
-        │  triage → patch generator → test generator → patch verifier (8 gates)     │
-        │  → generalization loop → approval gate → regression runner                │
-        └──────────────────────────────────┬───────────────────────────────────────┘
-                                            │
-        ┌────────────────────────────── purple team ───────────────────────────────┐
-        │  derived-evidence adapter → detection oracle (prevention × observability) │
-        │  → coverage model → control validator → detection synthesizer             │
-        │  → report card / self-governance → feedback router ──► red priority       │
-        └──────────────────────────────────┬───────────────────────────────────────┘
-                                            │
-            SQLite knowledge base  ◀─────────┴─────────▶  live web dashboard
-            (coverage · findings · patches · detection · regression suite)
-```
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="assets/architecture-light.svg">
+  <img alt="MonkeyClaw architecture — the red → judge → repro → blue → purple loop" src="assets/architecture-light.svg" width="860">
+</picture>
+
+</div>
 
 MonkeyClaw runs a continuous **red → judge → repro → blue → purple** loop over
 a registry of **18 NemoClaw attack-surface zones** (sandbox
@@ -168,11 +173,13 @@ weighted by purple's detection-coverage gaps.
 
 **Red team** — `red_team/`
 
-1. **Ideation** — four prompt modes generate attack ideas for the
-   lowest-coverage zone: creative, code-grounded, history-informed, and **Mode
-   D** — a systematic walk over the least-covered MITRE ATLAS / OWASP-LLM
-   techniques. A MAP-Elites archive seed (elite recall + cross-cell
-   recombination + empty-niche targets) is folded into the prompts.
+1. **Ideation** — five prompt modes generate attack ideas for the
+   lowest-coverage zone: creative, code-grounded, history-informed, **Mode D**
+   — research-grounded ideation seeded by a preloaded 35-skill attack corpus
+   (`red_team/attack_skills/`) — and **Mode E** — a systematic walk over the
+   least-covered MITRE ATLAS / OWASP-LLM techniques. A MAP-Elites archive seed
+   (elite recall + cross-cell recombination + empty-niche targets) is folded
+   into the prompts.
 2. **Dedup + priority** — embedding similarity drops repeats; ideas are scored
    by novelty × impact × coverage gap, boosted by purple's detection-gap
    signal and per-zone attack Elo.

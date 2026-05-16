@@ -74,7 +74,9 @@ def deduplicate_and_log(
             near_dup = False
             novelty = 1.0 - sim
 
-        # Persist the idea (deduplicated flag mirrors `keep`).
+        # Persist the idea (deduplicated flag mirrors `keep`). Coerce a None
+        # return to "" — `IdeaObject.idea_id` is typed `str` and must never
+        # become None if `log_idea` fails to return an ID.
         logged_id = mcp.log_idea(IdeaInput(
             cycle_id=idea.cycle_id,
             zone_id=idea.zone_id,
@@ -90,7 +92,7 @@ def deduplicate_and_log(
             code_weakness=idea.code_weakness,
             builds_on=idea.builds_on,
             variation_notes=idea.variation_notes,
-        ))
+        )) or ""
         idea.idea_id = logged_id  # adopt the server-assigned ID
 
         if not keep:

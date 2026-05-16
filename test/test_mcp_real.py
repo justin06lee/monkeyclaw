@@ -134,12 +134,16 @@ def test_real_server_telemetry_roundtrip(server):
     assert len(tl) == 1 and tl[0].event_type == "agent.tool.requested"
 
 
-def test_real_server_model_run_and_judge_vote(server):
-    from interfaces.types import ModelRunInput, JudgeVoteInput
+def test_real_server_model_run_agent_event_and_judge_vote(server):
+    from interfaces.types import AgentEventInput, JudgeVoteInput, ModelRunInput
     rid = server.log_model_run(ModelRunInput(
         role="red_ideation", model="m", provider="nvidia",
         input_tokens=5, output_tokens=7, latency_ms=42))
     assert rid
+    aid = server.log_agent_event(AgentEventInput(
+        session_id="S1", agent_id="red-ideation", agent_kind="llm",
+        event_type="llm.response", text="hello"))
+    assert aid
     vid = server.log_judge_vote(JudgeVoteInput(
         lane_id="L1", judge_role="semantic", verdict="confirmed",
         score=0.9, confidence=0.8, reasoning="r", evidence_turns=[3]))
@@ -164,7 +168,7 @@ def test_a3_tables_exist(db):
     names = {r[0] for r in db.fetchall(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     for t in ("telemetry_events", "model_runs", "judge_votes",
-              "policy_corpus_results", "idea_components",
+              "agent_events", "policy_corpus_results", "idea_components",
               "idea_archive_cells", "mutation_operator_stats"):
         assert t in names, f"missing table {t}"
 
@@ -173,7 +177,7 @@ def test_a3_schema_version(db):
     # schema_version tracks the highest applied migration ordinal (spec §13.3).
     row = db.fetchone(
         "SELECT value FROM schema_meta WHERE key='schema_version'")
-    assert row[0] == "19"
+    assert row[0] == "20"
 
 
 def _sample_finding_input() -> FindingInput:
@@ -259,8 +263,9 @@ def test_migration_upgrades_legacy_v1_db(tmp_path):
     names = {r[0] for r in db.fetchall(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     assert "telemetry_events" in names
+    assert "agent_events" in names
     row = db.fetchone("SELECT value FROM schema_meta WHERE key='schema_version'")
-    assert row[0] == "19"
+    assert row[0] == "20"
     db.close()
 
 

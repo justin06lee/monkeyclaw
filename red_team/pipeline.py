@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from infra.bootstrap import Runtime
 from infra.monitoring_harness import MonitoringHarness
 from interfaces.config_schema import LaneConfig, MonkeyClawConfig
-from interfaces.llm import LLMClient
+from interfaces.llm import LLMClient, ObservedLLM
 from interfaces.mcp_tools import MonkeyClawMCP
 from interfaces.model_router import ModelRouter
 from interfaces.nemoclaw_policy import nemoclaw_policy_config
@@ -38,7 +38,6 @@ from interfaces.provisioning import VictimInstance
 from interfaces.ranker import RankerInput
 from interfaces.types import (
     CoverageGap,
-    CycleSummaryInput,
     IdeaInput,
     IdeaObject,
     JudgmentResult,
@@ -72,7 +71,11 @@ from red_team.chain_attribution import attribute as attribute_chain
 from red_team.routing import route_chain_judgment, route_judgment
 from red_team.trajectory import score_trajectory
 from red_team.strategist import Strategist
-from red_team.tournament import ModelTournament, load_tournament_config
+from red_team.tournament import (
+    ModelTournament,
+    ModelTournamentConfig,
+    load_tournament_config,
+)
 
 LOG = logging.getLogger("monkeyclaw.red.pipeline")
 
@@ -146,7 +149,9 @@ class Pipeline:
         # is taken directly; otherwise built from cfg+mcp here. An explicit
         # `llm=` (test injection) still wins per component: when given, every
         # component shares that one client; otherwise each gets its
-        # role-bound RoutedClient.
+        # role-bound RoutedClient. Each role-bound client is wrapped in an
+        # ObservedLLM so every completion emits a live agent_event for the
+        # dashboard's agent view.
         if router is not None:
             self.router = router
         elif runtime is not None:
@@ -154,9 +159,15 @@ class Pipeline:
         else:
             self.router = ModelRouter(self.cfg, mcp=self.mcp)
 
-        def _client(role: str) -> LLMClient:
-            return llm if llm is not None else self.router.client_for(role)
+        def _client(role: str, agent_id: str) -> LLMClient:
+            base = llm if llm is not None else self.router.client_for(role)
+            return ObservedLLM(base, self.mcp, agent_id=agent_id,
+                               agent_kind="llm", role=role)
 
+        self.ideation_llm = _client("red_ideation", "red-ideation")
+        self.strategist_llm = _client("red_ideation", "red-strategist")
+        self.execution_llm = _client("red_execution", "red-execution")
+        self.judge_llm = _client("semantic_judge", "red-judge")
         self.llm = llm or self.router.client_for("red_execution")
         self.policy = policy or policy_from_config(self.cfg)
         ideation_cfg = ideation_cfg or IdeationConfig(
@@ -180,20 +191,31 @@ class Pipeline:
         self._technique_coverage = TechniqueCoverageModel(
             self.mcp, load_taxonomy())
         self.ideation = IdeationEngine(
-            _client("red_ideation"), self.mcp, ideation_cfg,
+            self.ideation_llm, self.mcp, ideation_cfg,
             technique_coverage=self._technique_coverage)
         self._ideation_cfg = ideation_cfg
         # B9 — model tournament. Disabled unless `red_team.model_tournament`
         # is configured; when enabled, extra entrants also ideate per zone.
-        # Tests may inject an enabled tournament directly.
-        self.tournament = tournament or ModelTournament(
-            load_tournament_config())
+        # Tests may inject an enabled tournament directly. A malformed
+        # tournament YAML must not crash pipeline construction — fall back to
+        # a disabled (default) config on any load failure.
+        if tournament is not None:
+            self.tournament = tournament
+        else:
+            try:
+                tournament_cfg = load_tournament_config()
+            except Exception as e:  # noqa: BLE001
+                LOG.warning(
+                    "tournament config failed to load (%s) — tournament "
+                    "disabled", e)
+                tournament_cfg = ModelTournamentConfig()
+            self.tournament = ModelTournament(tournament_cfg)
         # Head-to-head round + win-rate state, set per cycle when the
         # tournament is enabled and consumed by record_zone_outcomes.
         self._pending_rounds: dict[str, _PendingRound] = {}
-        self.strategist = Strategist(_client("red_ideation"))
-        self.execution = ExecutionAgent(_client("red_execution"), execution_cfg)
-        self.judger = Judge(_client("semantic_judge"), self.policy, judge_cfg, mcp=self.mcp)
+        self.strategist = Strategist(self.strategist_llm)
+        self.execution = ExecutionAgent(self.execution_llm, execution_cfg)
+        self.judger = Judge(self.judge_llm, self.policy, judge_cfg, mcp=self.mcp)
         self.alert_severity_floor = alert_severity_floor
         self._detection_coverage_gap: dict[str, float] = {}
 
@@ -433,14 +455,15 @@ class Pipeline:
         ideas_deduped = sum(1 for o in outcomes if not o.keep)
 
         # Retry loop — if dedup chopped us below n_lanes, generate "unlike"
-        # ideas. Bounded by retry_max.
+        # ideas. Bounded by retry_max. Walk through `gaps` on each retry so we
+        # widen zone diversity instead of repeatedly mining `gaps[0]`.
         attempts = 0
         while (
             sum(1 for o in outcomes if o.keep) < n_lanes
             and attempts < self.cfg.ideation.retry_max
         ):
+            unlike_zone = gaps[attempts % len(gaps)]
             attempts += 1
-            unlike_zone = gaps[0]
             try:
                 seed = archive_seed.render_seed(
                     archive_seed.build_seed(

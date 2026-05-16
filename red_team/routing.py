@@ -244,8 +244,11 @@ def route_judgment(
     if archive is not None:
         try:
             entry = _archive_entry(idea, judgment, progress)
-            archive.consider(entry)
-            _persist_archive(mcp, entry)
+            # Only persist when the in-memory archive accepted the entry as the
+            # new elite for its cell — `consider()` returns False for a
+            # non-elite entry, which should not be written to the DB.
+            if archive.consider(entry):
+                _persist_archive(mcp, entry)
         except Exception as e:  # noqa: BLE001
             LOG.warning("archive update failed for %s: %s", finding_id, e)
 

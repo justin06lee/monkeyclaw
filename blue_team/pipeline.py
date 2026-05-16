@@ -382,6 +382,11 @@ class Pipeline:
         )
 
         # 5. Push the repro package to the MCP
+        # A no-result root cause still returns a list containing one
+        # "(unknown)" FixSite — filter those so affected_paths is None
+        # rather than a list of placeholders.
+        sites = [s for s in rc.candidate_fix_sites if s.file != "(unknown)"]
+        affected_paths = sites or None
         package_input = ReproPackageInput(
             finding_id=finding.finding_id,
             vuln_id=vuln_id,
@@ -390,7 +395,7 @@ class Pipeline:
             repro_rate=minimize.repro_rate,
             minimal_steps=doc.minimal_steps,
             affected_zone=finding.zone_id,
-            affected_paths=rc.candidate_fix_sites if rc.candidate_fix_sites else None,
+            affected_paths=affected_paths,
             ideas_used=[finding.idea_id],
             transcripts={
                 "original": minimize.original_transcript,
@@ -443,10 +448,26 @@ class Pipeline:
         approved = finalized_resolved
         for task in tasks:
             outcome = self._patch_task(task)
+            patched = outcome is not None and outcome.approved
             # Count only finalized patches — a verified-but-PENDING patch is
             # held by the approval gate, not finalized (approval spec §11).
-            if outcome is not None and outcome.approved and outcome.finalized:
+            if patched and outcome is not None and outcome.finalized:
                 approved += 1
+            # Transition each package out of "queued" so the next call to
+            # get_blue_team_queue() (which only returns queued packages)
+            # does not re-triage and re-patch the same work every cycle.
+            # Statuses per schema.sql: queued|triaged|patching|verified.
+            new_status = "verified" if patched else "triaged"
+            for pkg in task.packages:
+                try:
+                    self.mcp.mark_repro_package_status(
+                        pkg.package_id, new_status,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    LOG.warning(
+                        "mark_repro_package_status(%s, %s) failed: %s",
+                        pkg.package_id, new_status, e,
+                    )
         return approved
 
     def _patch_task(self, task: FixTask) -> VerifyOutcome | None:
@@ -476,11 +497,16 @@ class Pipeline:
                 LOG.info("task %s: per-task attempt cap %d reached",
                           task.task_id, max_attempts)
                 break
-            self._task_attempt_count[task.task_id] = attempts_used + 1
             pair = self.test_generator.generate(task.primary_package, cand)
             outcome = self.patch_verifier.verify(
                 patch=cand, package=task.primary_package, test_pair=pair,
             )
+            # The attempt cap counts genuine verification attempts. A
+            # candidate rejected at the cheap structural `gate_diff_applies`
+            # check never reached real verification — don't burn an attempt
+            # on it.
+            if outcome.failed_gate != "gate_diff_applies":
+                self._task_attempt_count[task.task_id] = attempts_used + 1
             if outcome.approved:
                 gen = None
                 try:

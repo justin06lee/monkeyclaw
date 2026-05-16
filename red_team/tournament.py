@@ -102,12 +102,12 @@ def load_tournament_config(
         path = _DEFAULT_CONFIG_PATH
         if not path.is_file():
             return ModelTournamentConfig()
-        data = yaml.safe_load(path.read_text()) or {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     elif isinstance(source, (str, Path)):
         p = Path(source)
         if not p.is_file():
             return ModelTournamentConfig()
-        data = yaml.safe_load(p.read_text()) or {}
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
 
     if not isinstance(data, dict):
         return ModelTournamentConfig()

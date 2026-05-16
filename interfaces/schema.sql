@@ -124,8 +124,10 @@ CREATE INDEX IF NOT EXISTS idx_cycle_created ON cycle_log(created_at DESC);
 
 --------------------------------------------------------------------------------
 -- repro_queue — handoff between red team and repro pipeline
--- Implemented as a column on findings to enable atomic dequeue with a single
--- UPDATE ... RETURNING. status: queued|processing|completed|failed.
+-- A separate table keyed by finding_id (one queue row per finding), so the
+-- queue can be drained and re-prioritised without touching the findings row.
+-- Atomic dequeue uses UPDATE ... RETURNING on this table.
+-- status: queued|processing|completed|failed.
 --------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS repro_queue (
     finding_id   TEXT PRIMARY KEY REFERENCES findings(finding_id),
@@ -175,6 +177,9 @@ CREATE TABLE IF NOT EXISTS regression_tests (
     test_script                TEXT NOT NULL,
     expected_result            TEXT NOT NULL,
     functionality_test_script  TEXT,
+    -- spec C6 third test type: confirms the security telemetry / policy
+    -- decision record still exists after a patch (RegressionTestInput).
+    policy_regression_test_script TEXT,
     created_at                 TEXT NOT NULL DEFAULT (datetime('now')),
     deprecated                 INTEGER NOT NULL DEFAULT 0,
     last_run_at                TEXT,
@@ -198,7 +203,7 @@ CREATE TABLE IF NOT EXISTS patches (
     diff                  TEXT NOT NULL,
     explanation           TEXT NOT NULL,
     side_effects          TEXT,
-    status                TEXT NOT NULL DEFAULT 'proposed', -- proposed|testing|approved|rejected
+    status                TEXT NOT NULL DEFAULT 'proposed', -- proposed|testing|approved|rejected|verified
     verification_results  TEXT,                             -- JSON
     created_at            TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -418,6 +423,32 @@ CREATE TABLE IF NOT EXISTS model_tournament_rounds (
 );
 CREATE INDEX IF NOT EXISTS idx_model_tournament_rounds_zone
     ON model_tournament_rounds(zone_id, cycle_id);
+
+--------------------------------------------------------------------------------
+-- agent_events — live LLM / deployed-agent activity stream for the dashboard
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS agent_events (
+    event_id      TEXT PRIMARY KEY,
+    session_id    TEXT NOT NULL,
+    agent_id      TEXT NOT NULL,
+    agent_kind    TEXT NOT NULL,
+    event_type    TEXT NOT NULL,
+    role          TEXT,
+    cycle_id      INTEGER,
+    lane_id       TEXT,
+    idea_id       TEXT,
+    model         TEXT,
+    provider      TEXT,
+    text          TEXT,
+    tool_name     TEXT,
+    status        TEXT,
+    metadata      TEXT NOT NULL DEFAULT '{}',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_agent_events_session
+    ON agent_events(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_events_agent
+    ON agent_events(agent_id, created_at);
 
 --------------------------------------------------------------------------------
 -- judge_votes — A2 multi-judge ensemble
@@ -887,6 +918,45 @@ CREATE TABLE IF NOT EXISTS pairwise_labels (
 );
 
 --------------------------------------------------------------------------------
+-- attack_skills — preloaded research-grounded ideation priors (Mode D)
+-- Derived index over red_team/attack_skills/*.yaml (the source of truth).
+-- Seeded at bootstrap by infra.seed_attack_skills; re-seedable, hash-keyed.
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS attack_skills (
+    skill_id                   TEXT PRIMARY KEY,
+    name                       TEXT NOT NULL,
+    kind                       TEXT NOT NULL DEFAULT 'pattern',  -- pattern|modifier
+    provenance                 TEXT NOT NULL,                    -- research|extrapolated
+    sources                    TEXT NOT NULL DEFAULT '[]',       -- JSON list
+    zone_ids                   TEXT NOT NULL,                    -- JSON list
+    failure_class              TEXT NOT NULL,
+    interaction_style          TEXT NOT NULL,
+    target_defense             TEXT NOT NULL,
+    tactic_tags                TEXT NOT NULL DEFAULT '[]',        -- JSON list
+    severity_hint              TEXT NOT NULL,
+    estimated_turns            INTEGER NOT NULL DEFAULT 5,
+    preconditions              TEXT NOT NULL DEFAULT '',
+    technique                  TEXT NOT NULL,
+    approach_template          TEXT NOT NULL,
+    success_criteria_template  TEXT NOT NULL,
+    example_payloads           TEXT NOT NULL DEFAULT '[]',        -- JSON list
+    variants                   TEXT NOT NULL DEFAULT '[]',        -- JSON list
+    expected_observables       TEXT NOT NULL DEFAULT '[]',        -- JSON list
+    mutation_seeds             TEXT NOT NULL DEFAULT '[]',        -- JSON list
+    content_hash               TEXT NOT NULL,
+    created_at                 TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at                 TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_attack_skills_kind ON attack_skills(kind);
+
+-- Vector index over (name + technique + approach_template) for zone retrieval.
+CREATE VIRTUAL TABLE IF NOT EXISTS attack_skills_vec USING vec0(
+    skill_id  TEXT PRIMARY KEY,
+    embedding FLOAT[384]
+);
+
+--------------------------------------------------------------------------------
 -- schema_meta — track schema version for migrations
 --------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -895,7 +965,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 
 INSERT OR IGNORE INTO schema_meta(key, value) VALUES
-    ('schema_version', '19'),
+    ('schema_version', '20'),
     ('feature_schema_version', '1'),
     ('taxonomy_corpus_version', 'atlas-5.4.0+owasp-2025'),
     ('embedding_model', 'sentence-transformers/all-MiniLM-L6-v2'),

@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # MonkeyClaw development environment image.
 #
 # Provides everything to run the red -> judge -> repro -> blue codebase AND to
@@ -8,9 +9,11 @@
 # daemon (it builds a ~2.4 GB sandbox image), so it cannot run at build time.
 # Instead the entrypoint prepares the environment automatically on container
 # start, then hands off to a shell:
-#   - with NVIDIA_API_KEY set -> runs the full NemoClaw setup (starts the inner
+#   - first run (NVIDIA_API_KEY set) -> full NemoClaw setup (starts the inner
 #     Docker daemon, installs + onboards NemoClaw, creates the clean-baseline
-#     snapshot);
+#     snapshot), then writes a sentinel;
+#   - later runs (sentinel present) -> nemoclaw-recover restarts the daemon /
+#     gateway / sandbox, reusing the cached sandbox image instead of rebuilding;
 #   - with no key -> setup is skipped; the offline mock path is ready.
 #
 # Live path -- one command brings the whole environment up:
@@ -23,13 +26,30 @@
 #
 # Live-path host requirements: --privileged, >=8 GB RAM, >=20 GB free disk
 # (NemoClaw onboarding can trip the OOM killer below 8 GB).
+#
+# Runs as root: NemoClaw's installer, CLI, gateway and on-disk state all assume
+# root, and MonkeyClaw's provisioner invokes `nemoclaw` directly -- a non-root
+# runtime user breaks the live path. The container is `--privileged` anyway
+# (Docker-in-Docker), so a non-root user would add negligible isolation.
+#
+# Image-size discipline: NEVER add a trailing `chown -R` over the venv / source
+# -- it touches every file and Docker copies the whole tree into a second
+# layer, roughly DOUBLING the image. The uv download cache is a BuildKit cache
+# mount: it speeds builds and is reused across them, but never enters a layer.
 
 FROM ubuntu:24.04
 
 # Base tools: curl/ca-certs for the install scripts; git + zstd + sudo are
-# required by the NemoClaw installer; iptables by the Docker-in-Docker daemon.
+# required by the NemoClaw installer; iptables by the Docker-in-Docker daemon;
+# binutils provides `strings`, which the OpenShell installer uses to verify
+# messaging-credential rewrite support (onboarding aborts without it);
+# python3-venv lets `nemoclaw onboard` build the model-router venv with the
+# SYSTEM python3 (the project's own Python comes from uv and is not used here);
+# openssh-client gives `ssh`/`ssh-keygen` -- `openshell forward` shells out to
+# /usr/bin/ssh to forward the dashboard port into the sandbox over SSH.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates git zstd sudo iptables \
+        curl ca-certificates git zstd sudo iptables binutils python3-venv \
+        openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Docker-in-Docker: the FULL Docker engine (daemon + CLI + containerd) so a
@@ -53,40 +73,64 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && rm -rf /var/lib/apt/lists/*
 
 # uv - the MonkeyClaw project's Python package manager.
-RUN curl -fsSL https://astral.sh/uv/install.sh | sh
-ENV PATH=/root/.local/bin:/app/.venv/bin:$PATH
+# The version is pinned (supply-chain hardening): the installer honours
+# UV_VERSION, so a compromised install.sh still cannot silently ship a
+# different uv build than the one reviewed here. Bump deliberately.
+ENV UV_VERSION=0.5.11
+RUN curl -fsSL https://astral.sh/uv/install.sh \
+        | env UV_INSTALL_DIR=/usr/local/bin sh
+
+# The project venv lives at /opt/venv -- deliberately OUTSIDE the /app WORKDIR
+# so a dev bind-mount of the source over /app (see docker-compose.yml) does not
+# shadow it. UV_PROJECT_ENVIRONMENT points every `uv sync` / `uv run` at it.
+# UV_LINK_MODE=copy: the uv cache is a build cache mount on a separate
+# filesystem, so uv cannot hardlink out of it -- copy into the venv instead.
+ENV PATH=/usr/local/bin:/opt/venv/bin:$PATH \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_PYTHON_INSTALL_DIR=/opt/uv/python \
+    UV_CACHE_DIR=/opt/uv/cache \
+    UV_LINK_MODE=copy
 
 WORKDIR /app
 
 # Python dependency layer: copy only the manifests so this stays cached until
-# the dependency set changes. uv.lock is intentionally NOT copied -- the build
-# resolves dependencies fresh from pyproject.toml so a stale committed lock
-# cannot break the image. uv installs Python 3.12 itself (per .python-version);
-# all declared deps ship Linux wheels, so no compiler is needed.
-COPY pyproject.toml .python-version ./
-RUN uv python install 3.12 \
-    && uv sync --no-install-project
+# the dependency set changes. uv.lock is copied and `uv sync --frozen` is used
+# so the image installs the exact, reviewed dependency versions -- builds are
+# reproducible and a resolver change cannot silently pull different versions.
+# uv installs Python 3.12 itself (per .python-version); all declared deps ship
+# Linux wheels, so no compiler is needed. The uv cache is a BuildKit cache
+# mount -- reused across builds for speed, never baked into an image layer.
+COPY pyproject.toml uv.lock .python-version ./
+RUN --mount=type=cache,target=/opt/uv/cache \
+    uv python install 3.12 \
+    && uv sync --frozen --no-install-project
 
-# MonkeyClaw source + install the package itself (console scripts).
+# MonkeyClaw source + install the package itself (console scripts). Only this
+# layer and the project install below are invalidated by a source edit -- the
+# dependency layer above stays cached.
 COPY . .
-RUN uv sync
+RUN --mount=type=cache,target=/opt/uv/cache \
+    uv sync --frozen
 
-# Runtime helpers onto PATH:
+# Runtime helpers onto PATH. Copied straight from the build context with
+# --chmod, so this needs no extra `RUN` layer:
 #   nemoclaw-setup       -- starts the nested Docker daemon, runs NemoClaw's
 #                           installer + onboarding, creates the clean-baseline
 #                           snapshot (deferred to runtime: needs a live daemon)
-#   docker-entrypoint.sh -- entrypoint; runs nemoclaw-setup on first start when
-#                           NVIDIA_API_KEY is set, then hands off to CMD
-RUN install -m 0755 scripts/nemoclaw-setup.sh /usr/local/bin/nemoclaw-setup \
-    && install -m 0755 scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+#   nemoclaw-recover     -- restarts the daemon / gateway / sandbox on a later
+#                           container start, reusing the cached sandbox image
+#   docker-entrypoint.sh -- entrypoint; runs setup on first start, recover after
+COPY --chmod=0755 scripts/nemoclaw-setup.sh    /usr/local/bin/nemoclaw-setup
+COPY --chmod=0755 scripts/nemoclaw-recover.sh  /usr/local/bin/nemoclaw-recover
+COPY --chmod=0755 scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # Dashboard 8787, MCP server 7322, mock MCP 7321 -- documented for reference.
 # All bind 127.0.0.1 by default; pass `--host 0.0.0.0` to the MCP servers to
 # expose them (the dashboard hardcodes 127.0.0.1 in dashboard.py).
 EXPOSE 8787 7321 7322
 
-# The entrypoint runs NemoClaw setup automatically when NVIDIA_API_KEY is set
-# (skipped otherwise, at most once per container), then execs CMD -- an
-# interactive shell by default.
+# The entrypoint runs NemoClaw setup on first start (NVIDIA_API_KEY set) and
+# nemoclaw-recover on later starts, then execs CMD -- an interactive shell by
+# default.
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["bash"]

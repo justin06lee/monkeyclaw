@@ -42,14 +42,68 @@ echo "[nemoclaw-setup] Docker daemon is up."
 : "${NVIDIA_API_KEY:?[nemoclaw-setup] set NVIDIA_API_KEY before running}"
 echo "[nemoclaw-setup] installing + onboarding NemoClaw (sandbox: ${SANDBOX})..."
 echo "  this builds the ~2.4 GB sandbox image -- this can take several minutes."
+
+# Discard state a previous failed run leaves behind so a re-run starts clean:
+#   - ~/.nemoclaw/onboard-session.json -> installer aborts "previous
+#     onboarding session failed";
+#   - the model-router process on port 4000 -> onboard refuses "Port 4000
+#     already has a healthy router endpoint".
+clean_stale_state() {
+    rm -f "${HOME:-/root}/.nemoclaw/onboard-session.json"
+    pkill -f 'model-router-venv/bin/model-router' 2>/dev/null || true
+}
+
+# A current NemoClaw `latest` installer regression extracts the OpenShell
+# `openshell-sandbox` binary as a DIRECTORY (openshell-sandbox/openshell-
+# sandbox) instead of a file; the gateway then aborts ("docker supervisor
+# binary /usr/local/bin/openshell-sandbox does not exist or is not a file").
+# Flatten it back to a plain executable.
+repair_openshell_sandbox() {
+    local osb=/usr/local/bin/openshell-sandbox
+    if [ -d "${osb}" ] && [ -f "${osb}/openshell-sandbox" ]; then
+        echo "[nemoclaw-setup] repairing openshell-sandbox (installer left a directory)..."
+        mv "${osb}/openshell-sandbox" "${osb}.bin" \
+            && rm -rf "${osb}" \
+            && mv "${osb}.bin" "${osb}" \
+            && chmod 0755 "${osb}"
+    fi
+}
+
 # Non-interactive flags avoid the stdin-EOF hang that a piped installer hits
 # at the onboarding prompts (NVIDIA/NemoClaw issue #362).
-curl -fsSL https://www.nvidia.com/nemoclaw.sh | \
-    NEMOCLAW_NON_INTERACTIVE=1 \
-    NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1 \
-    NEMOCLAW_PROVIDER=routed \
-    NEMOCLAW_SANDBOX_NAME="${SANDBOX}" \
-    bash
+run_installer() {
+    curl -fsSL https://www.nvidia.com/nemoclaw.sh | \
+        NEMOCLAW_NON_INTERACTIVE=1 \
+        NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1 \
+        NEMOCLAW_PROVIDER=routed \
+        NEMOCLAW_SANDBOX_NAME="${SANDBOX}" \
+        bash
+}
+
+# Run the installer, retrying through the known transient failure modes
+# (NemoClaw `latest` is brittle, and the persisted volumes can carry stale
+# state across container recreation). Each retry repairs what the previous
+# attempt revealed:
+#   - openshell-sandbox extracted as a directory -> flatten it;
+#   - sandbox already registered in the gateway  -> delete it.
+clean_stale_state
+attempt=1
+max_attempts=3
+until run_installer; do
+    if [ "${attempt}" -ge "${max_attempts}" ]; then
+        echo "[nemoclaw-setup] ERROR: onboarding failed after ${attempt} attempts." >&2
+        exit 1
+    fi
+    echo "[nemoclaw-setup] attempt ${attempt} failed -- repairing, then retrying..."
+    repair_openshell_sandbox
+    # A prior or partial run can leave the sandbox registered in the gateway,
+    # so onboarding aborts "sandbox already exists". Drop it (best effort --
+    # the gateway is reachable once an attempt has reached the sandbox step)
+    # so the retry creates it fresh.
+    openshell sandbox delete "${SANDBOX}" 2>/dev/null || true
+    clean_stale_state
+    attempt=$((attempt + 1))
+done
 
 # --- 3. clean-baseline snapshot -------------------------------------------
 # MonkeyClaw's provisioner resets the victim with

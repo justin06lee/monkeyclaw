@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from interfaces.types import (
+    AgentEventInput,
     AppealVerdict,
     ApprovalEvent,
     ApprovalEventInput,
@@ -232,6 +233,10 @@ class MonkeyClawMCP(Protocol):
 
     def get_model_cost_rollup(self) -> list[dict]:
         """Per-role token & cost rollup over model_runs. Read-only reporting."""
+        ...
+
+    def log_agent_event(self, event: AgentEventInput) -> str:
+        """Append one live agent/LLM stream event. Returns event_id."""
         ...
 
     # ------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Phase 4 — Mode D taxonomy ideation (spec §6.3, §7)."""
+"""Phase 4 — Mode E taxonomy ideation (spec §6.3, §7)."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ class _FakeLLM:
         return LLMResponse(text=body, input_tokens=1, output_tokens=1)
 
 
-def test_mode_d_produces_one_idea_per_gap_technique(server):
+def test_mode_e_produces_one_idea_per_gap_technique(server):
     cov = TechniqueCoverageModel(server, _TAX)
     engine = IdeationEngine(_FakeLLM(), object(), technique_coverage=cov)
     ideas = engine._mode_taxonomy(_ZONE, cycle_id=1, gap_top_n=3)
@@ -48,7 +48,7 @@ def test_mode_d_produces_one_idea_per_gap_technique(server):
         assert len(techniques_for(idea)) >= 1
 
 
-def test_mode_d_targets_the_least_covered_techniques(server):
+def test_mode_e_targets_the_least_covered_techniques(server):
     cov = TechniqueCoverageModel(server, _TAX)
     # Exercise AML.T0051 so it is NOT a gap.
     from interfaces.types import TechniqueRef

@@ -227,9 +227,18 @@ class Orchestrator:
             # may still be touching the sandbox when bookkeeping runs.
             self.scheduler.drain(
                 timeout=self.rt.cfg.lanes.lane_timeout_seconds + 60)
+        except Exception as e:  # noqa: BLE001
+            # A failure in submit/drain must not skip the results drain or
+            # end-of-cycle bookkeeping below.
+            LOG.exception("cycle %d lane dispatch/drain failed: %s",
+                          cycle_id, e)
+        finally:
+            # ALWAYS collect whatever lane results landed — even a partial
+            # batch from a failed drain must be judged and counted.
             with self._results_lock:
                 results = list(self._results)
                 self._results.clear()
+        try:
             ideas_by_id = {idea.idea_id: idea for idea in ideas}
             judged_by_zone: dict[str, list[tuple[IdeaObject, JudgmentResult]]] = {}
             for r in results:
@@ -411,10 +420,13 @@ class Orchestrator:
             )
         except Exception as e:  # noqa: BLE001
             LOG.warning("cycle-summary alert failed: %s", e)
-        # ALWAYS apply coverage decay for unvisited zones.
+        # ALWAYS apply coverage decay for unvisited zones. Query EVERY zone
+        # directly — `get_coverage_gaps` is a ranked, capped view and would
+        # let decay miss well-covered zones beyond its limit.
         try:
             all_zones = {
-                z.zone_id for z in self.rt.mcp.get_coverage_gaps(top_n=999)}
+                r["zone_id"]
+                for r in self.rt.db.fetchall("SELECT zone_id FROM surface_zones")}
             for zid in all_zones - set(zones):
                 self.rt.mcp.update_zone_coverage(zid, -0.01)
         except Exception as e:  # noqa: BLE001
@@ -435,8 +447,10 @@ class Orchestrator:
                   result.lane_id, result.zone_targeted, result.turns_used, result.wall_time_ms)
 
     def _next_cycle_id(self) -> int:
+        # A MAX() aggregate always returns exactly one row, so `row` is never
+        # None — `row["m"]` is NULL only when the table is empty.
         row = self.rt.db.fetchone("SELECT MAX(cycle_id) AS m FROM cycle_log")
-        return ((row["m"] or 0) + 1) if row else 1
+        return (row["m"] or 0) + 1
 
     def _install_signal_handlers(self) -> None:
         def _handle(signum, _frame):  # noqa: ANN001
@@ -496,11 +510,35 @@ def main(argv: list[str] | None = None) -> int:
                         help="Dev mode: use the host machine's `claude` CLI "
                              "as the LLM (no Anthropic API key required). "
                              "Equivalent to MC_LLM_BACKEND=claude_cli.")
+    llm = parser.add_mutually_exclusive_group()
+    llm.add_argument("--claude", action="store_true",
+                     help="Use Claude Code (`claude --print`) as the LLM provider.")
+    llm.add_argument("--codex", action="store_true",
+                     help="Use Codex CLI (`codex exec`) as the LLM provider.")
+    llm.add_argument("--opencode", action="store_true",
+                     help="Use OpenCode (`opencode run`) as the LLM provider.")
+    llm.add_argument("--llm-backend",
+                     choices=["nemotron", "claude_code", "claude_cli",
+                              "codex", "opencode", "mock"],
+                     default=None,
+                     help="Explicit LLM backend (default: nemotron/NVIDIA).")
     args = parser.parse_args(argv)
 
+    if args.llm_backend:
+        import os as _os  # noqa: PLC0415
+        _os.environ["MC_LLM_BACKEND"] = args.llm_backend
+    if args.claude:
+        import os as _os  # noqa: PLC0415
+        _os.environ["MC_LLM_BACKEND"] = "claude_code"
+    elif args.codex:
+        import os as _os  # noqa: PLC0415
+        _os.environ["MC_LLM_BACKEND"] = "codex"
+    elif args.opencode:
+        import os as _os  # noqa: PLC0415
+        _os.environ["MC_LLM_BACKEND"] = "opencode"
     if args.dev:
         import os as _os  # noqa: PLC0415
-        _os.environ.setdefault("MC_LLM_BACKEND", "claude_cli")
+        _os.environ.setdefault("MC_LLM_BACKEND", "claude_code")
 
     rt = boot(args.config, use_mock_provisioner=args.use_mock_provisioner)
     red = _load_pipeline(args.red, StubRedTeam(), rt=rt)

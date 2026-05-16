@@ -15,6 +15,7 @@ the dashboard works against an empty DB and a live or pre-seeded one alike.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -94,12 +95,24 @@ def _cycles(db_path: str) -> list[dict[str, Any]]:
 
 
 def _ideas(db_path: str) -> list[dict[str, Any]]:
-    return _query(
+    rows = _query(
         db_path,
         "SELECT idea_id, cycle_id, zone_id, source_mode, title, approach, "
-        "priority_score, deduplicated, created_at FROM ideas "
+        "novelty_notes, priority_score, deduplicated, created_at FROM ideas "
         "ORDER BY created_at DESC, priority_score DESC LIMIT 24",
     )
+    for row in rows:
+        row["derived_from_skill"] = _derived_from_skill(
+            row.get("novelty_notes")
+        )
+    return rows
+
+
+def _derived_from_skill(novelty_notes: str | None) -> str:
+    if not novelty_notes:
+        return ""
+    match = re.search(r"\[skill=([A-Z0-9-]+)\]", novelty_notes)
+    return match.group(1) if match else ""
 
 
 def _activity(db_path: str) -> list[dict[str, Any]]:
@@ -171,7 +184,8 @@ def _repro_queue(db_path: str) -> list[dict[str, Any]]:
         "f.severity, f.failure_class, f.zone_id "
         "FROM repro_queue q LEFT JOIN findings f ON f.finding_id = q.finding_id "
         "ORDER BY CASE q.status WHEN 'processing' THEN 0 WHEN 'queued' THEN 1 "
-        "ELSE 2 END, q.priority DESC, q.enqueued_at LIMIT 24",
+        "ELSE 2 END, CASE q.priority WHEN 'high' THEN 0 ELSE 1 END, "
+        "q.enqueued_at LIMIT 24",
     )
 
 
@@ -230,6 +244,77 @@ def _model_usage(db_path: str) -> list[dict[str, Any]]:
         "SUM(success) AS ok, GROUP_CONCAT(DISTINCT model) AS models "
         "FROM model_runs GROUP BY role ORDER BY tokens DESC",
     )
+
+
+def _agent_events(db_path: str) -> list[dict[str, Any]]:
+    """Recent LLM prompts/responses, lane messages, and tool events."""
+    return _query(
+        db_path,
+        "SELECT event_id, session_id, agent_id, agent_kind, event_type, role, "
+        "cycle_id, lane_id, idea_id, model, provider, text, tool_name, status, "
+        "metadata, created_at FROM agent_events "
+        "ORDER BY created_at DESC, event_id DESC LIMIT 160",
+    )
+
+
+def _agent_tool_events(db_path: str) -> list[dict[str, Any]]:
+    """Tool-like telemetry not already captured in agent_events."""
+    return _query(
+        db_path,
+        "SELECT event_id, session_id, event_type, actor, action_class, target, "
+        "decision, reason_code, excerpt, metadata, timestamp AS created_at "
+        "FROM telemetry_events "
+        "WHERE event_type IN ('agent.tool.requested', 'agent.tool.decision', "
+        "'agent.shell.started', 'agent.shell.finished', 'agent.network.request', "
+        "'agent.mcp.invoked', 'agent.file.read', 'agent.file.write') "
+        "ORDER BY timestamp DESC, event_id DESC LIMIT 80",
+    )
+
+
+def _agents(db_path: str) -> dict[str, Any]:
+    events = _agent_events(db_path)
+    tools = _agent_tool_events(db_path)
+    grouped: dict[str, dict[str, Any]] = {}
+    for ev in events:
+        aid = ev.get("agent_id") or ev.get("session_id") or "unknown"
+        g = grouped.setdefault(aid, {
+            "agent_id": aid,
+            "agent_kind": ev.get("agent_kind"),
+            "session_id": ev.get("session_id"),
+            "latest_at": ev.get("created_at"),
+            "model": ev.get("model"),
+            "provider": ev.get("provider"),
+            "llm_calls": 0,
+            "messages": 0,
+            "tool_events": 0,
+            "last_text": "",
+            "last_event": ev.get("event_type"),
+        })
+        if (ev.get("created_at") or "") > (g.get("latest_at") or ""):
+            g["latest_at"] = ev.get("created_at")
+            g["last_event"] = ev.get("event_type")
+        if ev.get("model") and not g.get("model"):
+            g["model"] = ev.get("model")
+        if ev.get("provider") and not g.get("provider"):
+            g["provider"] = ev.get("provider")
+        et = ev.get("event_type") or ""
+        if et == "llm.response":
+            g["llm_calls"] += 1
+        if et.endswith(".message"):
+            g["messages"] += 1
+        if et == "tool.event":
+            g["tool_events"] += 1
+        if ev.get("text") and not g.get("last_text"):
+            g["last_text"] = ev.get("text")
+    return {
+        "summary": sorted(
+            grouped.values(),
+            key=lambda x: x.get("latest_at") or "",
+            reverse=True,
+        )[:24],
+        "events": events,
+        "tools": tools,
+    }
 
 
 def _archive(db_path: str) -> list[dict[str, Any]]:
@@ -450,10 +535,19 @@ def _purple_timeline(db_path: str) -> list[dict[str, Any]]:
         "FROM detection_results ORDER BY created_at DESC LIMIT 50")
 
 
-def _status(db_path: str) -> dict[str, Any]:
-    zones = _zones(db_path)
-    findings = _findings(db_path)
-    cycles = _cycles(db_path)
+def _status(
+    db_path: str,
+    zones: list[dict[str, Any]] | None = None,
+    findings: list[dict[str, Any]] | None = None,
+    cycles: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    # Accept precomputed lists so /api/all does not run these queries twice.
+    if zones is None:
+        zones = _zones(db_path)
+    if findings is None:
+        findings = _findings(db_path)
+    if cycles is None:
+        cycles = _cycles(db_path)
     tests = _query(
         db_path,
         "SELECT last_run_result FROM regression_tests WHERE deprecated = 0")
@@ -468,7 +562,9 @@ def _status(db_path: str) -> dict[str, Any]:
     blue_queued = _scalar(
         db_path, "SELECT COUNT(*) AS n FROM repro_packages "
                  "WHERE ready_for_blue = 1 AND blue_team_status = 'queued'") or 0
-    tokens = sum(c.get("total_tokens_used") or 0 for c in cycles)
+    tokens = _scalar(
+        db_path,
+        "SELECT SUM(COALESCE(total_tokens_used, 0)) FROM cycle_log") or 0
     patches_total = _scalar(db_path, "SELECT COUNT(*) AS n FROM patches") or 0
     patches_verified = _scalar(
         db_path,
@@ -496,9 +592,15 @@ def _status(db_path: str) -> dict[str, Any]:
         }
 
     return {
-        "cycles": len(_query(db_path, "SELECT cycle_id FROM cycle_log")),
-        "confirmed": sum(1 for f in findings if f["verdict"] == "confirmed"),
-        "suspicious": sum(1 for f in findings if f["verdict"] == "suspicious"),
+        "cycles": _scalar(db_path, "SELECT COUNT(*) FROM cycle_log") or 0,
+        "confirmed": _scalar(
+            db_path,
+            "SELECT COUNT(*) FROM findings WHERE verdict = ?",
+            ("confirmed",)) or 0,
+        "suspicious": _scalar(
+            db_path,
+            "SELECT COUNT(*) FROM findings WHERE verdict = ?",
+            ("suspicious",)) or 0,
         "regression_tests": len(tests),
         "regression_pass": reg_pass,
         "regression_rate": (reg_pass / len(tests)) if tests else 0.0,
@@ -675,17 +777,21 @@ def render_executed_path(db, finding_id: str) -> str:  # noqa: ANN001
 
 def _all(db_path: str) -> dict[str, Any]:
     """Single atomic snapshot — the page renders from one fetch."""
+    zones = _zones(db_path)
+    findings = _findings(db_path)
+    cycles = _cycles(db_path)
     return {
-        "status": _status(db_path),
-        "zones": _zones(db_path),
-        "findings": _findings(db_path),
-        "cycles": _cycles(db_path),
+        "status": _status(db_path, zones=zones, findings=findings, cycles=cycles),
+        "zones": zones,
+        "findings": findings,
+        "cycles": cycles,
         "ideas": _ideas(db_path),
         "repro": _repro_queue(db_path),
         "packages": _packages(db_path),
         "patches": _patches(db_path),
         "regression": _regression(db_path),
         "models": _model_usage(db_path),
+        "agents": _agents(db_path),
         "archive": _archive(db_path),
         "operators": _operators(db_path),
         "model_tournament": _model_tournament(db_path),
@@ -858,6 +964,7 @@ _PAGE = r"""<!doctype html>
     --crit:#ff5c5c; --high:#ff9f43; --med:#ffd23f; --low:#54b8ff; --ok:#36d399;
     --creative:#c792ea; --code_grounded:#54b8ff; --history_informed:#36d399;
     --playbook:#f5a623; --strategist:#ff9f43; --policy_corpus:#c792ea;
+    --research_grounded:#ff6ac1;
     --mono:'IBM Plex Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;
     --sans:'IBM Plex Sans',-apple-system,system-ui,Segoe UI,sans-serif;
   }
@@ -1012,8 +1119,109 @@ _PAGE = r"""<!doctype html>
     padding:8px 0; border-bottom:1px solid var(--line); font-size:12px;}
   .tl .ev:last-child{border-bottom:0;}
   .tl .ev .ts{color:var(--faint); font-family:var(--mono); font-size:11px;}
-  .tl .ev .et{font-family:var(--mono); color:var(--txt);}
-  .tl .ev .em{color:var(--dim); margin-top:2px;}
+    .tl .ev .et{font-family:var(--mono); color:var(--txt);}
+    .tl .ev .em{color:var(--dim); margin-top:2px;}
+
+  /* ---- live agents — conversation & tool stream ---- */
+  .agentgrid{display:grid; grid-template-columns:minmax(178px,.6fr) 2fr;
+    gap:18px;}
+  @media(max-width:960px){.agentgrid{grid-template-columns:1fr;}}
+
+  /* agent rail — click a card to follow one agent's thread */
+  .agentrail{display:flex; flex-direction:column; gap:7px;}
+  .arow{border:1px solid var(--line); background:var(--bg-2); border-radius:9px;
+    padding:10px 12px; cursor:pointer;
+    transition:border-color .15s,background .15s,transform .15s;}
+  .arow:hover{border-color:var(--line-2); transform:translateX(2px);}
+  .arow.sel{border-color:var(--accent);
+    background:linear-gradient(100deg,var(--panel-2),var(--panel));}
+  .arow.all{border-style:dashed; background:transparent;}
+  .arow .anm{font:700 12px/1.35 var(--mono); color:var(--txt);
+    display:flex; align-items:center; gap:7px;}
+  .arow .adot{flex:none; width:7px; height:7px; border-radius:50%;
+    background:var(--accent);}
+  .arow.sel .adot{box-shadow:0 0 0 0 var(--accent);
+    animation:pulse 1.9s infinite;}
+  .arow .ak{font-size:10.5px; color:var(--dim); margin-top:4px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .arow .amini{margin-top:8px; display:flex; gap:5px; flex-wrap:wrap;}
+  .ministat{display:inline-flex; align-items:center; gap:4px; padding:2px 6px;
+    border:1px solid var(--line-2); border-radius:5px;
+    font:600 10px/1.5 var(--mono); color:var(--dim);}
+  .ministat b{color:var(--txt);}
+
+  /* stream header */
+  .streamhd{display:flex; align-items:baseline; justify-content:space-between;
+    gap:10px; margin-bottom:6px;}
+  .streamhd h3{margin:0; font:600 12px/1 var(--mono); letter-spacing:.12em;
+    text-transform:uppercase; color:var(--dim);}
+  .streamfilter{font:700 10px/1 var(--mono); letter-spacing:.04em;
+    color:var(--accent);}
+
+  /* the transcript — text renders like an article, not bubbles */
+  .stream{display:flex; flex-direction:column; gap:3px; padding-top:6px;}
+  .ic{width:15px; height:15px; flex:none;}
+  .chev{width:14px; height:14px; flex:none; transition:transform .18s;}
+
+  /* conversation turn — plain rendered text */
+  .cmsg{margin:15px 2px; max-width:74ch;}
+  .cmsg .who{display:flex; align-items:center; gap:8px; margin-bottom:5px;
+    font:700 9.5px/1 var(--mono); letter-spacing:.14em;
+    text-transform:uppercase;}
+  .cmsg.attacker .who{color:var(--high);}
+  .cmsg.victim .who{color:var(--low);}
+  .cmsg .who .wt{color:var(--faint); font-weight:500; letter-spacing:.04em;}
+  .cmsg .body{font:14px/1.72 var(--sans); color:var(--txt);
+    white-space:pre-wrap; overflow-wrap:anywhere;}
+
+  /* activity row — LLM calls & tool calls, collapsible */
+  details.act{align-self:stretch;}
+  .actrow{display:flex; align-items:flex-start; gap:9px; padding:7px 8px;
+    border-radius:8px; transition:background .12s;}
+  details.act > summary.actrow{list-style:none; cursor:pointer;}
+  details.act > summary.actrow::-webkit-details-marker{display:none;}
+  details.act > summary.actrow:hover{background:var(--bg-2);}
+  .actrow > .ic{margin-top:1px; color:var(--faint);}
+  .actrow.llm > .ic{color:var(--accent);}
+  .actrow.err > .ic{color:var(--crit);}
+  .actlabel{flex:1; min-width:0; display:flex; align-items:baseline; gap:7px;
+    flex-wrap:wrap; font:13.5px/1.5 var(--sans); color:var(--dim);}
+  .actlabel .who{font:600 12.5px/1.45 var(--mono); color:var(--txt);}
+  .actlabel .tgt{font:12px/1.5 var(--mono); color:var(--dim);
+    overflow-wrap:anywhere;}
+  .actlabel .dec{font:700 10px/1.5 var(--mono); letter-spacing:.05em;
+    text-transform:uppercase; color:var(--ok);}
+  .actlabel .dec.deny{color:var(--crit);}
+  .actstat{flex:none; display:flex; gap:9px; align-items:center;
+    font:11px/1.6 var(--mono); color:var(--faint);}
+  .actrow .chev{margin-top:3px; color:var(--faint);}
+  details.act[open] > summary.actrow .chev{transform:rotate(180deg);}
+  .livein{display:inline-flex; align-items:center; gap:6px; color:var(--low);
+    font:600 12px/1.5 var(--mono);}
+  .livein .pd{width:6px; height:6px; border-radius:50%; background:var(--low);
+    animation:pulse 1.4s infinite;}
+  .actbody{margin:2px 0 12px 32px; display:flex; flex-direction:column;
+    gap:8px;}
+
+  /* code block — prompt / response inside an expanded activity */
+  .cblk{border:1px solid var(--line); border-radius:8px;
+    background:var(--panel); overflow:hidden;}
+  .cblk > .cbh{font:700 9px/1 var(--mono); letter-spacing:.13em;
+    text-transform:uppercase; color:var(--faint); padding:7px 11px;
+    background:var(--panel-2); border-bottom:1px solid var(--line);}
+  .cblk > .cbt{padding:9px 11px; font:12px/1.62 var(--mono); color:var(--dim);
+    white-space:pre-wrap; overflow-wrap:anywhere;}
+  .cblk.resp{border-color:var(--line-2);}
+  .cblk.resp > .cbt{color:var(--txt);}
+  .cblk.err > .cbh{color:var(--crit);}
+  .tn{padding:8px 11px; border-top:1px solid var(--line);}
+  .tn:first-of-type{border-top:0;}
+  .tn > .tnr{display:block; margin-bottom:5px; font:700 8.5px/1 var(--mono);
+    letter-spacing:.14em; text-transform:uppercase; color:var(--faint);}
+  .tn.user > .tnr{color:var(--low);}
+  .tn.assistant > .tnr{color:var(--accent);}
+  .tn > .tnt{font:12px/1.62 var(--mono); color:var(--dim);
+    white-space:pre-wrap; overflow-wrap:anywhere;}
 
   /* judge bars */
   .judge{margin-bottom:13px;}
@@ -1044,15 +1252,35 @@ _PAGE = r"""<!doctype html>
     <div class="metrics" id="metrics"></div>
   </section>
 
-  <section>
-    <div class="kicker">Attack surface</div>
+    <section>
+      <div class="kicker">Attack surface</div>
     <h2>Coverage heatmap</h2>
     <div class="desc">All 18 attack-surface zones. Greener means better tested;
       red zones are where the red team is still blind.</div>
     <div class="heat" id="zones"></div>
-  </section>
+    </section>
 
-  <section>
+    <section>
+      <div class="kicker">Agents</div>
+      <h2>Live LLM &amp; tool stream</h2>
+      <div class="desc">Every deployed agent's reasoning, turn by turn — each
+        LLM call paired prompt-to-response with its model, latency, and token
+        cost, next to the tool calls and messages it drove in the victim lane.
+        Pick an agent on the left to follow just its thread.</div>
+      <div class="agentgrid">
+        <div class="card"><h3>Active agents</h3>
+          <div class="scroll agentrail" id="agentSummary"></div></div>
+        <div class="card">
+          <div class="streamhd">
+            <h3>Conversation &amp; tool stream</h3>
+            <span class="streamfilter" id="streamFilter"></span>
+          </div>
+          <div class="scroll stream" id="agentEvents"></div>
+        </div>
+      </div>
+    </section>
+
+    <section>
     <div class="kicker">Red team</div>
     <h2>Ideas &amp; findings</h2>
     <div class="desc">The freshest Nemotron-generated attack ideas on the left,
@@ -1176,7 +1404,8 @@ const SEV={critical:"var(--crit)",high:"var(--high)",medium:"var(--med)",
   low:"var(--low)",info:"var(--dim)"};
 const MODE={creative:"var(--creative)",code_grounded:"var(--code_grounded)",
   history_informed:"var(--history_informed)",playbook:"var(--playbook)",
-  strategist:"var(--strategist)",policy_corpus:"var(--policy_corpus)"};
+  strategist:"var(--strategist)",policy_corpus:"var(--policy_corpus)",
+  research_grounded:"var(--research_grounded)"};
 const STATUS_C={confirmed:"var(--crit)",processing:"var(--low)",
   patching:"var(--low)",queued:"var(--med)",triaged:"var(--accent)",
   approved:"var(--ok)",verified:"var(--ok)",patched:"var(--ok)",
@@ -1242,13 +1471,252 @@ function renderMetrics(s){
     [`$${(s.cost_usd||0).toFixed(2)}`,"Model cost",
       `${num(s.tokens_used)} tokens`],
   ];
-  set('metrics',m.map(x=>
-    `<div class="metric"><div class="v">${x[0]}</div>`
-    +`<div class="l">${x[1]}</div>`
-    +(x[2]?`<div class="sub">${esc(x[2])}</div>`:'')+`</div>`).join(''));
-}
+    set('metrics',m.map(x=>
+      `<div class="metric"><div class="v">${x[0]}</div>`
+      +`<div class="l">${x[1]}</div>`
+      +(x[2]?`<div class="sub">${esc(x[2])}</div>`:'')+`</div>`).join(''));
+  }
 
-function renderZones(z){
+  // ---- live LLM & tool stream --------------------------------------------
+  let STREAM_FILTER=null, LAST_AGENTS=null;
+  const OPEN=new Set();              // prompt <details> kept open across polls
+  function dtoggle(d){
+    if(d.open)OPEN.add(d.dataset.k); else OPEN.delete(d.dataset.k);
+  }
+  function emeta(x){
+    let m=x&&x.metadata;
+    if(typeof m==='string'){try{m=JSON.parse(m);}catch(e){m=null;}}
+    return m||{};
+  }
+  function kfmt(n){n=+n||0;
+    return n>=1000?(n/1000).toFixed(n>=10000?0:1)+'k':String(n);}
+  function latfmt(ms){ms=+ms||0;
+    return ms>=1000?(ms/1000).toFixed(1)+'s':Math.round(ms)+'ms';}
+
+  // Split a rendered prompt ("[SYSTEM]\n..\n\n[USER]\n..") into role turns.
+  function parseTurns(t){
+    t=t||'';const parts=[];const re=/\[(SYSTEM|USER|ASSISTANT)\]\n?/g;
+    let m,prev=null,idx=0;
+    while((m=re.exec(t))){
+      if(prev!==null)parts.push({role:prev,text:t.slice(idx,m.index).trim()});
+      prev=m[1].toLowerCase();idx=re.lastIndex;
+    }
+    if(prev!==null)parts.push({role:prev,text:t.slice(idx).trim()});
+    if(!parts.length&&t.trim())parts.push({role:'prompt',text:t.trim()});
+    return parts.filter(p=>p.text);
+  }
+
+  // Pair each llm.request with its llm.response/llm.error (events are DESC,
+  // so a response is seen just before its request).
+  function pairEvents(events){
+    const entries=[],pending={};
+    for(const e of events){
+      const et=e.event_type||'',key=e.agent_id||e.session_id||'?';
+      if(et==='llm.response'||et==='llm.error'){pending[key]=e;continue;}
+      if(et==='llm.request'){
+        const resp=pending[key]||null;delete pending[key];
+        entries.push({type:'llm',req:e,resp:resp,
+          created_at:(resp&&resp.created_at)||e.created_at});
+        continue;
+      }
+      if(et==='tool.event'){
+        entries.push({type:'tool',ev:e,created_at:e.created_at});continue;
+      }
+      entries.push({type:'msg',ev:e,created_at:e.created_at});
+    }
+    for(const k in pending){            // response whose request scrolled off
+      const r=pending[k];
+      entries.push({type:'llm',req:null,resp:r,created_at:r.created_at});
+    }
+    return entries;
+  }
+
+  // minimal line icons (Claude-style activity rows)
+  const ICONS={
+    llm:'<svg viewBox="0 0 16 16" class="ic" fill="currentColor"><path d="M8 '
+      +'.8l1.8 4.9 4.9 1.8-4.9 1.8L8 15.2 6.2 9.3 1.3 7.5 6.2 5.7z"/></svg>',
+    net:'<svg viewBox="0 0 16 16" class="ic" fill="none" stroke="currentColor"'
+      +' stroke-width="1.3"><circle cx="8" cy="8" r="6.3"/><path d="M1.7 8h12.6'
+      +'M8 1.7c2.2 2 2.2 10.6 0 12.6M8 1.7c-2.2 2-2.2 10.6 0 12.6"/></svg>',
+    file:'<svg viewBox="0 0 16 16" class="ic" fill="none" stroke="currentColor"'
+      +' stroke-width="1.3"><path d="M9 1.8H4.4c-.7 0-1.2.6-1.2 1.2v10c0 .7.5 '
+      +'1.2 1.2 1.2h7.2c.7 0 1.2-.5 1.2-1.2V5.8z"/><path d="M9 1.8v4h4"/></svg>',
+    shell:'<svg viewBox="0 0 16 16" class="ic" fill="none" stroke="currentColor'
+      +'" stroke-width="1.3"><rect x="1.8" y="3" width="12.4" height="10" rx="'
+      +'1.5"/><path d="M4.7 6.6L7 8.6 4.7 10.6M8.7 10.6h3"/></svg>',
+    mcp:'<svg viewBox="0 0 16 16" class="ic" fill="none" stroke="currentColor" '
+      +'stroke-width="1.3"><path d="M8 1.4l5.7 3.3v6.6L8 14.6 2.3 11.3V4.7z"/>'
+      +'<circle cx="8" cy="8" r="2.2"/></svg>',
+    err:'<svg viewBox="0 0 16 16" class="ic" fill="none" stroke="currentColor" '
+      +'stroke-width="1.4"><path d="M8 2.3l6.2 10.9H1.8z"/><path d="M8 6.4v3.3'
+      +'M8 11.4v.2"/></svg>',
+    dot:'<svg viewBox="0 0 16 16" class="ic" fill="currentColor"><circle cx="8"'
+      +' cy="8" r="3"/></svg>',
+  };
+  const CHEV='<svg viewBox="0 0 16 16" class="chev" fill="none" stroke="curren'
+    +'tColor" stroke-width="1.7"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg>';
+  const VERBS={ideation:'generating ideas',judge:'judging the transcript',
+    strategist:'synthesising chains',execution:'planning the next move',
+    triage:'triaging the finding',patch:'drafting a patch',
+    repro:'reproducing the finding',cold:'cold-verifying'};
+  function verbFor(kind,role){
+    const s=((kind||'')+' '+(role||'')).toLowerCase();
+    for(const k in VERBS)if(s.indexOf(k)>=0)return VERBS[k];
+    return 'reasoning';
+  }
+  function toolIcon(t){
+    const s=((t.event_type||'')+' '+(t.action_class||'')).toLowerCase();
+    if(/mcp/.test(s))return ICONS.mcp;
+    if(/net/.test(s))return ICONS.net;
+    if(/shell|process|exec/.test(s))return ICONS.shell;
+    if(/file|fs|read|write/.test(s))return ICONS.file;
+    return ICONS.dot;
+  }
+  function turnsBlock(text){
+    const rows=parseTurns(text).map(t=>`<div class="tn ${esc(t.role)}">`
+      +`<span class="tnr">${esc(t.role)}</span>`
+      +`<div class="tnt">${trunc(t.text,2200)}</div></div>`).join('');
+    return `<div class="cblk"><div class="cbh">prompt</div>${rows}</div>`;
+  }
+
+  // LLM call -> a collapsible activity row
+  function actLLM(en){
+    const req=en.req,resp=en.resp,isErr=!!resp&&resp.event_type==='llm.error';
+    const ref=req||resp||{};
+    const agent=ref.agent_id||ref.session_id||'agent';
+    const model=(resp&&resp.model)||(req&&req.model)||'';
+    const rm=emeta(resp),k='a'+(ref.event_id||(resp&&resp.event_id)||'');
+    const live=!resp;
+    let stat='';
+    if(model)stat+=`<span>${esc(model)}</span>`;
+    if(resp&&!isErr&&rm.output_tokens)
+      stat+=`<span>${kfmt(rm.output_tokens)} tok</span>`;
+    if(rm.latency_ms)stat+=`<span>${latfmt(rm.latency_ms)}</span>`;
+    stat+=`<span>${ts(en.created_at)}</span>`;
+    let body='';
+    if(req&&req.text)body+=turnsBlock(req.text);
+    if(isErr)body+=`<div class="cblk err"><div class="cbh">error</div>`
+      +`<div class="cbt">${trunc(resp.text||'(no detail)',1200)}</div></div>`;
+    else if(resp&&resp.text)body+=`<div class="cblk resp">`
+      +`<div class="cbh">response</div>`
+      +`<div class="cbt">${trunc(resp.text,2600)}</div></div>`;
+    else body+=`<div class="cblk"><div class="cbh">response</div>`
+      +`<div class="cbt">waiting for the model to reply&#8230;</div></div>`;
+    const verb=isErr?'model error'
+      :(live?`<span class="livein"><span class="pd"></span>`
+        +`${esc(verbFor(ref.agent_kind,ref.role))}&#8230;</span>`
+        :esc(verbFor(ref.agent_kind,ref.role)));
+    return `<details class="act" data-k="${k}" ontoggle="dtoggle(this)"`
+      +`${OPEN.has(k)?' open':''}><summary class="actrow llm `
+      +`${isErr?'err':''}">${isErr?ICONS.err:ICONS.llm}`
+      +`<span class="actlabel"><span class="who">${esc(agent)}</span>`
+      +`<span>${verb}</span></span>`
+      +`<span class="actstat">${stat}</span>${CHEV}</summary>`
+      +`<div class="actbody">${body}</div></details>`;
+  }
+
+  // tool / MCP / file / network call -> a minimal activity row
+  function actTool(t){
+    const dec=(t.decision||t.status||'').toString();
+    const deny=/(den|block|reject|fail)/i.test(dec);
+    const et=(t.event_type||'event').replace(/^agent\./,'').replace(/\./g,' ');
+    const target=t.target||t.tool_name||'';
+    const exc=t.excerpt||t.text||'';
+    const k='t'+(t.event_id||target||'');
+    const label=`<span class="actlabel"><span class="who">`
+      +`${esc(t.actor||t.agent_id||'agent')}</span><span>${esc(et)}</span>`
+      +(target?`<span class="tgt">${esc(target)}</span>`:'')
+      +(dec?`<span class="dec ${deny?'deny':''}">${esc(dec)}</span>`:'')
+      +`</span><span class="actstat"><span>${ts(t.created_at)}</span></span>`;
+    if(!exc)
+      return `<div class="actrow">${toolIcon(t)}${label}</div>`;
+    return `<details class="act" data-k="${k}" ontoggle="dtoggle(this)"`
+      +`${OPEN.has(k)?' open':''}><summary class="actrow">${toolIcon(t)}`
+      +`${label}${CHEV}</summary><div class="actbody"><div class="cblk">`
+      +`<div class="cbt">${trunc(exc,700)}</div></div></div></details>`;
+  }
+
+  // attacker / victim turn -> plain rendered text (article-style)
+  function chatMsg(e){
+    const tag=((e.role||'')+' '+(e.event_type||'')).toLowerCase();
+    const att=/attack/.test(tag),vic=/victim/.test(tag);
+    const who=att?'attacker':(vic?'victim':'message');
+    return `<div class="cmsg ${att?'attacker':'victim'}"><div class="who">`
+      +`${esc(who)}<span class="wt">${esc(e.agent_id||e.session_id||'')}`
+      +` &middot; ${ts(e.created_at)}</span></div>`
+      +`<div class="body">${trunc(e.text||'(no text)',2000)}</div></div>`;
+  }
+
+  function entryAgent(en){
+    if(en.type==='llm')return((en.req&&en.req.agent_id)
+      ||(en.resp&&en.resp.agent_id)||null);
+    if(en.type==='tool')return(en.ev.actor||en.ev.agent_id||null);
+    return(en.ev.agent_id||en.ev.session_id||null);
+  }
+
+  function renderAgents(a){
+    LAST_AGENTS=a;
+    if(!renderAgents._bound){          // one-time: click a rail card to filter
+      renderAgents._bound=true;
+      const rail=document.getElementById('agentSummary');
+      if(rail)rail.addEventListener('click',ev=>{
+        const row=ev.target.closest('.arow');if(!row)return;
+        STREAM_FILTER=row.dataset.agent||null;
+        if(LAST_AGENTS)renderAgents(LAST_AGENTS);
+      });
+    }
+    const summary=(a&&a.summary)||[];
+    const events=(a&&a.events)||[];
+    const tools=(a&&a.tools)||[];
+
+    // agent rail
+    if(!summary.length){
+      STREAM_FILTER=null;
+      set('agentSummary','<div class="empty">no agents deployed yet</div>');
+    }else{
+      const totLlm=summary.reduce((s,x)=>s+(x.llm_calls||0),0);
+      let rail=`<div class="arow all ${STREAM_FILTER?'':'sel'}" data-agent="">`
+        +`<div class="anm">All agents</div>`
+        +`<div class="ak">${summary.length} active &middot; `
+        +`${num(totLlm)} llm call(s)</div></div>`;
+      rail+=summary.map(x=>{
+        const sel=STREAM_FILTER===x.agent_id;
+        const model=x.model?`${esc(x.provider||'')}/${esc(x.model)}`:'';
+        return `<div class="arow ${sel?'sel':''}" data-agent="${esc(x.agent_id)}">`
+          +`<div class="anm"><span class="adot"></span>${esc(x.agent_id)}</div>`
+          +`<div class="ak">${esc(x.agent_kind||'agent')}`
+          +`${model?' &middot; '+model:''}</div><div class="amini">`
+          +`<span class="ministat"><b>${x.llm_calls||0}</b> llm</span>`
+          +`<span class="ministat"><b>${x.messages||0}</b> msg</span>`
+          +`<span class="ministat"><b>${x.tool_events||0}</b> tool</span>`
+          +`</div></div>`;
+      }).join('');
+      set('agentSummary',rail);
+    }
+    set('streamFilter',STREAM_FILTER
+      ? `&#9656; following ${esc(STREAM_FILTER)}` : '');
+
+    // timeline — paired exchanges + tool rows, newest first
+    let entries=pairEvents(events);
+    for(const t of tools)entries.push({type:'tool',ev:t,
+      created_at:t.created_at});
+    entries.sort((p,q)=>(q.created_at||'').localeCompare(p.created_at||''));
+    if(STREAM_FILTER)
+      entries=entries.filter(en=>entryAgent(en)===STREAM_FILTER);
+    entries=entries.slice(0,80);
+    if(!entries.length){
+      set('agentEvents','<div class="empty">'+(STREAM_FILTER
+        ?'no activity for this agent yet'
+        :'no LLM or tool activity recorded yet')+'</div>');
+      return;
+    }
+    set('agentEvents',entries.map(en=>
+      en.type==='llm'?actLLM(en)
+      :en.type==='tool'?actTool(en.ev)
+      :chatMsg(en.ev)).join(''));
+  }
+
+  function renderZones(z){
   if(!z||!z.length){set('zones','<div class="empty">no zones loaded</div>');return;}
   set('zones',z.map(x=>{
     const c=x.coverage_score||0, col=heat(c);
@@ -1291,12 +1759,14 @@ function renderIdeas(items){
     '<div class="empty">no ideas generated yet</div>');return;}
   set('ideas',items.map(x=>{
     const col=MODE[x.source_mode]||"var(--line)";
+    const skill=x.derived_from_skill
+      ?`<span class="chip mono">${esc(x.derived_from_skill)}</span>`:"";
     return `<div class="row ${x.deduplicated?'dedup':''}" `
       +`style="border-left-color:${col}">
       <div class="hd">${badge((x.source_mode||'').replace(/_/g,' '),col)}
         <span class="dim mono" style="font-size:11px">${esc(x.zone_id)} · `
         +`c${x.cycle_id} · p=${(x.priority_score||0).toFixed(2)}`
-        +`${x.deduplicated?' · duplicate':''}</span></div>
+        +`${x.deduplicated?' · duplicate':''}</span>${skill}</div>
       <div class="ti" style="margin-top:5px">${trunc(x.title,80)}</div>
       <div class="ap">${trunc(x.approach,130)}</div>
     </div>`;}).join(''));
@@ -1568,8 +2038,9 @@ async function tick(){
   const d=await j('/api/all');
   if(!d){document.getElementById('liveText').textContent=
     "no data — knowledge base unreachable";return;}
-  renderLive(d.status); renderFlow(d.status); renderMetrics(d.status);
-  renderZones(d.zones); renderFindings(d.findings); renderIdeas(d.ideas);
+    renderLive(d.status); renderFlow(d.status); renderMetrics(d.status);
+    renderAgents(d.agents);
+    renderZones(d.zones); renderFindings(d.findings); renderIdeas(d.ideas);
   renderRepro(d.repro); renderPackages(d.packages); renderPatches(d.patches);
   renderRegression(d.regression); renderArchive(d.archive);
   renderOperators(d.operators); renderJudges(d.judges);
@@ -1677,6 +2148,10 @@ def build_dashboard_app(db_path: str):
     def api_models() -> list[dict[str, Any]]:
         return _model_usage(db_path)
 
+    @app.get("/api/agents")
+    def api_agents() -> dict[str, Any]:
+        return _agents(db_path)
+
     @app.get("/api/archive")
     def api_archive() -> list[dict[str, Any]]:
         return _archive(db_path)
@@ -1736,5 +2211,8 @@ def serve(db_path: str = "data/monkeyclaw.db", port: int = 8787) -> None:
     import uvicorn
 
     print(f"MonkeyClaw dashboard — http://127.0.0.1:{port}  (db: {db_path})")
-    uvicorn.run(build_dashboard_app(db_path), host="127.0.0.1", port=port,
+    # Bind all interfaces so the dashboard is reachable through Docker's
+    # published port from the host; container network isolation + the explicit
+    # `ports:` mapping are the access control.
+    uvicorn.run(build_dashboard_app(db_path), host="0.0.0.0", port=port,
                 log_level="warning")

@@ -12,6 +12,7 @@ import logging
 import os
 import threading
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 
 from interfaces.config_schema import GuardrailsConfig
 from interfaces.types import PolicyDecision
@@ -24,7 +25,10 @@ def _iso_now() -> str:
 
 
 def _expand(p: str) -> str:
-    return os.path.abspath(os.path.expanduser(p))
+    # realpath (not just abspath): resolves symlinks so a symlink pointing
+    # into a denied path cannot bypass the deny-list. Both the base paths and
+    # every candidate path are normalised the same way before comparison.
+    return os.path.realpath(os.path.expanduser(p))
 
 
 class PolicyEnforcer:
@@ -92,8 +96,14 @@ class PolicyEnforcer:
             return stop
         allowed = set(self.cfg.network_allowlist.get(phase, []))
         allowed |= set(self.cfg.network_allowlist.get("default", []))
-        host = destination.split("://")[-1].split("/")[0].split(":")[0]
-        if host in allowed:
+        # Robust host extraction. `urlsplit` only populates `.hostname` when a
+        # scheme is present, so fall back to parsing with a dummy scheme for
+        # bare "host:port" / "host/path" destinations.
+        parsed = urlsplit(destination)
+        host = parsed.hostname
+        if not host:
+            host = urlsplit("//" + destination).hostname
+        if host and host in allowed:
             return self._decide("network", destination, "allow",
                                 "egress_permitted", phase)
         return self._decide("network", destination, "deny",
@@ -144,7 +154,11 @@ class PolicyEnforcer:
         LOG.error("EMERGENCY STOP triggered: %s", reason)
 
     def emergency_stopped(self) -> bool:
-        return self._stopped
+        # Read `_stopped` (and its paired `_stop_reason`) under the lock so a
+        # concurrent trigger_emergency_stop() cannot be observed half-applied.
+        with self._lock:
+            _ = self._stop_reason
+            return self._stopped
 
 
 __all__ = ["PolicyEnforcer"]

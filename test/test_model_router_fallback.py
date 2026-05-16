@@ -135,15 +135,20 @@ def test_red_pipeline_uses_router_clients():
     rt = boot(use_mock_provisioner=True)
     try:
         pipe = Pipeline(runtime=rt)
-        # Each component holds a RoutedClient bound to its role, not a bare LLM.
+        # Each component holds a role-bound RoutedClient, wrapped in an
+        # ObservedLLM so completions emit live dashboard agent_events.
+        from interfaces.llm import ObservedLLM
         from interfaces.model_router import RoutedClient
-        assert isinstance(pipe.ideation.llm, RoutedClient)
-        assert pipe.ideation.llm.role == "red_ideation"
-        assert isinstance(pipe.execution.llm, RoutedClient)
-        assert pipe.execution.llm.role == "red_execution"
-        assert isinstance(pipe.judger.llm, RoutedClient)
-        assert pipe.judger.llm.role == "semantic_judge"
-        assert isinstance(pipe.strategist.llm, RoutedClient)
+
+        def _routed(client):
+            inner = client.inner if isinstance(client, ObservedLLM) else client
+            assert isinstance(inner, RoutedClient)
+            return inner
+
+        assert _routed(pipe.ideation.llm).role == "red_ideation"
+        assert _routed(pipe.execution.llm).role == "red_execution"
+        assert _routed(pipe.judger.llm).role == "semantic_judge"
+        _routed(pipe.strategist.llm)
     finally:
         rt.shutdown()
 

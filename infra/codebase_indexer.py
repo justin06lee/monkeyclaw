@@ -276,13 +276,17 @@ def _chunk_file(path: Path, root: Path) -> list[Chunk]:
 
 
 def index_codebase(db: Database, root: Path, embedder: EmbeddingModel | None = None,
-                    progress_every: int = 200) -> dict:
+                    progress_every: int = 200, limit_files: int = 0) -> dict:
     """Walk `root`, chunk every supported file, embed each chunk, upsert.
+
+    `limit_files`, when > 0, caps the number of files indexed (smoke runs).
 
     Returns a small summary dict.
     """
     embedder = embedder or EmbeddingModel.shared()
     files = _iter_files(root)
+    if limit_files > 0:
+        files = files[:limit_files]
     LOG.info("indexing %d files under %s", len(files), root)
     total_chunks = 0
     seen_hashes: set[str] = set()
@@ -301,13 +305,25 @@ def index_codebase(db: Database, root: Path, embedder: EmbeddingModel | None = N
             return
         embs = embedder.encode(pending_text)
         with db.lock():
-            for meta, key, emb in zip(pending_meta, pending_keys, embs, strict=True):
-                db.execute(
-                    "INSERT OR REPLACE INTO code_chunks(chunk_id, file_path, function_name, "
-                    "line_start, line_end, language, content, content_sha256, indexed_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))", meta,
-                )
-                db.upsert_vector("code_chunks_vec", "chunk_id", key, emb.tolist())
+            # The chunk row and its vector must land atomically — a crash
+            # between the two autocommit statements would leave a code_chunk
+            # with no embedding. Wrap the whole batch in one transaction.
+            db.execute("BEGIN")
+            try:
+                for meta, key, emb in zip(pending_meta, pending_keys, embs,
+                                          strict=True):
+                    db.execute(
+                        "INSERT OR REPLACE INTO code_chunks(chunk_id, file_path, "
+                        "function_name, line_start, line_end, language, content, "
+                        "content_sha256, indexed_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))", meta,
+                    )
+                    db.upsert_vector("code_chunks_vec", "chunk_id", key,
+                                     emb.tolist())
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+            db.execute("COMMIT")
         total_chunks += len(pending_text)
         pending_meta = []
         pending_text = []
@@ -431,27 +447,26 @@ def main(argv: list[str] | None = None) -> int:
         from infra.argyph_index import ArgyphIndex  # noqa: PLC0415
         argyph = ArgyphIndex(binary=cfg.code_context.argyph_binary)
         if argyph.available:
-            LOG.info("code-context backend: argyph (%s)", argyph.binary)
+            # `argyph index` is a stub in the shipped milestone — it exits 0
+            # without indexing anything. A successful return therefore does
+            # NOT mean the codebase is indexed, so we must NOT early-return:
+            # always run the Python tree-sitter indexer afterwards so
+            # `code_chunks` is genuinely populated.
+            LOG.info("code-context backend: argyph (%s) — running argyph "
+                     "index, then the python indexer (argyph index is a stub)",
+                     argyph.binary)
             try:
                 argyph.index(str(root))
-                return 0
             except Exception as exc:
-                LOG.warning("argyph indexing failed (%s); falling back to python indexer", exc)
+                LOG.warning("argyph indexing failed (%s); python indexer "
+                            "will still run", exc)
         else:
             LOG.info("code-context backend: argyph configured but binary "
                      "unavailable; falling back to python indexer")
     else:
         LOG.info("code-context backend: python tree-sitter indexer")
 
-    if args.limit_files > 0:
-        global _iter_files  # noqa: PLW0603
-        _original_iter = _iter_files
-        _limit = args.limit_files
-
-        def _iter_files(r: str, _o=_original_iter, _n=_limit) -> list:  # type: ignore[assignment]
-            return _o(r)[:_n]
-
-    summary = index_codebase(db, root)
+    summary = index_codebase(db, root, limit_files=args.limit_files)
     graph_summary = index_symbol_graph(db, root=root)
     summary["symbol_graph"] = graph_summary
     print(summary)

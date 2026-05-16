@@ -90,7 +90,7 @@ def load_playbooks(path: str | Path | None = None) -> list[Playbook]:
     playbooks: list[Playbook] = []
     for yml in sorted(directory.glob("*.yaml")):
         try:
-            raw = yaml.safe_load(yml.read_text())
+            raw = yaml.safe_load(yml.read_text(encoding="utf-8"))
         except yaml.YAMLError as e:
             raise ValueError(f"playbook {yml.name} is not valid YAML: {e}") from e
         pb = _coerce_playbook(raw, yml.name)

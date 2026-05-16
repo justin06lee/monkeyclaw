@@ -22,7 +22,28 @@ LOG = logging.getLogger("monkeyclaw.db")
 
 EMBEDDING_DIM = 384
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-SCHEMA_PATH =Path(__file__).resolve().parent.parent / "interfaces" / "schema.sql"
+SCHEMA_PATH = Path(__file__).resolve().parent.parent / "interfaces" / "schema.sql"
+
+# Identifiers for the vec0 virtual tables. `table`/`key_col` are interpolated
+# into SQL (sqlite-vec MATCH does not accept bound identifiers), so they MUST
+# be validated against this allow-list of known schema objects.
+_VEC_TABLES: dict[str, str] = {
+    "findings_vec": "finding_id",
+    "ideas_vec": "idea_id",
+    "code_chunks_vec": "chunk_id",
+    "attack_skills_vec": "skill_id",
+}
+
+
+def _validate_vec_target(table: str, key_col: str) -> None:
+    """Reject any table/column not in the hardcoded vec-table allow-list."""
+    expected = _VEC_TABLES.get(table)
+    if expected is None:
+        raise ValueError(f"unknown vector table: {table!r}")
+    if key_col != expected:
+        raise ValueError(
+            f"invalid key column {key_col!r} for table {table!r} "
+            f"(expected {expected!r})")
 
 
 def pack_vec(vec: Iterable[float]) -> bytes:
@@ -33,10 +54,6 @@ def pack_vec(vec: Iterable[float]) -> bytes:
             f"embedding must be length {EMBEDDING_DIM}, got shape {arr.shape}"
         )
     return arr.tobytes()
-
-
-def unpack_vec(b: bytes) -> np.ndarray:
-    return np.frombuffer(b, dtype=np.float32)
 
 
 class EmbeddingModel:
@@ -95,14 +112,29 @@ class Database:
         self._conn = self._open()
 
     def _open(self) -> sqlite3.Connection:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        # `check_same_thread=False` lets us guard with our own RLock and serve
-        # both sync MCP calls and async orchestrator workers.
-        conn = sqlite3.connect(
-            self.path.as_posix(),
-            check_same_thread=False,
-            isolation_level=None,  # autocommit; we use explicit BEGIN where needed
-        )
+        if self.read_only:
+            # A genuine read-only connection: open via a file: URI with
+            # mode=ro so writes are rejected by SQLite itself. The file must
+            # already exist — `mode=ro` will not create it.
+            if not self.path.exists():
+                raise FileNotFoundError(
+                    f"read-only database does not exist: {self.path}")
+            dsn = f"file:{self.path.as_posix()}?mode=ro"
+            conn = sqlite3.connect(
+                dsn,
+                uri=True,
+                check_same_thread=False,
+                isolation_level=None,
+            )
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            # `check_same_thread=False` lets us guard with our own RLock and
+            # serve both sync MCP calls and async orchestrator workers.
+            conn = sqlite3.connect(
+                self.path.as_posix(),
+                check_same_thread=False,
+                isolation_level=None,  # autocommit; explicit BEGIN where needed
+            )
         conn.row_factory = sqlite3.Row
         conn.enable_load_extension(True)
         sqlite_vec.load(conn)
@@ -120,7 +152,7 @@ class Database:
         return conn
 
     def _apply_schema(self, conn: sqlite3.Connection) -> None:
-        sql = self.schema_path.read_text()
+        sql = self.schema_path.read_text(encoding="utf-8")
         conn.executescript(sql)
 
     def _run_migrations(self, conn: sqlite3.Connection) -> None:
@@ -170,7 +202,12 @@ class Database:
     # Vector helpers
     # ------------------------------------------------------------------
     def upsert_vector(self, table: str, key_col: str, key: str, embedding) -> None:
-        """Insert-or-replace an embedding in a vec0 virtual table."""
+        """Insert-or-replace an embedding in a vec0 virtual table.
+
+        `table`/`key_col` are interpolated into SQL and so are validated
+        against a hardcoded allow-list of known vec tables/columns.
+        """
+        _validate_vec_target(table, key_col)
         blob = pack_vec(embedding)
         with self._lock:
             self._conn.execute(f"DELETE FROM {table} WHERE {key_col} = ?", (key,))
@@ -181,7 +218,14 @@ class Database:
     def vector_search(self, table: str, key_col: str, embedding,
                        top_k: int, where_clause: str = "",
                        where_params: tuple = ()) -> list[tuple[str, float]]:
-        """KNN search returning [(key, distance), ...]. Lower distance == closer."""
+        """KNN search returning [(key, distance), ...]. Lower distance == closer.
+
+        `table`/`key_col` are interpolated into SQL and validated against a
+        hardcoded allow-list of known vec tables/columns. `where_clause` is
+        also interpolated verbatim — it MUST be a developer-supplied constant
+        and must NEVER contain user input (use `where_params` for values).
+        """
+        _validate_vec_target(table, key_col)
         blob = pack_vec(embedding)
         # sqlite-vec's MATCH operator runs KNN search.
         sql = (

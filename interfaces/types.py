@@ -426,7 +426,10 @@ class PatchCandidate:
     diff: str
     explanation: str
     side_effects: str
-    status: str  # "proposed" | "testing" | "approved" | "rejected"
+    # Lifecycle of a patch candidate. Code writes "proposed" (on generation),
+    # then "verified" / "approved" / "rejected" after verification; "testing"
+    # is the in-flight state. Mirrors schema.sql patches.status.
+    status: str  # "proposed" | "testing" | "approved" | "rejected" | "verified"
     # --- spec C5 candidate metadata (additive, optional) ---------------
     # `expected_tests`: human-readable test scenarios this patch should
     # satisfy. `confidence`: generator's self-rated confidence in [0, 1].
@@ -599,6 +602,44 @@ class ModelRunInput:
     cost_usd: float | None = None
     success: bool = True
     error: str | None = None
+
+
+@dataclass
+class AgentEvent:
+    event_id: str
+    session_id: str
+    agent_id: str
+    agent_kind: str
+    event_type: str
+    role: str | None
+    cycle_id: int | None
+    lane_id: str | None
+    idea_id: str | None
+    model: str | None
+    provider: str | None
+    text: str | None
+    tool_name: str | None
+    status: str | None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = ""
+
+
+@dataclass
+class AgentEventInput:
+    session_id: str
+    agent_id: str
+    agent_kind: str
+    event_type: str
+    role: str | None = None
+    cycle_id: int | None = None
+    lane_id: str | None = None
+    idea_id: str | None = None
+    model: str | None = None
+    provider: str | None = None
+    text: str | None = None
+    tool_name: str | None = None
+    status: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -1601,7 +1642,10 @@ class PullRequestDraft:
 
 
 __all__ = [
+    "AgentEvent",
+    "AgentEventInput",
     "AgentPolicy",
+    "AppealVerdict",
     "ApprovalDecision",
     "ApprovalEvent",
     "ApprovalEventInput",
@@ -1609,10 +1653,9 @@ __all__ = [
     "ApprovalOutcomeKind",
     "ApprovalRequest",
     "ApprovalRequestStatus",
-    "AttackChain",
-    "AppealVerdict",
     "ArchiveCell",
     "ArchiveUpdateInput",
+    "AttackChain",
     "AttackElo",
     "AttemptTrace",
     "AttemptTraceInput",

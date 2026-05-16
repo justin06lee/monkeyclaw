@@ -4,25 +4,29 @@ Lives in `interfaces/` like `types.py` and `mcp_tools.py`: Person 1 owns it,
 red_team and blue_team both import from here. No pipeline-specific logic.
 
 MonkeyClaw runs on **NVIDIA Nemotron** (`nemotron-3-super-120b-a12b`) via the
-OpenAI-compatible NVIDIA inference API. Three backends:
+OpenAI-compatible NVIDIA inference API by default. Backends:
 
 1. `NemotronLLM` — production. Talks to an OpenAI-compatible endpoint:
    - default `https://integrate.api.nvidia.com/v1` (NVIDIA-hosted), auth via
-     `NVIDIA_API_KEY` (or `NIM_API_KEY`).
+     `MC_NVIDIA_API_KEY` (falls back to `NVIDIA_API_KEY` / `NIM_API_KEY`).
    - or the in-sandbox managed route `https://inference.local/v1`, where the
      NemoClaw gateway injects the credential — set `MC_NEMOTRON_BASE_URL` and
      no key is needed.
 
-2. `ClaudeCLILLM` — dev/test fallback. Shells out to a locally-installed
-   `claude` CLI when no NVIDIA key is available. No SDK dependency.
+2. `ClaudeCodeLLM` — shells out to Claude Code's `claude --print` harness.
+   Default model is Sonnet with adaptive thinking.
 
-3. `MockLLM` — tests. Deterministic, pattern-matched responses.
+3. `CodexExecLLM` — shells out to `codex exec`.
+
+4. `OpenCodeLLM` — shells out to `opencode run`.
+
+5. `MockLLM` — tests. Deterministic, pattern-matched responses.
 
 Backend selection (priority order):
 - explicit `make_llm(backend=...)` argument
-- `MC_LLM_BACKEND` env var: `nemotron` | `claude_cli` | `mock`
-- default: `nemotron` if an NVIDIA key is set, else `claude_cli` if the
-  binary is on PATH, else `mock`.
+- `MC_LLM_BACKEND` env var:
+  `nemotron` | `claude_code` | `claude_cli` | `codex` | `opencode` | `mock`
+- default: `nemotron`
 """
 
 from __future__ import annotations
@@ -33,9 +37,13 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
+
+from interfaces.types import AgentEventInput, ModelRunInput
 
 LOG = logging.getLogger("monkeyclaw.llm")
 
@@ -43,17 +51,11 @@ LOG = logging.getLogger("monkeyclaw.llm")
 # NVIDIA Nemotron — the model MonkeyClaw is built on.
 DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b"
 DEFAULT_NEMOTRON_BASE_URL = "https://integrate.api.nvidia.com/v1"
-DEFAULT_CLI_BINARY = "claude"
-
-# Appended to any prompt that expects JSON back. Nemotron, unlike Claude,
-# benefits from an explicit, terminal instruction to suppress preamble and
-# markdown fences. `extract_json` tolerates both anyway, but this keeps
-# responses clean and cheap to parse.
-JSON_ONLY_INSTRUCTION = (
-    "Respond ONLY with valid JSON. No preamble, no markdown fences, "
-    "no explanation."
-)
-
+DEFAULT_CLAUDE_BINARY = "claude"
+DEFAULT_CLAUDE_MODEL = "sonnet"
+DEFAULT_CLAUDE_THINKING = "adaptive"
+DEFAULT_CODEX_BINARY = "codex"
+DEFAULT_OPENCODE_BINARY = "opencode"
 
 @dataclass
 class LLMResponse:
@@ -87,6 +89,161 @@ class LLMClient(ABC):
         temperature: float = 0.7,
     ) -> LLMResponse:
         """Single completion. `messages` is a chat-style transcript."""
+
+
+def _client_model(client: LLMClient) -> str:
+    return str(getattr(client, "model", "") or getattr(client, "name", "unknown"))
+
+
+def _client_provider(client: LLMClient) -> str:
+    return str(getattr(client, "provider", "") or getattr(client, "name", "unknown"))
+
+
+class ObservedLLM(LLMClient):
+    """LLM wrapper that persists prompts/responses for live dashboard display."""
+
+    def __init__(
+        self,
+        inner: LLMClient,
+        mcp: Any,
+        *,
+        agent_id: str,
+        agent_kind: str,
+        session_id: str = "orchestrator",
+        role: str | None = None,
+        cycle_id: int | None = None,
+        lane_id: str | None = None,
+        idea_id: str | None = None,
+    ) -> None:
+        self.inner = inner
+        self.mcp = mcp
+        self.agent_id = agent_id
+        self.agent_kind = agent_kind
+        self.session_id = session_id
+        self.role = role or agent_id
+        self.cycle_id = cycle_id
+        self.lane_id = lane_id
+        self.idea_id = idea_id
+        self.name = inner.name
+        self.model = _client_model(inner)
+        self.provider = _client_provider(inner)
+
+    def with_context(
+        self,
+        *,
+        agent_id: str | None = None,
+        agent_kind: str | None = None,
+        session_id: str | None = None,
+        role: str | None = None,
+        cycle_id: int | None = None,
+        lane_id: str | None = None,
+        idea_id: str | None = None,
+    ) -> ObservedLLM:
+        return ObservedLLM(
+            self.inner,
+            self.mcp,
+            agent_id=agent_id or self.agent_id,
+            agent_kind=agent_kind or self.agent_kind,
+            session_id=session_id or self.session_id,
+            role=role or self.role,
+            cycle_id=self.cycle_id if cycle_id is None else cycle_id,
+            lane_id=self.lane_id if lane_id is None else lane_id,
+            idea_id=self.idea_id if idea_id is None else idea_id,
+        )
+
+    def _log_agent_event(
+        self,
+        event_type: str,
+        *,
+        text: str | None = None,
+        status: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        logger = getattr(self.mcp, "log_agent_event", None)
+        if logger is None:
+            return
+        try:
+            logger(AgentEventInput(
+                session_id=self.session_id,
+                agent_id=self.agent_id,
+                agent_kind=self.agent_kind,
+                event_type=event_type,
+                role=self.role,
+                cycle_id=self.cycle_id,
+                lane_id=self.lane_id,
+                idea_id=self.idea_id,
+                model=self.model,
+                provider=self.provider,
+                text=text,
+                status=status,
+                metadata=metadata or {},
+            ))
+        except Exception as e:  # noqa: BLE001 - dashboard logging is best-effort
+            LOG.debug("agent event logging failed for %s: %s", event_type, e)
+
+    def _log_model_run(self, resp: LLMResponse | None, latency_ms: int,
+                       error: str | None = None) -> None:
+        logger = getattr(self.mcp, "log_model_run", None)
+        if logger is None:
+            return
+        try:
+            logger(ModelRunInput(
+                role=self.role or self.agent_id,
+                model=self.model,
+                provider=self.provider,
+                input_tokens=resp.input_tokens if resp else 0,
+                output_tokens=resp.output_tokens if resp else 0,
+                latency_ms=latency_ms,
+                success=error is None,
+                error=error,
+            ))
+        except Exception as e:  # noqa: BLE001
+            LOG.debug("model run logging failed for %s: %s", self.agent_id, e)
+
+    def complete(
+        self,
+        messages: list[LLMMessage],
+        system: str = "",
+        max_tokens: int = 2000,
+        temperature: float = 0.7,
+    ) -> LLMResponse:
+        prompt = _SubprocessHarnessLLM._render_prompt(system, messages)
+        self._log_agent_event(
+            "llm.request",
+            text=prompt,
+            status="started",
+            metadata={
+                "message_count": len(messages),
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            },
+        )
+        start = time.time()
+        try:
+            resp = self.inner.complete(messages, system, max_tokens, temperature)
+        except Exception as e:
+            latency_ms = int((time.time() - start) * 1000)
+            self._log_agent_event(
+                "llm.error",
+                text=str(e),
+                status="error",
+                metadata={"latency_ms": latency_ms},
+            )
+            self._log_model_run(None, latency_ms, error=str(e))
+            raise
+        latency_ms = int((time.time() - start) * 1000)
+        self._log_agent_event(
+            "llm.response",
+            text=resp.text,
+            status="ok",
+            metadata={
+                "input_tokens": resp.input_tokens,
+                "output_tokens": resp.output_tokens,
+                "latency_ms": latency_ms,
+            },
+        )
+        self._log_model_run(resp, latency_ms)
+        return resp
 
 
 # ---------------------------------------------------------------------------
@@ -128,17 +285,17 @@ class NemotronLLM(LLMClient):
         # A real key is required for integrate.api.nvidia.com; the in-sandbox
         # managed route (inference.local) has the gateway inject auth, so a
         # placeholder is accepted there.
+        # MC_NVIDIA_API_KEY is MonkeyClaw's own inference key, kept distinct
+        # from the victim sandbox's NVIDIA_API_KEY (separate rate-limit/quota).
+        # It is read first; NVIDIA_API_KEY / NIM_API_KEY remain as fallbacks so
+        # a single shared key still works.
         key = (
             api_key
+            or os.environ.get("MC_NVIDIA_API_KEY")
             or os.environ.get("NVIDIA_API_KEY")
             or os.environ.get("NIM_API_KEY")
         )
-        if not key and "inference.local" not in self.base_url:
-            raise RuntimeError(
-                "No NVIDIA API key found. Set NVIDIA_API_KEY (or NIM_API_KEY), "
-                "or point MC_NEMOTRON_BASE_URL at the in-sandbox managed route "
-                "(inference.local)."
-            )
+        self._missing_key = not key and "inference.local" not in self.base_url
         self._client = OpenAI(base_url=self.base_url, api_key=key or "managed")
 
     def complete(
@@ -148,6 +305,13 @@ class NemotronLLM(LLMClient):
         max_tokens: int = 2000,
         temperature: float = 0.7,
     ) -> LLMResponse:
+        if self._missing_key:
+            raise RuntimeError(
+                "No NVIDIA API key found. Set MC_NVIDIA_API_KEY (or "
+                "NVIDIA_API_KEY / NIM_API_KEY), "
+                "or point MC_NEMOTRON_BASE_URL at the in-sandbox managed route "
+                "(inference.local)."
+            )
         # OpenAI chat format carries the system prompt as a leading message.
         api_messages: list[dict[str, str]] = []
         if system:
@@ -173,29 +337,46 @@ class NemotronLLM(LLMClient):
 
 
 # ---------------------------------------------------------------------------
-# Claude CLI backend (dev / test fallback)
+# CLI harness backends
 # ---------------------------------------------------------------------------
 
 
-class ClaudeCLILLM(LLMClient):
-    """Dev fallback — shells out to a locally-installed `claude` CLI.
+class _SubprocessHarnessLLM(LLMClient):
+    """Base class for local agent harnesses invoked as subprocesses."""
 
-    Used only when no NVIDIA key is configured, so the pipeline stays
-    runnable for local development and testing. Not the production path:
-    MonkeyClaw ships on Nemotron.
-    """
+    name = "harness"
+    provider = "harness"
 
-    name = "claude_cli"
-
-    def __init__(self, binary: str = DEFAULT_CLI_BINARY, timeout_s: int = 180) -> None:
-        path = shutil.which(binary) or binary
-        if not (shutil.which(binary) or os.path.exists(binary)):
+    def __init__(
+        self,
+        *,
+        binary: str,
+        timeout_s: int,
+        model: str = "",
+        thinking: str = "",
+    ) -> None:
+        resolved = shutil.which(binary)
+        if resolved is not None:
+            self.binary = resolved
+        elif os.path.isfile(binary) and os.access(binary, os.X_OK):
+            self.binary = binary
+        else:
             raise RuntimeError(
-                f"claude CLI not found on PATH (looked for {binary!r}). "
-                f"Set NVIDIA_API_KEY to use the Nemotron backend instead."
+                f"{self.name} binary not found (looked for {binary!r}). "
+                "Install it or select a different LLM backend."
             )
-        self.binary = path
         self.timeout_s = timeout_s
+        self.model = model
+        self.thinking = thinking
+
+    def _command(self, prompt: str, max_tokens: int, temperature: float) -> list[str]:
+        raise NotImplementedError
+
+    def _stdin_text(self, prompt: str) -> str | None:
+        return None
+
+    def _response_text(self, proc: subprocess.CompletedProcess[str]) -> str:
+        return proc.stdout.strip()
 
     def complete(
         self,
@@ -205,19 +386,24 @@ class ClaudeCLILLM(LLMClient):
         temperature: float = 0.7,
     ) -> LLMResponse:
         prompt = self._render_prompt(system, messages)
-        cmd = [self.binary, "--print", prompt]
-        LOG.debug("invoking claude cli: %d chars prompt", len(prompt))
+        cmd = self._command(prompt, max_tokens, temperature)
+        LOG.debug("invoking %s harness: %d chars prompt", self.name, len(prompt))
         try:
             proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=self.timeout_s,
+                cmd,
+                capture_output=True,
+                input=self._stdin_text(prompt),
+                text=True,
+                timeout=self.timeout_s,
             )
         except subprocess.TimeoutExpired as e:
-            raise RuntimeError(f"claude CLI timed out after {self.timeout_s}s") from e
+            raise RuntimeError(f"{self.name} timed out after {self.timeout_s}s") from e
         if proc.returncode != 0:
+            detail = (proc.stderr.strip() or proc.stdout.strip())[:1000]
             raise RuntimeError(
-                f"claude CLI exited {proc.returncode}: {proc.stderr.strip()[:500]}"
+                f"{self.name} exited {proc.returncode}: {detail}"
             )
-        text = proc.stdout.strip()
+        text = self._response_text(proc)
         return LLMResponse(text=text, raw={"stderr": proc.stderr})
 
     @staticmethod
@@ -229,6 +415,135 @@ class ClaudeCLILLM(LLMClient):
             tag = "USER" if m.role == "user" else "ASSISTANT"
             parts.append(f"[{tag}]\n{m.content}")
         return "\n\n".join(parts)
+
+
+def _split_env_args(name: str) -> list[str]:
+    raw = os.environ.get(name, "").strip()
+    return raw.split() if raw else []
+
+
+class ClaudeCodeLLM(_SubprocessHarnessLLM):
+    """Claude Code harness backend.
+
+    Defaults to:
+        claude --print --model sonnet --thinking adaptive <prompt>
+
+    Override the binary/model/thinking with `MC_CLAUDE_BINARY`,
+    `MC_CLAUDE_MODEL`, and `MC_CLAUDE_THINKING`. Extra CLI args can be added
+    through `MC_CLAUDE_EXTRA_ARGS`.
+    """
+
+    name = "claude_code"
+    provider = "anthropic"
+
+    def __init__(
+        self,
+        *,
+        binary: str | None = None,
+        model: str | None = None,
+        thinking: str | None = None,
+        timeout_s: int | None = None,
+    ) -> None:
+        super().__init__(
+            binary=binary or os.environ.get("MC_CLAUDE_BINARY", DEFAULT_CLAUDE_BINARY),
+            timeout_s=timeout_s or int(os.environ.get("MC_CLAUDE_TIMEOUT_S", "180")),
+            model=model or os.environ.get("MC_CLAUDE_MODEL", DEFAULT_CLAUDE_MODEL),
+            thinking=thinking or os.environ.get("MC_CLAUDE_THINKING", DEFAULT_CLAUDE_THINKING),
+        )
+
+    def _command(self, prompt: str, max_tokens: int, temperature: float) -> list[str]:
+        cmd = [self.binary, "--print"]
+        if self.model:
+            cmd += ["--model", self.model]
+        if self.thinking:
+            cmd += ["--thinking", self.thinking]
+        cmd += _split_env_args("MC_CLAUDE_EXTRA_ARGS")
+        cmd.append(prompt)
+        return cmd
+
+
+class ClaudeCLILLM(ClaudeCodeLLM):
+    """Backward-compatible alias for the old `claude_cli` backend name."""
+
+    name = "claude_cli"
+
+
+class CodexExecLLM(_SubprocessHarnessLLM):
+    """Codex CLI harness backend using `codex exec`."""
+
+    name = "codex"
+    provider = "openai"
+
+    def __init__(
+        self,
+        *,
+        binary: str | None = None,
+        model: str | None = None,
+        timeout_s: int | None = None,
+    ) -> None:
+        super().__init__(
+            binary=binary or os.environ.get("MC_CODEX_BINARY", DEFAULT_CODEX_BINARY),
+            timeout_s=timeout_s or int(os.environ.get("MC_CODEX_TIMEOUT_S", "180")),
+            model=model or os.environ.get("MC_CODEX_MODEL", ""),
+        )
+        self._last_message_path = ""
+
+    def _command(self, prompt: str, max_tokens: int, temperature: float) -> list[str]:
+        fd, path = tempfile.mkstemp(prefix="mc-codex-", suffix=".txt")
+        os.close(fd)
+        self._last_message_path = path
+        cmd = [self.binary, "exec", "--output-last-message", path]
+        if self.model:
+            cmd += ["--model", self.model]
+        cmd += _split_env_args("MC_CODEX_EXTRA_ARGS")
+        cmd.append("-")
+        return cmd
+
+    def _stdin_text(self, prompt: str) -> str | None:
+        return prompt
+
+    def _response_text(self, proc: subprocess.CompletedProcess[str]) -> str:
+        try:
+            if self._last_message_path:
+                text = open(self._last_message_path, encoding="utf-8").read().strip()
+                if text:
+                    return text
+        finally:
+            if self._last_message_path:
+                try:
+                    os.unlink(self._last_message_path)
+                except OSError:
+                    pass
+                self._last_message_path = ""
+        return proc.stdout.strip()
+
+
+class OpenCodeLLM(_SubprocessHarnessLLM):
+    """OpenCode harness backend using `opencode run`."""
+
+    name = "opencode"
+    provider = "opencode"
+
+    def __init__(
+        self,
+        *,
+        binary: str | None = None,
+        model: str | None = None,
+        timeout_s: int | None = None,
+    ) -> None:
+        super().__init__(
+            binary=binary or os.environ.get("MC_OPENCODE_BINARY", DEFAULT_OPENCODE_BINARY),
+            timeout_s=timeout_s or int(os.environ.get("MC_OPENCODE_TIMEOUT_S", "180")),
+            model=model or os.environ.get("MC_OPENCODE_MODEL", ""),
+        )
+
+    def _command(self, prompt: str, max_tokens: int, temperature: float) -> list[str]:
+        cmd = [self.binary, "run"]
+        if self.model:
+            cmd += ["--model", self.model]
+        cmd += _split_env_args("MC_OPENCODE_EXTRA_ARGS")
+        cmd.append(prompt)
+        return cmd
 
 
 # ---------------------------------------------------------------------------
@@ -268,8 +583,10 @@ class MockLLM(LLMClient):
             text = self._queue.pop(0)
         else:
             text = self._fallback(system, prompt)
-        return LLMResponse(text=text, input_tokens=len(prompt) // 4,
-                            output_tokens=len(text) // 4)
+        # The system prompt is part of the input — count it too.
+        return LLMResponse(text=text,
+                           input_tokens=(len(system) + len(prompt)) // 4,
+                           output_tokens=len(text) // 4)
 
     @staticmethod
     def _fallback(system: str, prompt: str) -> str:
@@ -364,7 +681,7 @@ def local_backend_name() -> str:
     resolves every role. It deliberately ignores the NVIDIA path — the local
     link must not depend on a network model.
     """
-    if shutil.which(DEFAULT_CLI_BINARY):
+    if shutil.which(DEFAULT_CLAUDE_BINARY):
         return "claude_cli"
     return "mock"
 
@@ -372,31 +689,58 @@ def local_backend_name() -> str:
 def make_llm(backend: str | None = None, *, model: str | None = None) -> LLMClient:
     """Resolve and construct an LLM client — a pure low-level factory.
 
-    Precedence: explicit `backend` arg > `MC_LLM_BACKEND` env > auto-detect.
+    Precedence: explicit `backend` arg > `MC_LLM_BACKEND` env > default
+    `nemotron`.
 
     Role-aware construction (resolving a role to a model/fallback chain) now
     belongs exclusively to `interfaces.model_router.ModelRouter`; `make_llm`
-    only constructs a single concrete backend.
+    only constructs a single concrete backend. Backend aliases (the
+    ``--claude`` / ``--codex`` CLI flags) are normalised here.
     """
-    backend = backend or os.environ.get("MC_LLM_BACKEND")
+    backend = (backend or os.environ.get("MC_LLM_BACKEND") or "").strip() or None
     model = model or os.environ.get("MC_LLM_MODEL", DEFAULT_MODEL)
 
     if backend is None:
         if _have_nvidia_key() or os.environ.get("MC_NEMOTRON_BASE_URL"):
             backend = "nemotron"
-        elif shutil.which(DEFAULT_CLI_BINARY):
-            backend = "claude_cli"
+        elif shutil.which(DEFAULT_CLAUDE_BINARY):
+            backend = "claude_code"
         else:
             backend = "mock"
         LOG.info("auto-selected llm backend=%s", backend)
 
+    # Normalise the backend aliases used by the --claude / --codex CLI flags.
+    aliases = {
+        "nvidia": "nemotron",
+        "claude": "claude_code",
+        "claude-code": "claude_code",
+        "claude_cli": "claude_code",
+        "claude-cli": "claude_code",
+        "codex_exec": "codex",
+        "codex-exec": "codex",
+        "open_code": "opencode",
+        "open-code": "opencode",
+    }
+    backend = aliases.get(backend, backend)
+
     if backend == "nemotron":
         return NemotronLLM(model=model)
-    if backend == "claude_cli":
-        return ClaudeCLILLM()
+    if backend == "claude_code":
+        return ClaudeCodeLLM(model=_harness_model(model))
+    if backend == "codex":
+        return CodexExecLLM(model=_harness_model(model))
+    if backend == "opencode":
+        return OpenCodeLLM(model=_harness_model(model))
     if backend == "mock":
         return MockLLM()
     raise ValueError(f"unknown llm backend: {backend!r}")
+
+
+def _harness_model(model: str | None) -> str | None:
+    """Do not pass NVIDIA model IDs into non-NVIDIA CLI harnesses by default."""
+    if not model or model == DEFAULT_MODEL or model.startswith("nvidia/"):
+        return None
+    return model
 
 
 # ---------------------------------------------------------------------------
@@ -467,12 +811,15 @@ def extract_json(text: str) -> Any:
 
 __all__ = [
     "ClaudeCLILLM",
-    "JSON_ONLY_INSTRUCTION",
+    "ClaudeCodeLLM",
+    "CodexExecLLM",
     "LLMClient",
     "LLMMessage",
     "LLMResponse",
     "MockLLM",
     "NemotronLLM",
+    "OpenCodeLLM",
+    "ObservedLLM",
     "extract_json",
     "local_backend_name",
     "make_llm",

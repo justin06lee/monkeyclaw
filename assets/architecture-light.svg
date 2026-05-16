@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 472" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">
+  <defs>
+    <marker id="ahL" markerWidth="9" markerHeight="9" refX="6" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#57606a"/>
+    </marker>
+    <marker id="ahP" markerWidth="9" markerHeight="9" refX="6" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#7c3aed"/>
+    </marker>
+  </defs>
+
+  <rect width="920" height="472" fill="#ffffff"/>
+
+  <text x="460" y="34" text-anchor="middle" font-size="16" font-weight="700" fill="#1f2328">MonkeyClaw</text>
+  <text x="460" y="56" text-anchor="middle" font-size="12" fill="#57606a">continuous  red → judge → repro → blue → purple  loop  ·  18 attack-surface zones</text>
+
+  <!-- stage arrows + labels -->
+  <text x="234" y="202" text-anchor="middle" font-size="9" fill="#57606a">finding</text>
+  <line x1="222" y1="209" x2="244" y2="209" stroke="#57606a" stroke-width="1.6" marker-end="url(#ahL)"/>
+  <text x="460" y="202" text-anchor="middle" font-size="9" fill="#57606a">repro pkg</text>
+  <line x1="448" y1="209" x2="470" y2="209" stroke="#57606a" stroke-width="1.6" marker-end="url(#ahL)"/>
+  <text x="686" y="202" text-anchor="middle" font-size="9" fill="#57606a">verified patch</text>
+  <line x1="674" y1="209" x2="696" y2="209" stroke="#57606a" stroke-width="1.6" marker-end="url(#ahL)"/>
+
+  <!-- RED -->
+  <rect x="20" y="86" width="202" height="246" rx="10" fill="#fdecea" stroke="#d64531" stroke-width="1.4"/>
+  <path d="M20,96 q0,-10 10,-10 h182 q10,0 10,10 v22 h-202 z" fill="#d64531"/>
+  <text x="121" y="103" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">RED TEAM</text>
+  <text x="34" y="142" font-size="10.5" fill="#7a1d12">ideation — 4 modes</text>
+  <text x="34" y="171" font-size="10.5" fill="#7a1d12">MAP-Elites seed · dedup</text>
+  <text x="34" y="200" font-size="10.5" fill="#7a1d12">chain composition</text>
+  <text x="34" y="229" font-size="10.5" fill="#7a1d12">multi-turn execution</text>
+  <text x="34" y="258" font-size="10.5" fill="#7a1d12">judge — Tier 1 + ensemble</text>
+  <text x="34" y="300" font-size="9" fill="#a8392b">trajectory · near-miss · mutation</text>
+
+  <!-- REPRO -->
+  <rect x="246" y="86" width="202" height="246" rx="10" fill="#fdf3e3" stroke="#c8841a" stroke-width="1.4"/>
+  <path d="M246,96 q0,-10 10,-10 h182 q10,0 10,10 v22 h-202 z" fill="#c8841a"/>
+  <text x="347" y="103" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">REPRO PIPELINE</text>
+  <text x="260" y="142" font-size="10.5" fill="#6b4310">replay + minimize</text>
+  <text x="260" y="171" font-size="10.5" fill="#6b4310">root cause — code graph</text>
+  <text x="260" y="200" font-size="10.5" fill="#6b4310">repro writer</text>
+  <text x="260" y="229" font-size="10.5" fill="#6b4310">cold verifier</text>
+  <text x="260" y="300" font-size="9" fill="#9a6516">N-replay · delta-debug · executed path</text>
+
+  <!-- BLUE -->
+  <rect x="472" y="86" width="202" height="246" rx="10" fill="#e9f0fd" stroke="#2563c9" stroke-width="1.4"/>
+  <path d="M472,96 q0,-10 10,-10 h182 q10,0 10,10 v22 h-202 z" fill="#2563c9"/>
+  <text x="573" y="103" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">BLUE TEAM</text>
+  <text x="486" y="142" font-size="10.5" fill="#14346b">triage · grouping</text>
+  <text x="486" y="171" font-size="10.5" fill="#14346b">patch generator</text>
+  <text x="486" y="200" font-size="10.5" fill="#14346b">test generator</text>
+  <text x="486" y="229" font-size="10.5" fill="#14346b">patch verifier — 8 gates</text>
+  <text x="486" y="258" font-size="10.5" fill="#14346b">regression runner</text>
+  <text x="486" y="300" font-size="9" fill="#3a5ba0">approval gate · optional auto-PR</text>
+
+  <!-- PURPLE -->
+  <rect x="698" y="86" width="202" height="246" rx="10" fill="#f1ebfd" stroke="#7c3aed" stroke-width="1.4"/>
+  <path d="M698,96 q0,-10 10,-10 h182 q10,0 10,10 v22 h-202 z" fill="#7c3aed"/>
+  <text x="799" y="103" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">PURPLE TEAM</text>
+  <text x="712" y="142" font-size="10.5" fill="#3c1c73">detection oracle</text>
+  <text x="712" y="171" font-size="10.5" fill="#3c1c73">coverage + validator</text>
+  <text x="712" y="200" font-size="10.5" fill="#3c1c73">detection synthesizer</text>
+  <text x="712" y="229" font-size="10.5" fill="#3c1c73">report card · self-gov</text>
+  <text x="712" y="258" font-size="10.5" fill="#3c1c73">generalization loop</text>
+  <text x="712" y="300" font-size="9" fill="#6b4aa8">detection-as-pass scoring</text>
+
+  <!-- feedback arrow purple -> red -->
+  <path d="M799,332 C799,396 121,396 121,334" fill="none" stroke="#7c3aed" stroke-width="1.6" stroke-dasharray="5 3" marker-end="url(#ahP)"/>
+  <text x="460" y="392" text-anchor="middle" font-size="9.5" fill="#7c3aed">purple detection-gap signal → red idea priority</text>
+
+  <!-- bottom: persistence -->
+  <rect x="75" y="418" width="520" height="34" rx="17" fill="#ffffff" stroke="#d0d7de" stroke-width="1.2"/>
+  <text x="335" y="439" text-anchor="middle" font-size="10" fill="#57606a">SQLite knowledge base — coverage · findings · patches · detection · regression suite</text>
+  <rect x="615" y="418" width="230" height="34" rx="17" fill="#ffffff" stroke="#d0d7de" stroke-width="1.2"/>
+  <text x="730" y="439" text-anchor="middle" font-size="10" fill="#57606a">11-panel live dashboard</text>
+</svg>
