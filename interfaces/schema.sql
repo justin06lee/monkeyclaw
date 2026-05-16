@@ -207,6 +207,38 @@ CREATE INDEX IF NOT EXISTS idx_patches_zone   ON patches(zone_id);
 CREATE INDEX IF NOT EXISTS idx_patches_status ON patches(status);
 
 --------------------------------------------------------------------------------
+-- patch_variant_results / patch_detection_results — verifier gate hardening
+-- (verifier-gate-hardening spec §7). Mirrored from migration 0013.
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS patch_variant_results (
+    result_id     TEXT PRIMARY KEY,
+    patch_id      TEXT NOT NULL,
+    vuln_id       TEXT NOT NULL,
+    operator      TEXT NOT NULL,
+    variant_hash  TEXT NOT NULL,
+    blocked       INTEGER NOT NULL DEFAULT 0,   -- 0|1
+    judge_verdict TEXT NOT NULL,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_patch_variant_results_patch
+    ON patch_variant_results(patch_id);
+
+CREATE TABLE IF NOT EXISTS patch_detection_results (
+    result_id     TEXT PRIMARY KEY,
+    patch_id      TEXT NOT NULL,
+    vuln_id       TEXT NOT NULL,
+    zone_id       TEXT NOT NULL,
+    quadrant      TEXT NOT NULL,                -- PASS|PARTIAL|WEAK|FAIL
+    observability TEXT NOT NULL,
+    prevention    TEXT NOT NULL,
+    passed        INTEGER NOT NULL DEFAULT 0,   -- 0|1
+    evidence      TEXT NOT NULL DEFAULT '{}',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_patch_detection_results_patch
+    ON patch_detection_results(patch_id);
+
+--------------------------------------------------------------------------------
 -- code_chunks — indexed NemoClaw source for search_codebase MCP tool
 --------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS code_chunks (
@@ -749,7 +781,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 
 INSERT OR IGNORE INTO schema_meta(key, value) VALUES
-    ('schema_version', '14'),
+    ('schema_version', '15'),
     ('taxonomy_corpus_version', 'atlas-5.4.0+owasp-2025'),
     ('embedding_model', 'sentence-transformers/all-MiniLM-L6-v2'),
     ('embedding_dim',   '384');

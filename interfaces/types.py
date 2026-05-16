@@ -1287,6 +1287,24 @@ class ChainAttribution:
     step_results: list[ChainStepResult] = field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# Verifier gate hardening — mutation robustness + detection gate
+# (verifier-gate-hardening spec §7)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class VariantResult:
+    """One mutated attack variant replayed against the patched victim by
+    gate1b_mutation_robustness. `blocked` False means the patch over-fits
+    the recorded payload — the variant of the same attack family leaked."""
+
+    operator: str
+    variant_hash: str
+    blocked: bool
+    judge_verdict: str
+
+
 __all__ = [
     "AgentPolicy",
     "AttackChain",
@@ -1392,6 +1410,7 @@ __all__ = [
     "TournamentRound",
     "Trajectory",
     "TurnScore",
+    "VariantResult",
     "VictimTelemetryBundle",
     "ZoneCoverage",
 ]
