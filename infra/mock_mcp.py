@@ -24,6 +24,8 @@ from datetime import UTC, datetime, timedelta
 
 from interfaces.mcp_tools import MonkeyClawMCP
 from interfaces.types import (
+    AgentEvent,
+    AgentEventInput,
     ArchiveCell,
     ArchiveUpdateInput,
     CheckResult,
@@ -115,6 +117,7 @@ class MockMCP(MonkeyClawMCP):
         # New stores for A5 / A2 / A4 deliverables
         self._telemetry: list[TelemetryEvent] = []
         self._model_runs: list[ModelRunRecord] = []
+        self._agent_events: list[AgentEvent] = []
         self._judge_votes: list[JudgeVote] = []
         self._corpus_results: list[PolicyCorpusResult] = []
         self._patch_candidates: dict[str, PatchCandidateInput] = {}
@@ -492,6 +495,29 @@ class MockMCP(MonkeyClawMCP):
         self._log("log_model_run", {"run_id": rid, "role": run.role})
         return rid
 
+    def log_agent_event(self, event: AgentEventInput) -> str:
+        eid = _new_id("AGE")
+        self._agent_events.append(AgentEvent(
+            event_id=eid,
+            session_id=event.session_id,
+            agent_id=event.agent_id,
+            agent_kind=event.agent_kind,
+            event_type=event.event_type,
+            role=event.role,
+            cycle_id=event.cycle_id,
+            lane_id=event.lane_id,
+            idea_id=event.idea_id,
+            model=event.model,
+            provider=event.provider,
+            text=event.text,
+            tool_name=event.tool_name,
+            status=event.status,
+            metadata=dict(event.metadata),
+            created_at=_now(),
+        ))
+        self._log("log_agent_event", {"event_id": eid, "agent_id": event.agent_id})
+        return eid
+
     # ------------------------------------------------------------------
     # Judge votes
     # ------------------------------------------------------------------
@@ -652,6 +678,7 @@ class MockMCP(MonkeyClawMCP):
             "alerts": len(self._alerts),
             "telemetry_events": len(self._telemetry),
             "model_runs": len(self._model_runs),
+            "agent_events": len(self._agent_events),
             "judge_votes": len(self._judge_votes),
             "policy_corpus_results": len(self._corpus_results),
             "patch_candidates": len(self._patch_candidates),
@@ -672,7 +699,7 @@ _ALLOWED_TOOLS = frozenset({
     "push_to_repro_queue", "get_repro_queue", "push_repro_package",
     "get_blue_team_queue", "get_regression_suite", "add_regression_test",
     "search_codebase", "send_alert", "log_telemetry_event", "get_session_timeline",
-    "log_model_run", "log_judge_vote", "log_policy_corpus_result",
+    "log_model_run", "log_agent_event", "log_judge_vote", "log_policy_corpus_result",
     "get_policy_corpus_results", "mark_repro_queue_status", "mark_repro_package_status",
     "log_patch_candidate", "mark_patch_status", "update_archive_cell",
     "get_archive_cells", "store_idea_components", "get_idea_components",

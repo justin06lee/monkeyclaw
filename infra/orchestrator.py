@@ -358,11 +358,35 @@ def main(argv: list[str] | None = None) -> int:
                         help="Dev mode: use the host machine's `claude` CLI "
                              "as the LLM (no Anthropic API key required). "
                              "Equivalent to MC_LLM_BACKEND=claude_cli.")
+    llm = parser.add_mutually_exclusive_group()
+    llm.add_argument("--claude", action="store_true",
+                     help="Use Claude Code (`claude --print`) as the LLM provider.")
+    llm.add_argument("--codex", action="store_true",
+                     help="Use Codex CLI (`codex exec`) as the LLM provider.")
+    llm.add_argument("--opencode", action="store_true",
+                     help="Use OpenCode (`opencode run`) as the LLM provider.")
+    llm.add_argument("--llm-backend",
+                     choices=["nemotron", "claude_code", "claude_cli",
+                              "codex", "opencode", "mock"],
+                     default=None,
+                     help="Explicit LLM backend (default: nemotron/NVIDIA).")
     args = parser.parse_args(argv)
 
+    if args.llm_backend:
+        import os as _os  # noqa: PLC0415
+        _os.environ["MC_LLM_BACKEND"] = args.llm_backend
+    if args.claude:
+        import os as _os  # noqa: PLC0415
+        _os.environ["MC_LLM_BACKEND"] = "claude_code"
+    elif args.codex:
+        import os as _os  # noqa: PLC0415
+        _os.environ["MC_LLM_BACKEND"] = "codex"
+    elif args.opencode:
+        import os as _os  # noqa: PLC0415
+        _os.environ["MC_LLM_BACKEND"] = "opencode"
     if args.dev:
         import os as _os  # noqa: PLC0415
-        _os.environ.setdefault("MC_LLM_BACKEND", "claude_cli")
+        _os.environ.setdefault("MC_LLM_BACKEND", "claude_code")
 
     rt = boot(args.config, use_mock_provisioner=args.use_mock_provisioner)
     red = _load_pipeline(args.red, StubRedTeam(), rt=rt)

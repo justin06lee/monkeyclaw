@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from infra.database import Database, EmbeddingModel
 from interfaces.mcp_tools import MonkeyClawMCP
 from interfaces.types import (
+    AgentEventInput,
     ArchiveCell,
     ArchiveUpdateInput,
     CodeChunk,
@@ -518,6 +519,21 @@ class MCPServer(MonkeyClawMCP):
             )
         return rid
 
+    def log_agent_event(self, event: AgentEventInput) -> str:
+        eid = _new_id("AGE")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO agent_events(event_id, session_id, agent_id, "
+                "agent_kind, event_type, role, cycle_id, lane_id, idea_id, "
+                "model, provider, text, tool_name, status, metadata, created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (eid, event.session_id, event.agent_id, event.agent_kind,
+                 event.event_type, event.role, event.cycle_id, event.lane_id,
+                 event.idea_id, event.model, event.provider, event.text,
+                 event.tool_name, event.status, json.dumps(event.metadata), _now()),
+            )
+        return eid
+
     # ------------------------------------------------------------------
     # Judge votes
     # ------------------------------------------------------------------
@@ -793,7 +809,7 @@ _ALLOWED_TOOLS = frozenset({
     "push_to_repro_queue", "get_repro_queue", "push_repro_package",
     "get_blue_team_queue", "get_regression_suite", "add_regression_test",
     "search_codebase", "send_alert", "log_telemetry_event", "get_session_timeline",
-    "log_model_run", "log_judge_vote", "log_policy_corpus_result",
+    "log_model_run", "log_agent_event", "log_judge_vote", "log_policy_corpus_result",
     "get_policy_corpus_results", "mark_repro_queue_status", "mark_repro_package_status",
     "log_patch_candidate", "mark_patch_status", "update_archive_cell",
     "get_archive_cells", "store_idea_components", "get_idea_components",

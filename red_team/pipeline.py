@@ -28,7 +28,7 @@ import threading
 from infra.bootstrap import Runtime
 from infra.monitoring_harness import MonitoringHarness
 from interfaces.config_schema import LaneConfig, MonkeyClawConfig
-from interfaces.llm import LLMClient, make_llm
+from interfaces.llm import LLMClient, ObservedLLM, make_llm
 from interfaces.mcp_tools import MonkeyClawMCP
 from interfaces.nemoclaw_policy import nemoclaw_policy_config
 from interfaces.provisioning import VictimInstance
@@ -104,6 +104,18 @@ class Pipeline:
             self.cfg = MonkeyClawConfig()
 
         self.llm = llm or make_llm()
+        self.ideation_llm = ObservedLLM(
+            self.llm, self.mcp, agent_id="red-ideation",
+            agent_kind="llm", role="red_ideation")
+        self.strategist_llm = ObservedLLM(
+            self.llm, self.mcp, agent_id="red-strategist",
+            agent_kind="llm", role="red_strategist")
+        self.execution_llm = ObservedLLM(
+            self.llm, self.mcp, agent_id="red-execution",
+            agent_kind="llm", role="red_execution")
+        self.judge_llm = ObservedLLM(
+            self.llm, self.mcp, agent_id="red-judge",
+            agent_kind="llm", role="red_judge")
         self.policy = policy or policy_from_config(self.cfg)
         ideation_cfg = ideation_cfg or IdeationConfig(
             temperature=self.cfg.ideation.temperature,
@@ -119,7 +131,7 @@ class Pipeline:
             tier2_zones=set(self.cfg.judgment.tier2_zones),
             tier2_confidence_threshold=self.cfg.judgment.tier2_confidence_threshold,
         )
-        self.ideation = IdeationEngine(self.llm, self.mcp, ideation_cfg)
+        self.ideation = IdeationEngine(self.ideation_llm, self.mcp, ideation_cfg)
         self._ideation_cfg = ideation_cfg
         # B9 — model tournament. Disabled unless `red_team.model_tournament`
         # is configured; when enabled, extra entrants also ideate per zone.
@@ -133,9 +145,9 @@ class Pipeline:
                 e)
             tournament_cfg = ModelTournamentConfig()
         self.tournament = ModelTournament(tournament_cfg)
-        self.strategist = Strategist(self.llm)
-        self.execution = ExecutionAgent(self.llm, execution_cfg)
-        self.judger = Judge(self.llm, self.policy, judge_cfg, mcp=self.mcp)
+        self.strategist = Strategist(self.strategist_llm)
+        self.execution = ExecutionAgent(self.execution_llm, execution_cfg)
+        self.judger = Judge(self.judge_llm, self.policy, judge_cfg, mcp=self.mcp)
         self.alert_severity_floor = alert_severity_floor
 
         # idea_id → IdeaObject (the synthesized chain) so judge() can look up

@@ -412,6 +412,20 @@ class MonitoringHarness:
                 return
             self.transcript.append(msg)
             self._turns += 1
+        if self._telemetry is not None:
+            self._telemetry.agent_event(
+                agent_id=self.lane_id,
+                agent_kind="lane",
+                event_type=f"{msg.role}.message",
+                role=msg.role,
+                lane_id=self.lane_id,
+                idea_id=self.idea_id,
+                text=msg.content,
+                metadata={
+                    "tool_calls": msg.tool_calls or [],
+                    "tool_results": msg.tool_results or [],
+                },
+            )
 
     def guard_path_read(self, path: str):
         """Consult the PolicyEnforcer for a host-path read; emit telemetry.
@@ -458,12 +472,46 @@ class MonitoringHarness:
                 "harness",
                 destination=event.destination_domain,
                 decision="deny" if event.blocked else "allow")
+        if self._telemetry is not None:
+            self._telemetry.agent_event(
+                agent_id=self.lane_id,
+                agent_kind="lane",
+                event_type="tool.event",
+                role="victim",
+                lane_id=self.lane_id,
+                idea_id=self.idea_id,
+                tool_name="network",
+                status="blocked" if event.blocked else "allow",
+                text=event.destination_domain,
+                metadata={
+                    "method": event.method,
+                    "port": event.destination_port,
+                    "response_code": event.response_code,
+                    "payload_size_bytes": event.payload_size_bytes,
+                },
+            )
 
     def record_inference(self, event: InferenceEvent) -> None:
         with self._record_lock:
             if self._terminated:
                 return
             self.inference_log.append(event)
+        if self._telemetry is not None:
+            self._telemetry.agent_event(
+                agent_id=self.lane_id,
+                agent_kind="lane",
+                event_type="tool.event",
+                role="victim",
+                lane_id=self.lane_id,
+                idea_id=self.idea_id,
+                tool_name="inference",
+                status=event.routed_to,
+                text=event.content_preview,
+                metadata={
+                    "pii_detected": event.pii_detected,
+                    "pii_types": event.pii_types or [],
+                },
+            )
 
     def record_process(self, event: ProcessEvent) -> None:
         # Externally-recorded process events must always be reported, even
@@ -473,6 +521,24 @@ class MonitoringHarness:
             if self._terminated:
                 return
             self._external_process_events.append(event)
+        if self._telemetry is not None:
+            self._telemetry.agent_event(
+                agent_id=self.lane_id,
+                agent_kind="lane",
+                event_type="tool.event",
+                role="victim",
+                lane_id=self.lane_id,
+                idea_id=self.idea_id,
+                tool_name="process",
+                status="blocked" if event.blocked else "allow",
+                text=event.process_name,
+                metadata={
+                    "pid": event.pid,
+                    "syscall": event.syscall,
+                    "syscall_args": event.syscall_args or [],
+                    "inside_sandbox": event.inside_sandbox,
+                },
+            )
 
     def set_self_assessment(self, text: str) -> None:
         self.attacker_self_assessment = text

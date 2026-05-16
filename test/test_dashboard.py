@@ -15,7 +15,7 @@ from infra.dashboard import build_dashboard_app
 
 _SECTIONS = (
     "status", "zones", "findings", "cycles", "ideas", "repro", "packages",
-    "patches", "regression", "models", "archive", "operators", "telemetry",
+    "patches", "regression", "models", "agents", "archive", "operators", "telemetry",
     "judges", "activity",
 )
 
@@ -54,5 +54,5 @@ def test_dashboard_serves_with_seeded_db(tmp_path: Path, monkeypatch):
 def test_individual_endpoints_respond(tmp_path: Path):
     client = TestClient(build_dashboard_app(str(tmp_path / "nope.db")))
     for path in ("/api/status", "/api/zones", "/api/findings", "/api/telemetry",
-                 "/api/judges", "/api/patches", "/api/packages"):
+                 "/api/agents", "/api/judges", "/api/patches", "/api/packages"):
         assert client.get(path).status_code == 200, path
