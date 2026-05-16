@@ -16,7 +16,7 @@ from infra.mock_mcp import MockMCP
 from infra.monitoring_harness import HarnessConfig, MonitoringHarness
 from interfaces.config_schema import LaneConfig, MonkeyClawConfig, NemoClawConfig
 from interfaces.provisioning import VictimInstance
-from interfaces.types import IdeaObject
+from interfaces.types import AttackElo, CoverageGap, IdeaObject
 from interfaces.llm import MockLLM
 from red_team import mock_victim
 from red_team.pipeline import Pipeline, policy_from_config
@@ -67,6 +67,61 @@ def _config_with_paths(tmp_path: Path) -> MonkeyClawConfig:
 
 def setup_function(_):
     mock_victim.reset_all()
+
+
+def test_generate_ideas_threads_purple_gap_and_attack_elo(monkeypatch):
+    """Purple blind spots and judge Elo should reach priority scoring."""
+    from interfaces.types import DupResult
+    from red_team.dedup import DedupOutcome
+    from red_team.priority import PrioritizedIdea
+
+    mcp = MockMCP(seed=0, verbose=False)
+    mcp.update_attack_elo(AttackElo(
+        zone_id="SBX-FS", attack_id="A1", rating=1210.0,
+        comparisons=3, wins=2, losses=1))
+    pipeline = Pipeline(mcp=mcp, llm=MockLLM())
+    pipeline.update_detection_coverage_gap({"SBX-FS": 0.75})
+
+    gap = CoverageGap(
+        zone_id="SBX-FS", zone_name="Sandbox FS", coverage_score=0.3,
+        priority_score=0.9, vulns_open=1, last_tested_at=None,
+        description="", severity_weight=1.0)
+    idea = IdeaObject(
+        idea_id="IDEA-1", cycle_id=1, zone_id="SBX-FS",
+        source_mode="creative", title="fs idea", approach="a",
+        success_criteria="s", estimated_turns=1, novelty_notes="")
+    outcome = DedupOutcome(
+        idea=idea, dup=DupResult(False, 0.0, None), keep=True,
+        near_dup=False, novelty_score=1.0, logged_idea_id=idea.idea_id)
+    captured = {}
+
+    monkeypatch.setattr(mcp, "get_coverage_gaps", lambda top_n: [gap])
+    monkeypatch.setattr(
+        pipeline.ideation, "generate_for_zone",
+        lambda *args, **kwargs: [idea])
+    monkeypatch.setattr(
+        "red_team.pipeline.deduplicate_and_log",
+        lambda *args, **kwargs: [outcome])
+
+    def _score(outcomes, zones_by_id, detection_coverage_gap=None,
+               *, archive=None, elo_by_zone=None):  # noqa: ANN001
+        captured["detection_coverage_gap"] = detection_coverage_gap
+        captured["elo_by_zone"] = elo_by_zone
+        return [PrioritizedIdea(idea=idea, priority=1.0, components={})]
+
+    monkeypatch.setattr("red_team.pipeline.score_ideas", _score)
+    monkeypatch.setattr(pipeline, "_rank_ideas", lambda ideas: ideas)
+    monkeypatch.setattr(
+        pipeline.strategist, "synthesize",
+        lambda kept, zones_by_id, cycle_id, n: kept[:n])
+    monkeypatch.setattr(
+        "red_team.ideation.taxonomy_ideas", lambda *args, **kwargs: [])
+
+    generated = pipeline.generate_ideas(cycle_id=1, n_lanes=1)
+
+    assert generated == [idea]
+    assert captured["detection_coverage_gap"] == {"SBX-FS": 0.75}
+    assert captured["elo_by_zone"] == {"SBX-FS": 1210.0}
 
 
 # ---------------------------------------------------------------------------

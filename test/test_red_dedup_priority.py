@@ -312,3 +312,16 @@ def test_priority_unchanged_when_elo_not_supplied():
     again = score_ideas(outcomes, zones, elo_by_zone=None)
     assert baseline  # no exception, default behaviour preserved
     assert baseline[0].priority == again[0].priority
+
+
+def test_select_top_n_forwards_elo_by_zone():
+    zones = {"SBX-FS": _gap("SBX-FS"), "SBX-NET": _gap("SBX-NET")}
+    outcomes = [_kept(_idea("SBX-FS", "fs idea")),
+                _kept(_idea("SBX-NET", "net idea"))]
+
+    top = select_top_n(
+        outcomes, zones, n=1,
+        elo_by_zone={"SBX-FS": 1000.0, "SBX-NET": 1200.0})
+
+    assert top[0].idea.zone_id == "SBX-NET"
+    assert "elo_boost" in top[0].components

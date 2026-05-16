@@ -195,6 +195,7 @@ class Pipeline:
         self.execution = ExecutionAgent(_client("red_execution"), execution_cfg)
         self.judger = Judge(_client("semantic_judge"), self.policy, judge_cfg, mcp=self.mcp)
         self.alert_severity_floor = alert_severity_floor
+        self._detection_coverage_gap: dict[str, float] = {}
 
         # idea_id → IdeaObject (the synthesized chain) so judge() can look up
         # the source of a lane result.
@@ -258,6 +259,25 @@ class Pipeline:
         # The trace-collection layer accrues one labelled AttemptTrace per
         # judged attempt — the load-bearing dataset deliverable (spec §6.2).
         self._trace_collector = TraceCollector(self.mcp)
+
+    # ------------------------------------------------------------------
+    def update_detection_coverage_gap(self, gap: dict[str, float]) -> None:
+        """Receive purple-team blind-spot feedback for the next ideation pass."""
+        self._detection_coverage_gap = dict(gap)
+
+    def _elo_by_zone(self, gaps: list[CoverageGap]) -> dict[str, float]:
+        """Use the top attack Elo rating per zone as a red priority signal."""
+        ratings: dict[str, float] = {}
+        for gap in gaps:
+            try:
+                rows = self.mcp.get_attack_elo(gap.zone_id)
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("could not load attack Elo for %s: %s",
+                            gap.zone_id, e)
+                continue
+            if rows:
+                ratings[gap.zone_id] = max(r.rating for r in rows)
+        return ratings
 
     # ------------------------------------------------------------------
     def _llm_for_entrant(self, entrant) -> object:
@@ -455,7 +475,13 @@ class Pipeline:
         # Score every kept idea, then hand the whole batch to the strategist.
         # It synthesizes the raw ideas into `n_lanes` distinct deep-dive
         # attack chains — one chain per lane.
-        prioritized = score_ideas(outcomes, zones_by_id, archive=self._archive)
+        prioritized = score_ideas(
+            outcomes,
+            zones_by_id,
+            detection_coverage_gap=self._detection_coverage_gap,
+            archive=self._archive,
+            elo_by_zone=self._elo_by_zone(gaps),
+        )
         kept_ideas = [p.idea for p in prioritized]
         if not kept_ideas:
             return []

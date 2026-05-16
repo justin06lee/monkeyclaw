@@ -225,10 +225,12 @@ def select_top_n(
     n: int,
     detection_coverage_gap: dict[str, float] | None = None,
     archive: EliteArchive | None = None,
+    elo_by_zone: dict[str, float] | None = None,
 ) -> list[PrioritizedIdea]:
     """Score and pick the top-n. Convenience wrapper."""
     return score_ideas(
-        outcomes, zones_by_id, detection_coverage_gap, archive=archive
+        outcomes, zones_by_id, detection_coverage_gap, archive=archive,
+        elo_by_zone=elo_by_zone,
     )[:max(0, n)]
 
 

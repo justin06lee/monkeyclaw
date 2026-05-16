@@ -316,6 +316,12 @@ class Orchestrator:
             cycle_id=cycle_id, zone_id=zone_id,
             executions=executions, confirmed_findings=confirmed)
         cycle_result = self.purple.run(ctx)
+        updater = getattr(self.red, "update_detection_coverage_gap", None)
+        if updater is not None and hasattr(self.purple, "detection_coverage_gap"):
+            try:
+                updater(self.purple.detection_coverage_gap())
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("purple feedback update failed: %s", e)
         LOG.info("purple cycle %d: %d verdicts, validation=%s, %d new rules",
                  cycle_id, len(cycle_result.verdicts),
                  cycle_result.validation_run.kind
