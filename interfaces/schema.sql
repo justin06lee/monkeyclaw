@@ -371,6 +371,36 @@ CREATE INDEX IF NOT EXISTS idx_queue_transitions_entity
     ON queue_transitions(entity, entity_id, created_at);
 
 --------------------------------------------------------------------------------
+-- victim_snapshots / sandbox_runs — real-provisioner tables (migration 0005)
+-- Reference copy, kept in sync with infra/migrations/0005_real_provisioner.sql.
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS victim_snapshots (
+    snapshot_id    TEXT PRIMARY KEY,
+    name           TEXT NOT NULL,
+    sandbox_id     TEXT NOT NULL,
+    deterministic  INTEGER NOT NULL DEFAULT 0,   -- 0/1
+    patched        INTEGER NOT NULL DEFAULT 0,   -- 0/1
+    base_snapshot  TEXT,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_victim_snapshots_name
+    ON victim_snapshots(name);
+
+CREATE TABLE IF NOT EXISTS sandbox_runs (
+    run_id          TEXT PRIMARY KEY,
+    instance_id     TEXT NOT NULL,
+    lane_id         TEXT,
+    mode            TEXT NOT NULL,               -- ephemeral|recover_only|mock
+    deterministic   INTEGER NOT NULL DEFAULT 0,  -- 0/1
+    patch_applied   INTEGER NOT NULL DEFAULT 0,  -- 0/1
+    capabilities    TEXT NOT NULL DEFAULT '{}',  -- JSON SandboxCapabilities
+    provisioned_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    torn_down_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sandbox_runs_lane
+    ON sandbox_runs(lane_id);
+
+--------------------------------------------------------------------------------
 -- schema_meta — track schema version for migrations
 --------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -379,7 +409,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 
 INSERT OR IGNORE INTO schema_meta(key, value) VALUES
-    ('schema_version', '4'),
+    ('schema_version', '5'),
     ('embedding_model', 'sentence-transformers/all-MiniLM-L6-v2'),
     ('embedding_dim',   '384');
 
