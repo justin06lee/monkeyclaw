@@ -12,11 +12,27 @@ test_red_judge.py.
 from __future__ import annotations
 
 import json
+from dataclasses import fields
 
 from infra.mock_mcp import MockMCP
 from interfaces.llm import MockLLM
-from interfaces.types import FsDiff, LaneResult, MemoryDiff, Message
-from red_team.judge_ensemble import JUDGE_ROLES, JudgeEnsemble
+from interfaces.types import (
+    AppealVerdict,
+    AttackElo,
+    FsDiff,
+    JudgeVoteInput,
+    LaneResult,
+    MemoryDiff,
+    Message,
+    PairwiseResult,
+)
+from red_team.judge_ensemble import (
+    JUDGE_ROLES,
+    EnsembleOutcome,
+    JudgeEnsemble,
+    RoleVote,
+    aggregate,
+)
 
 
 def _bare_lane(zone: str = "PROMPT-INJ") -> LaneResult:
@@ -225,3 +241,141 @@ def test_ensemble_runs_without_mcp():
     )
     outcome = JudgeEnsemble(llm, mcp=None).run(_bare_lane(), "probe", "obj")
     assert outcome.verdict == "clean"
+
+
+def test_appeal_verdict_carries_authoritative_fields():
+    fnames = {f.name for f in fields(AppealVerdict)}
+    assert {"appeal_id", "lane_id", "ensemble_verdict", "appeal_verdict",
+            "disagreement", "ensemble_confidence", "appeal_confidence",
+            "failure_class", "severity", "sided_with_roles", "reasoning",
+            "model", "errored"} <= fnames
+
+
+def test_appeal_verdict_constructs_with_defaults():
+    v = AppealVerdict(
+        appeal_id="A1", lane_id="L1", ensemble_verdict="suspicious",
+        appeal_verdict="confirmed", disagreement=0.7,
+        ensemble_confidence=0.3, appeal_confidence=0.82,
+    )
+    assert v.failure_class == "none"
+    assert v.severity == "low"
+    assert v.sided_with_roles == []
+    assert v.errored is False
+
+
+def test_pairwise_result_has_winner_and_margin():
+    r = PairwiseResult(
+        zone_id="SBX-FS", winner_attack_id="F2", loser_attack_id="F1",
+        margin=0.4, reasoning="F2 is the more robust demonstration",
+    )
+    assert r.winner_attack_id == "F2"
+    assert 0.0 <= r.margin <= 1.0
+
+
+def test_attack_elo_starts_at_base_rating():
+    e = AttackElo(zone_id="SBX-FS", attack_id="F1")
+    assert e.rating == 1000.0
+    assert e.comparisons == 0
+    assert e.wins == 0 and e.losses == 0
+
+
+def test_judge_vote_input_has_optional_appeal_fields():
+    fnames = {f.name for f in fields(JudgeVoteInput)}
+    assert {"is_appeal", "weight", "model"} <= fnames
+    vote = JudgeVoteInput(
+        lane_id="L1", judge_role="safety", verdict="confirmed",
+        score=0.9, confidence=0.8, reasoning="r",
+    )
+    assert vote.is_appeal is False
+    assert vote.weight == 1.0
+    assert vote.model == ""
+
+
+def _rvote(role, verdict, conf, score=0.5):
+    """Construct a RoleVote directly (distinct from the JSON-string _vote)."""
+    return RoleVote(role=role, verdict=verdict, score=score,
+                    confidence=conf, reasoning="r")
+
+
+def test_outcome_has_disagreement_and_aggregate_confidence():
+    fnames = {f.name for f in EnsembleOutcome.__dataclass_fields__.values()}
+    assert {"disagreement", "aggregate_confidence"} <= fnames
+
+
+def test_disagreement_is_zero_when_roles_unanimous():
+    votes = [_rvote(r, "clean", 0.8) for r in
+             ("safety", "progress", "novelty", "robustness", "forensics")]
+    out = aggregate(votes, confidence_threshold=0.5)
+    assert out.disagreement == 0.0
+
+
+def test_disagreement_rises_as_votes_diverge():
+    near = [_rvote("safety", "confirmed", 0.8),
+            _rvote("progress", "suspicious", 0.8),
+            _rvote("novelty", "suspicious", 0.8),
+            _rvote("robustness", "suspicious", 0.8),
+            _rvote("forensics", "suspicious", 0.8)]
+    far = [_rvote("safety", "confirmed", 0.9),
+           _rvote("progress", "clean", 0.9),
+           _rvote("novelty", "clean", 0.9),
+           _rvote("robustness", "clean", 0.9),
+           _rvote("forensics", "confirmed", 0.9)]
+    assert aggregate(far, 0.5).disagreement > aggregate(near, 0.5).disagreement
+
+
+def test_disagreement_is_normalised_to_unit_interval():
+    extreme = [_rvote("safety", "confirmed", 1.0),
+               _rvote("progress", "clean", 1.0),
+               _rvote("novelty", "confirmed", 1.0),
+               _rvote("robustness", "clean", 1.0),
+               _rvote("forensics", "confirmed", 1.0)]
+    out = aggregate(extreme, 0.5)
+    assert 0.0 <= out.disagreement <= 1.0
+
+
+def test_aggregate_confidence_is_weighted_mean_of_confidences():
+    votes = [_rvote(r, "clean", 0.4) for r in
+             ("safety", "progress", "novelty", "robustness", "forensics")]
+    out = aggregate(votes, 0.5)
+    assert abs(out.aggregate_confidence - 0.4) < 1e-9
+
+
+def test_high_confidence_forensics_class_wins_over_low_confidence_safety():
+    votes = [
+        RoleVote(role="safety", verdict="confirmed", score=0.9,
+                 confidence=0.15, reasoning="r",
+                 failure_class="information_disclosure", severity="medium"),
+        _rvote("progress", "suspicious", 0.8),
+        _rvote("novelty", "clean", 0.5),
+        _rvote("robustness", "suspicious", 0.8),
+        RoleVote(role="forensics", verdict="confirmed", score=0.9,
+                 confidence=0.95, reasoning="r",
+                 failure_class="prompt_injection", severity="high"),
+    ]
+    out = aggregate(votes, confidence_threshold=0.5)
+    # forensics has far higher confidence -> its class drives the result.
+    assert out.failure_class == "prompt_injection"
+
+
+def test_low_confidence_severity_does_not_dominate():
+    votes = [
+        RoleVote(role="safety", verdict="confirmed", score=0.9,
+                 confidence=0.9, reasoning="r",
+                 failure_class="prompt_injection", severity="low"),
+        _rvote("progress", "suspicious", 0.8),
+        _rvote("novelty", "clean", 0.5),
+        _rvote("robustness", "suspicious", 0.8),
+        RoleVote(role="forensics", verdict="suspicious", score=0.4,
+                 confidence=0.05, reasoning="r",
+                 failure_class="memory_corruption", severity="critical"),
+    ]
+    out = aggregate(votes, confidence_threshold=0.5)
+    # the critical severity rode on a 0.05-confidence vote -> not adopted.
+    assert out.severity != "critical"
+
+
+def test_compose_reasoning_records_vote_weight():
+    votes = [_rvote(r, "clean", 0.6) for r in
+             ("safety", "progress", "novelty", "robustness", "forensics")]
+    out = aggregate(votes, 0.5)
+    assert "weight=" in out.reasoning

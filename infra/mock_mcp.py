@@ -24,8 +24,10 @@ from datetime import UTC, datetime, timedelta
 
 from interfaces.mcp_tools import MonkeyClawMCP
 from interfaces.types import (
+    AppealVerdict,
     ArchiveCell,
     ArchiveUpdateInput,
+    AttackElo,
     CheckResult,
     CodeChunk,
     ControlValidationRun,
@@ -127,6 +129,8 @@ class MockMCP(MonkeyClawMCP):
         self._telemetry: list[TelemetryEvent] = []
         self._model_runs: list[ModelRunRecord] = []
         self._judge_votes: list[JudgeVote] = []
+        self._appeal_verdicts: list[AppealVerdict] = []
+        self._attack_elo: dict[tuple[str, str], AttackElo] = {}
         self._corpus_results: list[PolicyCorpusResult] = []
         self._patch_candidates: dict[str, PatchCandidateInput] = {}
         self._patch_statuses: dict[str, dict] = {}
@@ -559,9 +563,53 @@ class MockMCP(MonkeyClawMCP):
             confidence=vote.confidence,
             reasoning=vote.reasoning,
             evidence_turns=list(vote.evidence_turns),
+            is_appeal=vote.is_appeal,
+            weight=vote.weight,
+            model=vote.model,
         ))
         self._log("log_judge_vote", {"vote_id": vid, "lane_id": vote.lane_id})
         return vid
+
+    # ------------------------------------------------------------------
+    # Judge ensemble — appeal verdicts + attack Elo
+    # ------------------------------------------------------------------
+    def log_appeal_verdict(self, verdict: AppealVerdict) -> str:
+        appeal_id = verdict.appeal_id or f"appeal-{uuid.uuid4().hex[:12]}"
+        self._appeal_verdicts.append(AppealVerdict(
+            appeal_id=appeal_id, lane_id=verdict.lane_id,
+            ensemble_verdict=verdict.ensemble_verdict,
+            appeal_verdict=verdict.appeal_verdict,
+            disagreement=verdict.disagreement,
+            ensemble_confidence=verdict.ensemble_confidence,
+            appeal_confidence=verdict.appeal_confidence,
+            failure_class=verdict.failure_class, severity=verdict.severity,
+            sided_with_roles=list(verdict.sided_with_roles),
+            reasoning=verdict.reasoning, model=verdict.model,
+            errored=verdict.errored, created_at=_now(),
+        ))
+        self._log("log_appeal_verdict",
+                  {"appeal_id": appeal_id, "lane_id": verdict.lane_id})
+        return appeal_id
+
+    def get_appeal_verdicts(
+        self, lane_id: str | None = None,
+    ) -> list[AppealVerdict]:
+        rows = [
+            a for a in self._appeal_verdicts
+            if lane_id is None or a.lane_id == lane_id
+        ]
+        return list(reversed(rows))
+
+    def get_attack_elo(self, zone_id: str) -> list[AttackElo]:
+        rows = [e for e in self._attack_elo.values() if e.zone_id == zone_id]
+        return sorted(rows, key=lambda e: -e.rating)
+
+    def update_attack_elo(self, elo: AttackElo) -> None:
+        self._attack_elo[(elo.zone_id, elo.attack_id)] = AttackElo(
+            zone_id=elo.zone_id, attack_id=elo.attack_id, rating=elo.rating,
+            comparisons=elo.comparisons, wins=elo.wins, losses=elo.losses,
+            updated_at=_now(),
+        )
 
     # ------------------------------------------------------------------
     # Policy corpus

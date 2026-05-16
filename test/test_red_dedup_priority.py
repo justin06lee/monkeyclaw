@@ -279,3 +279,36 @@ def test_niche_gap_stays_within_bounds():
     scored = score_ideas(outcomes, zones, archive=EliteArchive())
     for p in scored:
         assert 0.5 <= p.components["niche_gap"] <= 1.5
+
+
+def _kept(idea: IdeaObject, novelty: float = 0.6):
+    """A KEPT DedupOutcome wrapping `idea` (real score_ideas input shape)."""
+    from interfaces.types import DupResult
+    from red_team.dedup import DedupOutcome
+    return DedupOutcome(
+        idea=idea,
+        dup=DupResult(is_duplicate=False, max_similarity=0.0,
+                      matching_idea_id=None),
+        keep=True, near_dup=False, novelty_score=novelty,
+        logged_idea_id=idea.idea_id,
+    )
+
+
+def test_priority_optionally_boosts_high_elo_zones():
+    zones = {"SBX-FS": _gap("SBX-FS"), "SBX-NET": _gap("SBX-NET")}
+    outcomes = [_kept(_idea("SBX-FS", "fs idea")),
+                _kept(_idea("SBX-NET", "net idea"))]
+    elo_by_zone = {"SBX-FS": 1200.0, "SBX-NET": 1000.0}
+    scored = score_ideas(outcomes, zones, elo_by_zone=elo_by_zone)
+    fs = next(s for s in scored if s.idea.zone_id == "SBX-FS")
+    net = next(s for s in scored if s.idea.zone_id == "SBX-NET")
+    assert fs.priority >= net.priority
+
+
+def test_priority_unchanged_when_elo_not_supplied():
+    zones = {"SBX-FS": _gap("SBX-FS")}
+    outcomes = [_kept(_idea("SBX-FS", "fs idea"))]
+    baseline = score_ideas(outcomes, zones)
+    again = score_ideas(outcomes, zones, elo_by_zone=None)
+    assert baseline  # no exception, default behaviour preserved
+    assert baseline[0].priority == again[0].priority

@@ -173,3 +173,22 @@ def test_dashboard_exposes_mutation_operator_panel(tmp_path: Path):
     by_zone = body["by_zone"]
     assert any(r["zone_id"] == "PROMPT-INJ" and r["operator"] == "paraphrase"
                for r in by_zone)
+
+
+def test_dashboard_exposes_appeal_and_elo_panels(server):
+    from infra.dashboard import _all
+    from interfaces.types import AppealVerdict, AttackElo
+
+    server.log_appeal_verdict(AppealVerdict(
+        appeal_id="", lane_id="L1", ensemble_verdict="suspicious",
+        appeal_verdict="confirmed", disagreement=0.7,
+        ensemble_confidence=0.3, appeal_confidence=0.9))
+    server.update_attack_elo(AttackElo(
+        zone_id="SBX-FS", attack_id="F1", rating=1040.0,
+        comparisons=2, wins=2, losses=0))
+    state = _all(str(server.db.path))
+    assert "judge_appeals" in state
+    assert state["judge_appeals"]["appeal_count"] == 1
+    assert state["judge_appeals"]["override_count"] == 1
+    assert "attack_elo" in state
+    assert state["attack_elo"][0]["attack_id"] == "F1"

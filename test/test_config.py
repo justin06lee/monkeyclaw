@@ -38,3 +38,18 @@ def test_red_archive_config_defaults():
     assert arch.niche_gap_low == 0.5
     assert arch.niche_gap_high == 1.5
     assert arch.seed_cross_zone_count == 2
+
+
+def test_judge_config_block_present():
+    import yaml
+    from pathlib import Path
+    cfg = yaml.safe_load(
+        Path("configs/monkeyclaw.yaml").read_text())
+    judge = cfg["red_team"]["judge"]
+    assert judge["disagreement_threshold"] == 0.5
+    assert judge["low_confidence_threshold"] == 0.35
+    assert judge["appeal"]["enabled"] is False
+    assert judge["appeal"]["per_cycle_cap"] == 3
+    assert "elo_noise_band" in judge
+    assert "elo_k" in judge
+    assert "pairwise_compare_budget" in judge

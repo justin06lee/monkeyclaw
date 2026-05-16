@@ -120,6 +120,36 @@ def _judges(db_path: str) -> list[dict[str, Any]]:
     )
 
 
+def _judge_appeals(db_path: str) -> dict[str, Any]:
+    """Frontier-model appeal summary: appeal rate + override rate (§7.2)."""
+    appeals = _query(
+        db_path,
+        "SELECT lane_id, ensemble_verdict, appeal_verdict, disagreement "
+        "FROM appeal_verdicts ORDER BY created_at DESC",
+    )
+    overrides = sum(
+        1 for a in appeals if a["appeal_verdict"] != a["ensemble_verdict"])
+    return {
+        "appeal_count": len(appeals),
+        "override_count": overrides,
+        "override_rate": overrides / len(appeals) if appeals else 0.0,
+        "recent": [
+            {"lane_id": a["lane_id"], "ensemble": a["ensemble_verdict"],
+             "appeal": a["appeal_verdict"], "disagreement": a["disagreement"]}
+            for a in appeals[:10]
+        ],
+    }
+
+
+def _attack_elo(db_path: str) -> list[dict[str, Any]]:
+    """Per-zone attack Elo leaderboard, rating-sorted descending (§7.3)."""
+    return _query(
+        db_path,
+        "SELECT zone_id, attack_id, rating, comparisons, wins, losses "
+        "FROM attack_elo ORDER BY rating DESC",
+    )
+
+
 def _repro_queue(db_path: str) -> list[dict[str, Any]]:
     return _query(
         db_path,
@@ -408,6 +438,8 @@ def _all(db_path: str) -> dict[str, Any]:
         "operators": _operators(db_path),
         "telemetry": _telemetry(db_path),
         "judges": _judges(db_path),
+        "judge_appeals": _judge_appeals(db_path),
+        "attack_elo": _attack_elo(db_path),
         "activity": _activity(db_path),
         "purple_heatmap": _purple_heatmap(db_path),
         "purple_report_card": _purple_report_card(db_path),

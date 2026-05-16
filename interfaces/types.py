@@ -675,6 +675,9 @@ class JudgeVote:
     confidence: float
     reasoning: str
     evidence_turns: list[int] = field(default_factory=list)
+    is_appeal: bool = False
+    weight: float = 1.0
+    model: str = ""
 
 
 @dataclass
@@ -686,6 +689,59 @@ class JudgeVoteInput:
     confidence: float
     reasoning: str
     evidence_turns: list[int] = field(default_factory=list)
+    is_appeal: bool = False
+    weight: float = 1.0
+    model: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Judge ensemble — appeal + pairwise ranking (judge-ensemble spec §8)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AppealVerdict:
+    """A frontier-model appeal's authoritative re-decision of a contested
+    Tier 2 case. Mirrors the appeal_verdicts row."""
+
+    appeal_id: str
+    lane_id: str
+    ensemble_verdict: str
+    appeal_verdict: str
+    disagreement: float
+    ensemble_confidence: float
+    appeal_confidence: float
+    failure_class: str = "none"
+    severity: str = "low"
+    sided_with_roles: list[str] = field(default_factory=list)
+    reasoning: str = ""
+    model: str = ""
+    errored: bool = False
+    created_at: str = ""
+
+
+@dataclass
+class PairwiseResult:
+    """One head-to-head comparison of two attacks on the same zone."""
+
+    zone_id: str
+    winner_attack_id: str
+    loser_attack_id: str
+    margin: float  # 0..1 — how decisive the win was
+    reasoning: str = ""
+
+
+@dataclass
+class AttackElo:
+    """Per-zone, per-attack Elo rating. Mirrors the attack_elo row."""
+
+    zone_id: str
+    attack_id: str
+    rating: float = 1000.0
+    comparisons: int = 0
+    wins: int = 0
+    losses: int = 0
+    updated_at: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -1038,8 +1094,10 @@ class MutationAttempt:
 
 __all__ = [
     "AgentPolicy",
+    "AppealVerdict",
     "ArchiveCell",
     "ArchiveUpdateInput",
+    "AttackElo",
     "CheckResult",
     "CodeChunk",
     "ControlDecision",
@@ -1083,6 +1141,7 @@ __all__ = [
     "NearMissInput",
     "NetworkEvent",
     "Observability",
+    "PairwiseResult",
     "PatchCandidate",
     "PatchCandidateInput",
     "PolicyConfig",
