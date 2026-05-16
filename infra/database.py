@@ -22,8 +22,7 @@ LOG = logging.getLogger("monkeyclaw.db")
 
 EMBEDDING_DIM = 384
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-CURRENT_SCHEMA_VERSION = 2
-SCHEMA_PATH = Path(__file__).resolve().parent.parent / "interfaces" / "schema.sql"
+SCHEMA_PATH =Path(__file__).resolve().parent.parent / "interfaces" / "schema.sql"
 
 
 def pack_vec(vec: Iterable[float]) -> bytes:

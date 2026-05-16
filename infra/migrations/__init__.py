@@ -3,10 +3,12 @@
 Versioned, forward-only SQLite migration runner.
 
 Files live in infra/migrations/ named NNNN_short_description.sql or .py.
-`.sql` files are wrapped in a transaction and executescript-ed; `.py` files
-export `def migrate(conn: sqlite3.Connection) -> None`. Migrations run on
-Database open; each applied migration is recorded in schema_meta as a row
-keyed 'migration:NNNN'. Forward-only: an applied migration is never re-run.
+Both kinds run inside a transaction so each migration is atomic: `.sql`
+files are executescript-ed inside a BEGIN/COMMIT-wrapped body; `.py` files
+export `def migrate(conn: sqlite3.Connection) -> None`, called inside a
+BEGIN/COMMIT the runner opens. Migrations run on Database open; each applied
+migration is recorded in schema_meta as a row keyed 'migration:NNNN'.
+Forward-only: an applied migration is never re-run.
 """
 
 from __future__ import annotations
@@ -113,9 +115,24 @@ def _apply_one(conn: sqlite3.Connection, mig: Migration) -> None:
         migrate = getattr(module, "migrate", None)
         if migrate is None:
             raise MigrationError(f"{mig.name} has no migrate(conn) function")
+        # Wrap the .py migration body in its own transaction so a partial
+        # failure rolls back wholly — the same atomicity guarantee the
+        # .sql path gets from its BEGIN/COMMIT-wrapped executescript.
+        # The .sql path's executescript implicitly commits any pending
+        # transaction before BEGIN; do the same here so a caller-supplied
+        # connection in deferred-isolation mode (a transaction already
+        # open from prior DML) doesn't make our BEGIN fail.
+        if conn.in_transaction:
+            conn.execute("COMMIT")
+        conn.execute("BEGIN")
         try:
             migrate(conn)
+            conn.execute("COMMIT")
         except Exception as exc:  # noqa: BLE001
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
             raise MigrationError(f"{mig.name} failed: {exc}") from exc
 
 
