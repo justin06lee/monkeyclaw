@@ -1,0 +1,21 @@
+# Zone -> ATLAS technique IDs + OWASP category IDs. Human-authored, reviewed.
+# Counterpart to docs/zone_failure_class_mapping.md.
+zones:
+  - {zone_id: PROMPT-INJ,    atlas: [AML.T0051, AML.T0051.000, AML.T0051.001], owasp: [LLM01]}
+  - {zone_id: SOCIAL-ENG,    atlas: [AML.T0077],                                owasp: [LLM09]}
+  - {zone_id: SBX-FS,        atlas: [AML.T0072],                                owasp: [LLM06]}
+  - {zone_id: SBX-NET,       atlas: [AML.T0024, AML.T0072],                     owasp: [LLM02]}
+  - {zone_id: SBX-PROC,      atlas: [AML.T0072],                                owasp: [LLM06]}
+  - {zone_id: SBX-IPC,       atlas: [AML.T0072],                                owasp: [LLM06]}
+  - {zone_id: PRV-ROUTE,     atlas: [AML.T0024],                                owasp: [LLM02]}
+  - {zone_id: PRV-LEAK,      atlas: [AML.T0057],                                owasp: [LLM02, LLM07]}
+  - {zone_id: PERM-MODEL,    atlas: [AML.T0073, AML.T0074],                     owasp: [LLM06]}
+  - {zone_id: PERM-RUNTIME,  atlas: [AML.T0073, AML.T0074],                     owasp: [LLM06]}
+  - {zone_id: SKILL-INSTALL, atlas: [AML.T0010, AML.T0053],                     owasp: [LLM03]}
+  - {zone_id: SKILL-EXEC,    atlas: [AML.T0053],                                owasp: [LLM06]}
+  - {zone_id: SKILL-SUPPLY,  atlas: [AML.T0010],                                owasp: [LLM03]}
+  - {zone_id: MEM-STATE,     atlas: [AML.T0070],                                owasp: [LLM08]}
+  - {zone_id: MEM-SHARED,    atlas: [AML.T0070],                                owasp: [LLM08]}
+  - {zone_id: INF-ROUTE,     atlas: [AML.T0075],                                owasp: [LLM04]}
+  - {zone_id: INF-LOCAL,     atlas: [AML.T0075],                                owasp: [LLM04]}
+  - {zone_id: AGENT-COMM,    atlas: [AML.T0076],                                owasp: [LLM08]}
