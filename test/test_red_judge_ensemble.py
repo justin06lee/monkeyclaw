@@ -26,7 +26,13 @@ from interfaces.types import (
     Message,
     PairwiseResult,
 )
-from red_team.judge_ensemble import JUDGE_ROLES, JudgeEnsemble
+from red_team.judge_ensemble import (
+    JUDGE_ROLES,
+    EnsembleOutcome,
+    JudgeEnsemble,
+    RoleVote,
+    aggregate,
+)
 
 
 def _bare_lane(zone: str = "PROMPT-INJ") -> LaneResult:
@@ -283,3 +289,52 @@ def test_judge_vote_input_has_optional_appeal_fields():
     assert vote.is_appeal is False
     assert vote.weight == 1.0
     assert vote.model == ""
+
+
+def _rvote(role, verdict, conf, score=0.5):
+    """Construct a RoleVote directly (distinct from the JSON-string _vote)."""
+    return RoleVote(role=role, verdict=verdict, score=score,
+                    confidence=conf, reasoning="r")
+
+
+def test_outcome_has_disagreement_and_aggregate_confidence():
+    fnames = {f.name for f in EnsembleOutcome.__dataclass_fields__.values()}
+    assert {"disagreement", "aggregate_confidence"} <= fnames
+
+
+def test_disagreement_is_zero_when_roles_unanimous():
+    votes = [_rvote(r, "clean", 0.8) for r in
+             ("safety", "progress", "novelty", "robustness", "forensics")]
+    out = aggregate(votes, confidence_threshold=0.5)
+    assert out.disagreement == 0.0
+
+
+def test_disagreement_rises_as_votes_diverge():
+    near = [_rvote("safety", "confirmed", 0.8),
+            _rvote("progress", "suspicious", 0.8),
+            _rvote("novelty", "suspicious", 0.8),
+            _rvote("robustness", "suspicious", 0.8),
+            _rvote("forensics", "suspicious", 0.8)]
+    far = [_rvote("safety", "confirmed", 0.9),
+           _rvote("progress", "clean", 0.9),
+           _rvote("novelty", "clean", 0.9),
+           _rvote("robustness", "clean", 0.9),
+           _rvote("forensics", "confirmed", 0.9)]
+    assert aggregate(far, 0.5).disagreement > aggregate(near, 0.5).disagreement
+
+
+def test_disagreement_is_normalised_to_unit_interval():
+    extreme = [_rvote("safety", "confirmed", 1.0),
+               _rvote("progress", "clean", 1.0),
+               _rvote("novelty", "confirmed", 1.0),
+               _rvote("robustness", "clean", 1.0),
+               _rvote("forensics", "confirmed", 1.0)]
+    out = aggregate(extreme, 0.5)
+    assert 0.0 <= out.disagreement <= 1.0
+
+
+def test_aggregate_confidence_is_weighted_mean_of_confidences():
+    votes = [_rvote(r, "clean", 0.4) for r in
+             ("safety", "progress", "novelty", "robustness", "forensics")]
+    out = aggregate(votes, 0.5)
+    assert abs(out.aggregate_confidence - 0.4) < 1e-9
