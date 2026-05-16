@@ -44,8 +44,9 @@ from dataclasses import asdict
 
 from infra.bootstrap import Runtime
 from interfaces.config_schema import MonkeyClawConfig
-from interfaces.llm import LLMClient, make_llm
+from interfaces.llm import LLMClient
 from interfaces.mcp_tools import MonkeyClawMCP
+from interfaces.model_router import ModelRouter
 from interfaces.provisioning import VictimProvisioner
 from interfaces.types import (
     FindingRecord,
@@ -105,6 +106,7 @@ class Pipeline:
         mcp: MonkeyClawMCP | None = None,
         provisioner: VictimProvisioner | None = None,
         llm: LLMClient | None = None,
+        router: ModelRouter | None = None,
         policy: PolicyConfig | None = None,
         # Test-time injection points so the suite can wire deterministic
         # replay/judge functions without touching globals.
@@ -135,7 +137,18 @@ class Pipeline:
             self.provisioner = provisioner
             self.cfg = MonkeyClawConfig()
 
-        self.llm = llm or make_llm()
+        if router is not None:
+            self.router = router
+        elif runtime is not None:
+            self.router = runtime.router
+        else:
+            self.router = ModelRouter(self.cfg, mcp=self.mcp)
+
+        def _client(role: str) -> LLMClient:
+            return llm if llm is not None else self.router.client_for(role)
+
+        # Default `self.llm` kept for any code path still reading it directly.
+        self.llm = llm or self.router.client_for("patch_generation")
         self.policy = policy or policy_from_config(self.cfg)
         self.alert_severity_floor = alert_severity_floor
 
@@ -149,13 +162,13 @@ class Pipeline:
             policy=self.policy,
         )
         self.root_cause = root_cause or RootCauseLocator(
-            llm=self.llm, mcp=self.mcp,
+            llm=_client("root_cause"), mcp=self.mcp,
             cfg=RootCauseConfig(
                 severity_threshold=self.cfg.repro.root_cause_severity_threshold,
             ),
         )
         self.cold_verifier = cold_verifier or ColdVerifier(
-            llm=self.llm, provisioner=self.provisioner,
+            llm=_client("cold_verification"), provisioner=self.provisioner,
             cfg=ColdVerifierConfig.from_runtime_cfg(
                 self.cfg.repro, self.cfg.nemoclaw,
             ),
@@ -163,7 +176,7 @@ class Pipeline:
         )
         self.triage = triage or TriageAgent(TriageConfig())
         self.patch_generator = patch_generator or PatchGenerator(
-            llm=self.llm, mcp=self.mcp,
+            llm=_client("patch_generation"), mcp=self.mcp,
             cfg=PatchGeneratorConfig.from_blue_team_cfg(self.cfg.blue_team),
         )
         self.test_generator = test_generator or TestGenerator()

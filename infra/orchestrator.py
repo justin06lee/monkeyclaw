@@ -237,12 +237,24 @@ class Orchestrator:
         deduped = red_metrics.get("ideas_deduplicated", 0)
         executed = len(results)
         # ALWAYS write the cycle summary, even if the lane phase failed.
+        # Append a per-role model-cost breakdown from the model_runs accounting.
+        summary_text = (f"Cycle {cycle_id}: {generated} ideas generated, "
+                        f"{executed} executed, "
+                        f"{confirmed} confirmed, {suspicious} suspicious.")
+        try:
+            rollup = self.rt.mcp.get_model_cost_rollup()
+            if rollup:
+                cost_lines = "; ".join(
+                    f"{r['role']}: {r['cost_usd']:.4f} USD / {r['runs']} runs"
+                    for r in rollup
+                )
+                summary_text += f"\nModel cost by role — {cost_lines}"
+        except Exception as e:  # noqa: BLE001 - reporting is best-effort
+            LOG.warning("model cost rollup unavailable for cycle %d: %s", cycle_id, e)
         try:
             self.rt.mcp.log_cycle_summary(CycleSummaryInput(
                 cycle_id=cycle_id,
-                summary=(f"Cycle {cycle_id}: {generated} ideas generated, "
-                         f"{executed} executed, "
-                         f"{confirmed} confirmed, {suspicious} suspicious."),
+                summary=summary_text,
                 zones_targeted=zones,
                 ideas_generated=generated,
                 ideas_deduplicated=deduped,

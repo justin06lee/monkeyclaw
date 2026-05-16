@@ -344,7 +344,6 @@ def _cmd_demo_pipeline(args: argparse.Namespace) -> int:
     from infra.bootstrap import boot
     from infra.monitoring_harness import HarnessConfig, MonitoringHarness
     from interfaces.config_schema import LaneConfig
-    from interfaces.llm import make_llm
     from interfaces.nemoclaw_policy import nemoclaw_policy_config
     from interfaces.provisioning import VictimConfig
     from interfaces.types import IdeaObject
@@ -356,7 +355,7 @@ def _cmd_demo_pipeline(args: argparse.Namespace) -> int:
         print(f"\n{'=' * 68}\n  {s}\n{'=' * 68}", flush=True)
 
     rt = boot(use_mock_provisioner=True)
-    llm = make_llm()
+    llm = rt.router.client_for("red_execution")
     print(f"LLM backend: {llm.name}")
     try:
         victim = rt.provisioner.provision_victim(VictimConfig(
@@ -550,7 +549,6 @@ def _cmd_tg_attack(args: argparse.Namespace) -> int:
     from infra.bootstrap import boot
     from infra.monitoring_harness import HarnessConfig, MonitoringHarness
     from interfaces.config_schema import LaneConfig
-    from interfaces.llm import make_llm
     from interfaces.nemoclaw_policy import nemoclaw_policy_config
     from interfaces.provisioning import VictimInstance
     from interfaces.types import IdeaObject
@@ -568,7 +566,7 @@ def _cmd_tg_attack(args: argparse.Namespace) -> int:
         _recover_victim()
 
     rt = boot(use_mock_provisioner=True)  # provisioner unused — tg:// is direct
-    llm = make_llm()
+    llm = rt.router.client_for("red_execution")
     print(f"=== MonkeyClaw — Telegram red-team vs @{bot} ===")
     print(f"LLM backend: {llm.name}\n")
     try:

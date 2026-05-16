@@ -195,6 +195,10 @@ class MonkeyClawMCP(Protocol):
         """Record one LLM call's tokens/latency/cost. Returns run_id."""
         ...
 
+    def get_model_cost_rollup(self) -> list[dict]:
+        """Per-role token & cost rollup over model_runs. Read-only reporting."""
+        ...
+
     # ------------------------------------------------------------------
     # Judge votes
     # ------------------------------------------------------------------

@@ -29,8 +29,9 @@ from dataclasses import dataclass
 from infra.bootstrap import Runtime
 from infra.monitoring_harness import MonitoringHarness
 from interfaces.config_schema import LaneConfig, MonkeyClawConfig
-from interfaces.llm import LLMClient, make_llm
+from interfaces.llm import LLMClient
 from interfaces.mcp_tools import MonkeyClawMCP
+from interfaces.model_router import ModelRouter
 from interfaces.nemoclaw_policy import nemoclaw_policy_config
 from interfaces.provisioning import VictimInstance
 from interfaces.types import (
@@ -89,6 +90,7 @@ class Pipeline:
         *,
         mcp: MonkeyClawMCP | None = None,
         llm: LLMClient | None = None,
+        router: ModelRouter | None = None,
         policy: PolicyConfig | None = None,
         ideation_cfg: IdeationConfig | None = None,
         execution_cfg: ExecutionConfig | None = None,
@@ -108,7 +110,22 @@ class Pipeline:
             # Build a default config view good enough for tests.
             self.cfg = MonkeyClawConfig()
 
-        self.llm = llm or make_llm()
+        # The router is the single LLM construction point. From a Runtime it
+        # is taken directly; otherwise built from cfg+mcp here. An explicit
+        # `llm=` (test injection) still wins per component: when given, every
+        # component shares that one client; otherwise each gets its
+        # role-bound RoutedClient.
+        if router is not None:
+            self.router = router
+        elif runtime is not None:
+            self.router = runtime.router
+        else:
+            self.router = ModelRouter(self.cfg, mcp=self.mcp)
+
+        def _client(role: str) -> LLMClient:
+            return llm if llm is not None else self.router.client_for(role)
+
+        self.llm = llm or self.router.client_for("red_execution")
         self.policy = policy or policy_from_config(self.cfg)
         ideation_cfg = ideation_cfg or IdeationConfig(
             temperature=self.cfg.ideation.temperature,
@@ -124,14 +141,14 @@ class Pipeline:
             tier2_zones=set(self.cfg.judgment.tier2_zones),
             tier2_confidence_threshold=self.cfg.judgment.tier2_confidence_threshold,
         )
-        self.ideation = IdeationEngine(self.llm, self.mcp, ideation_cfg)
+        self.ideation = IdeationEngine(_client("red_ideation"), self.mcp, ideation_cfg)
         self._ideation_cfg = ideation_cfg
         # B9 — model tournament. Disabled unless `red_team.model_tournament`
         # is configured; when enabled, extra entrants also ideate per zone.
         self.tournament = ModelTournament(load_tournament_config())
-        self.strategist = Strategist(self.llm)
-        self.execution = ExecutionAgent(self.llm, execution_cfg)
-        self.judger = Judge(self.llm, self.policy, judge_cfg, mcp=self.mcp)
+        self.strategist = Strategist(_client("red_ideation"))
+        self.execution = ExecutionAgent(_client("red_execution"), execution_cfg)
+        self.judger = Judge(_client("semantic_judge"), self.policy, judge_cfg, mcp=self.mcp)
         self.alert_severity_floor = alert_severity_floor
 
         # idea_id → IdeaObject (the synthesized chain) so judge() can look up
@@ -149,13 +166,15 @@ class Pipeline:
 
     # ------------------------------------------------------------------
     def _llm_for_entrant(self, entrant) -> object:
-        """Resolve an LLM client for one model-tournament entrant."""
-        return make_llm(
-            backend=entrant.provider or None,
-            model=entrant.model or None,
-            role=entrant.role or None,
-            cfg=self.cfg,
-        )
+        """Resolve a routed LLM client for one model-tournament entrant.
+
+        Tournament entrants key by `role`, so they go through the same router
+        as every other call — accounted and fallback-protected. An entrant
+        with an explicit provider/model still resolves via its role's chain;
+        per-entrant model pinning is out of scope for this spec (see the
+        model-ideation-tournament spec).
+        """
+        return self.router.client_for(entrant.role)
 
     # ------------------------------------------------------------------
     # generate_ideas

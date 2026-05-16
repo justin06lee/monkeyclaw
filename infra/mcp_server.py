@@ -569,6 +569,33 @@ class MCPServer(MonkeyClawMCP):
             )
         return rid
 
+    def get_model_cost_rollup(self) -> list[dict]:
+        """Per-role token & cost rollup over all model_runs rows.
+
+        Read-only reporting for the cycle summary and the dashboard cost
+        panel — replaces the dashboard's blended token-price estimate.
+        """
+        rows = self.db.fetchall(
+            "SELECT role, "
+            "COUNT(*) AS runs, "
+            "SUM(input_tokens) AS input_tokens, "
+            "SUM(output_tokens) AS output_tokens, "
+            "SUM(COALESCE(cost_usd, 0)) AS cost_usd, "
+            "SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failures "
+            "FROM model_runs GROUP BY role ORDER BY cost_usd DESC"
+        )
+        return [
+            {
+                "role": r["role"],
+                "runs": r["runs"] or 0,
+                "input_tokens": r["input_tokens"] or 0,
+                "output_tokens": r["output_tokens"] or 0,
+                "cost_usd": float(r["cost_usd"] or 0.0),
+                "failures": r["failures"] or 0,
+            }
+            for r in rows
+        ]
+
     # ------------------------------------------------------------------
     # Judge votes
     # ------------------------------------------------------------------

@@ -328,30 +328,29 @@ def _have_nvidia_key() -> bool:
     return bool(os.environ.get("NVIDIA_API_KEY") or os.environ.get("NIM_API_KEY"))
 
 
-def make_llm(
-    backend: str | None = None, *, model: str | None = None,
-    role: str | None = None, cfg: Any = None,
-) -> LLMClient:
-    """Resolve and construct an LLM client.
+def local_backend_name() -> str:
+    """The guaranteed-available backend in the current environment.
+
+    `claude_cli` when its binary is on PATH, else `mock`. This is the last
+    link of every router fallback chain, so a credential-free run always
+    resolves every role. It deliberately ignores the NVIDIA path — the local
+    link must not depend on a network model.
+    """
+    if shutil.which(DEFAULT_CLI_BINARY):
+        return "claude_cli"
+    return "mock"
+
+
+def make_llm(backend: str | None = None, *, model: str | None = None) -> LLMClient:
+    """Resolve and construct an LLM client — a pure low-level factory.
 
     Precedence: explicit `backend` arg > `MC_LLM_BACKEND` env > auto-detect.
 
-    If `role` is provided and `model` is not, the model is resolved from the
-    ``models.roles`` config block (via `cfg` or a fresh `load_config()` call).
-    Known roles: cheap_extraction, red_ideation, red_execution, semantic_judge,
-    safety_judge, root_cause, patch_generation, codex_code_work.
+    Role-aware construction (resolving a role to a model/fallback chain) now
+    belongs exclusively to `interfaces.model_router.ModelRouter`; `make_llm`
+    only constructs a single concrete backend.
     """
     backend = backend or os.environ.get("MC_LLM_BACKEND")
-    if role is not None and model is None:
-        try:
-            if cfg is None:
-                from infra.config import load_config  # noqa: PLC0415
-                cfg = load_config()
-            route = cfg.models.roles.get(role)
-            if route is not None:
-                model = route.model
-        except Exception:  # noqa: BLE001 - config is best-effort here
-            LOG.warning("could not resolve model role %r; using default", role)
     model = model or os.environ.get("MC_LLM_MODEL", DEFAULT_MODEL)
 
     if backend is None:
@@ -447,5 +446,6 @@ __all__ = [
     "MockLLM",
     "NemotronLLM",
     "extract_json",
+    "local_backend_name",
     "make_llm",
 ]

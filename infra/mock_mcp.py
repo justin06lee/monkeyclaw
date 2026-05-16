@@ -505,6 +505,22 @@ class MockMCP(MonkeyClawMCP):
         self._log("log_model_run", {"run_id": rid, "role": run.role})
         return rid
 
+    def get_model_cost_rollup(self) -> list[dict]:
+        """Per-role token & cost rollup over recorded model runs."""
+        by_role: dict[str, dict] = {}
+        for r in self._model_runs:
+            agg = by_role.setdefault(r.role, {
+                "role": r.role, "runs": 0, "input_tokens": 0,
+                "output_tokens": 0, "cost_usd": 0.0, "failures": 0,
+            })
+            agg["runs"] += 1
+            agg["input_tokens"] += r.input_tokens
+            agg["output_tokens"] += r.output_tokens
+            agg["cost_usd"] += r.cost_usd or 0.0
+            if not r.success:
+                agg["failures"] += 1
+        return sorted(by_role.values(), key=lambda a: a["cost_usd"], reverse=True)
+
     # ------------------------------------------------------------------
     # Judge votes
     # ------------------------------------------------------------------
