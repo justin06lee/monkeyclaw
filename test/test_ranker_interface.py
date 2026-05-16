@@ -59,3 +59,51 @@ def test_attempt_trace_types_present():
     pref_fields = {f.name for f in fields(Preference)}
     assert {"pair_id", "trace_a", "trace_b", "preferred",
             "judge_confidence"} <= pref_fields
+
+
+def test_learned_ranker_satisfies_the_protocol():
+    from interfaces.ranker import Ranker
+    from red_team.heuristic_ranker import HeuristicRanker
+    from red_team.learned_ranker import LearnedRanker
+
+    # A LearnedRanker with no artifact falls back to the heuristic.
+    ranker = LearnedRanker.load("does/not/exist.json",
+                                fallback=HeuristicRanker())
+    assert isinstance(ranker, Ranker)
+
+
+def test_learned_ranker_missing_artifact_falls_back(tmp_path, caplog):
+    import logging
+
+    from red_team.heuristic_ranker import HeuristicRanker
+    from red_team.learned_ranker import LearnedRanker
+
+    with caplog.at_level(logging.WARNING):
+        ranker = LearnedRanker.load(
+            str(tmp_path / "absent.json"), fallback=HeuristicRanker())
+    out = ranker.predict(_input_for_test())
+    assert 0.0 <= out.usefulness <= 1.0
+    assert any("fallback" in r.message.lower() for r in caplog.records)
+
+
+def test_learned_ranker_feature_schema_mismatch_falls_back(tmp_path):
+    import json
+
+    from red_team.heuristic_ranker import HeuristicRanker
+    from red_team.learned_ranker import LearnedRanker
+
+    artifact = tmp_path / "stale.json"
+    artifact.write_text(json.dumps({
+        "feature_schema_version": 999, "dataset_snapshot_id": "old",
+        "weights": {}}))
+    ranker = LearnedRanker.load(str(artifact), fallback=HeuristicRanker())
+    # A mismatched feature schema -> the heuristic serves.
+    out = ranker.predict(_input_for_test())
+    assert 0.0 <= out.usefulness <= 1.0
+
+
+def _input_for_test():
+    from interfaces.ranker import RankerInput
+
+    return RankerInput(idea_summary="probe", zone_id="PROMPT-INJ",
+                       tactic_tags=["roleplay"], token_cost=50)
