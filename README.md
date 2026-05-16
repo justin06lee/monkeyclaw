@@ -110,7 +110,10 @@ The `monkeyclaw` command is the single entrypoint for the whole loop.
 | `findings` | List all confirmed / suspicious findings, severity-sorted |
 | `repro <finding_id>` | Run the repro pipeline on a finding (replay-minimize + document) |
 | `blue-team [vuln_id]` | Demo mode: triage → patch → test for queued repros (output only, nothing applied) |
+| `demo [--profile <name>]` | One-shot demo: full end-to-end pipeline, or a mock cycle vs a planted profile |
 | `probe [-m "<msg>"] [--reset]` | Talk directly to the victim — interactive or one-shot, for ad-hoc probing |
+| `tg-probe [--bot <handle>] [-m "<msg>"]` | Talk to the victim agent over Telegram, manually |
+| `tg-attack [--bot <handle>] [--turns N] [--zone <id>]` | Run an automated red-team attack over the victim's Telegram channel |
 | `test notification` | Self-check: send a test message through the Telegram alert path |
 | `dashboard [--port 8787]` | Start the live web dashboard |
 
@@ -200,7 +203,7 @@ MC_* env vars`. Nested fields use double-underscore env overrides, e.g.
 ## Tests
 
 ```bash
-uv run pytest          # 164 tests across red, blue, infra, and the dashboard
+uv run pytest          # 326 tests across red, blue, infra, and the dashboard
 uv run ruff check .
 ```
 

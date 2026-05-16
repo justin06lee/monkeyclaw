@@ -53,23 +53,33 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && rm -rf /var/lib/apt/lists/*
 
 # uv - the MonkeyClaw project's Python package manager.
-RUN curl -fsSL https://astral.sh/uv/install.sh | sh
-ENV PATH=/root/.local/bin:/app/.venv/bin:$PATH
+# The version is pinned (supply-chain hardening): the installer honours
+# UV_VERSION, so a compromised install.sh still cannot silently ship a
+# different uv build than the one reviewed here. Bump deliberately.
+# Installed into /usr/local/bin (not /root/.local) so the unprivileged
+# runtime user can run uv too.
+ENV UV_VERSION=0.5.11
+RUN curl -fsSL https://astral.sh/uv/install.sh \
+        | env UV_INSTALL_DIR=/usr/local/bin sh
+ENV PATH=/usr/local/bin:/app/.venv/bin:$PATH \
+    UV_PYTHON_INSTALL_DIR=/opt/uv/python \
+    UV_CACHE_DIR=/opt/uv/cache
 
 WORKDIR /app
 
 # Python dependency layer: copy only the manifests so this stays cached until
-# the dependency set changes. uv.lock is intentionally NOT copied -- the build
-# resolves dependencies fresh from pyproject.toml so a stale committed lock
-# cannot break the image. uv installs Python 3.12 itself (per .python-version);
-# all declared deps ship Linux wheels, so no compiler is needed.
-COPY pyproject.toml .python-version ./
+# the dependency set changes. uv.lock is copied and `uv sync --frozen` is used
+# so the image installs the exact, reviewed dependency versions -- builds are
+# reproducible and a resolver change cannot silently pull different versions.
+# uv installs Python 3.12 itself (per .python-version); all declared deps ship
+# Linux wheels, so no compiler is needed.
+COPY pyproject.toml uv.lock .python-version ./
 RUN uv python install 3.12 \
-    && uv sync --no-install-project
+    && uv sync --frozen --no-install-project
 
 # MonkeyClaw source + install the package itself (console scripts).
 COPY . .
-RUN uv sync
+RUN uv sync --frozen
 
 # Runtime helpers onto PATH:
 #   nemoclaw-setup       -- starts the nested Docker daemon, runs NemoClaw's
@@ -79,6 +89,19 @@ RUN uv sync
 #                           NVIDIA_API_KEY is set, then hands off to CMD
 RUN install -m 0755 scripts/nemoclaw-setup.sh /usr/local/bin/nemoclaw-setup \
     && install -m 0755 scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+# Drop root for the runtime: the container runs as the unprivileged
+# `monkeyclaw` user. The mock path needs no elevation at all. The live path
+# (Docker-in-Docker: `dockerd`, NemoClaw's system-wide installer) genuinely
+# needs root, so `monkeyclaw` is granted passwordless sudo and the entrypoint
+# elevates only that one setup step. The build artifacts (/app project + venv,
+# /opt/uv pythons + cache) are handed to `monkeyclaw` so the runtime user can
+# read and update them without root.
+RUN useradd -m -s /bin/bash monkeyclaw \
+    && echo "monkeyclaw ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/monkeyclaw \
+    && chmod 0440 /etc/sudoers.d/monkeyclaw \
+    && chown -R monkeyclaw:monkeyclaw /app /opt/uv
+USER monkeyclaw
 
 # Dashboard 8787, MCP server 7322, mock MCP 7321 -- documented for reference.
 # All bind 127.0.0.1 by default; pass `--host 0.0.0.0` to the MCP servers to

@@ -55,9 +55,8 @@ class NemoClawProvisioner(VictimProvisioner):
 
     The resulting `VictimInstance.chat_endpoint` is the gateway WebSocket;
     `VictimClient` speaks the gateway protocol to it. The token is published
-    in `metadata["gateway_token"]` and mirrored into `MC_GATEWAY_TOKEN` so
-    `VictimClient(endpoint)` constructed without an explicit token still
-    authenticates.
+    in `metadata["gateway_token"]`; callers pass it to `VictimClient` from
+    there rather than relying on a process-global env var.
     """
 
     def __init__(
@@ -147,9 +146,11 @@ class NemoClawProvisioner(VictimProvisioner):
         ).strip()
         if not token:
             raise ProvisioningError("gateway-token returned empty output")
-        # Mirror into the environment so a bare VictimClient(endpoint) — as
-        # constructed by the red/blue replay paths — picks it up.
-        os.environ["MC_GATEWAY_TOKEN"] = token
+        # The token is published in `metadata["gateway_token"]` below. We do
+        # NOT mirror it into os.environ: that would leak the secret into the
+        # process environment and every later subprocess inherits it for the
+        # lifetime of the process. Consumers should read it from the
+        # VictimInstance metadata (or be passed it explicitly).
 
         instance = VictimInstance(
             instance_id=instance_id,
@@ -186,7 +187,7 @@ class NemoClawProvisioner(VictimProvisioner):
         ).strip()
         if not token:
             raise ProvisioningError("gateway-token returned empty output")
-        os.environ["MC_GATEWAY_TOKEN"] = token
+        # No os.environ mirror — the token is published in instance metadata.
         instance_id = f"VICT-{uuid.uuid4().hex[:10]}"
         instance = VictimInstance(
             instance_id=instance_id,

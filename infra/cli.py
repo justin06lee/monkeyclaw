@@ -57,61 +57,65 @@ def _open_db():
 def _cmd_status(args: argparse.Namespace) -> int:
     db, cfg = _open_db()
     try:
-        zones = db.fetchall(
-            "SELECT zone_id, name, coverage_score, vulns_open, vulns_found "
-            "FROM surface_zones ORDER BY coverage_score ASC"
-        )
-        findings = db.fetchall("SELECT verdict, severity FROM findings")
-        cycles = db.fetchone("SELECT COUNT(*) AS n FROM cycle_log")
-        tests = db.fetchone(
-            "SELECT COUNT(*) AS n FROM regression_tests WHERE deprecated = 0"
-        )
-    except Exception as e:  # noqa: BLE001
-        print(f"could not read knowledge base ({cfg.storage.db_path}): {e}")
-        return 1
-    confirmed = sum(1 for f in findings if f["verdict"] == "confirmed")
-    suspicious = sum(1 for f in findings if f["verdict"] == "suspicious")
-    cov = (sum(z["coverage_score"] for z in zones) / len(zones)) if zones else 0.0
+        try:
+            zones = db.fetchall(
+                "SELECT zone_id, name, coverage_score, vulns_open, vulns_found "
+                "FROM surface_zones ORDER BY coverage_score ASC"
+            )
+            findings = db.fetchall("SELECT verdict, severity FROM findings")
+            cycles = db.fetchone("SELECT COUNT(*) AS n FROM cycle_log")
+            tests = db.fetchone(
+                "SELECT COUNT(*) AS n FROM regression_tests WHERE deprecated = 0"
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"could not read knowledge base ({cfg.storage.db_path}): {e}")
+            return 1
+        confirmed = sum(1 for f in findings if f["verdict"] == "confirmed")
+        suspicious = sum(1 for f in findings if f["verdict"] == "suspicious")
+        cov = (sum(z["coverage_score"] for z in zones) / len(zones)) if zones else 0.0
 
-    print("=== MonkeyClaw status ===")
-    print(f"  cycles completed : {cycles['n'] if cycles else 0}")
-    print(f"  findings         : {confirmed} confirmed, {suspicious} suspicious, "
-          f"{len(findings)} total")
-    print(f"  regression tests : {tests['n'] if tests else 0}")
-    print(f"  mean coverage    : {cov:.0%}  ({len(zones)} zones)")
-    print("\n  attack surface (lowest coverage first):")
-    for z in zones[:12]:
-        bar = "#" * int(z["coverage_score"] * 20)
-        print(f"    {z['zone_id']:14} {z['coverage_score']:.2f} "
-              f"|{bar:<20}|  open={z['vulns_open']} found={z['vulns_found']}")
-    db.close()
-    return 0
+        print("=== MonkeyClaw status ===")
+        print(f"  cycles completed : {cycles['n'] if cycles else 0}")
+        print(f"  findings         : {confirmed} confirmed, {suspicious} suspicious, "
+              f"{len(findings)} total")
+        print(f"  regression tests : {tests['n'] if tests else 0}")
+        print(f"  mean coverage    : {cov:.0%}  ({len(zones)} zones)")
+        print("\n  attack surface (lowest coverage first):")
+        for z in zones[:12]:
+            bar = "#" * int(z["coverage_score"] * 20)
+            print(f"    {z['zone_id']:14} {z['coverage_score']:.2f} "
+                  f"|{bar:<20}|  open={z['vulns_open']} found={z['vulns_found']}")
+        return 0
+    finally:
+        db.close()
 
 
 def _cmd_findings(args: argparse.Namespace) -> int:
     db, _ = _open_db()
     try:
-        rows = db.fetchall(
-            "SELECT finding_id, zone_id, verdict, severity, failure_class, "
-            "idea_summary, created_at FROM findings "
-            "WHERE verdict IN ('confirmed', 'suspicious') "
-            "ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 "
-            "WHEN 'medium' THEN 2 ELSE 3 END, created_at DESC"
-        )
-    except Exception as e:  # noqa: BLE001
-        print(f"could not read findings: {e}")
-        return 1
-    if not rows:
-        print("no confirmed or suspicious findings yet — run `monkeyclaw run` first.")
+        try:
+            rows = db.fetchall(
+                "SELECT finding_id, zone_id, verdict, severity, failure_class, "
+                "idea_summary, created_at FROM findings "
+                "WHERE verdict IN ('confirmed', 'suspicious') "
+                "ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 "
+                "WHEN 'medium' THEN 2 ELSE 3 END, created_at DESC"
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"could not read findings: {e}")
+            return 1
+        if not rows:
+            print("no confirmed or suspicious findings yet — run `monkeyclaw run` first.")
+            return 0
+        print(f"=== {len(rows)} finding(s) ===")
+        for r in rows:
+            print(f"\n  [{r['severity'].upper()}] {r['finding_id']}  "
+                  f"({r['verdict']}, {r['zone_id']}, {r['failure_class']})")
+            print(f"    {r['idea_summary'][:140]}")
+            print(f"    {r['created_at']}")
         return 0
-    print(f"=== {len(rows)} finding(s) ===")
-    for r in rows:
-        print(f"\n  [{r['severity'].upper()}] {r['finding_id']}  "
-              f"({r['verdict']}, {r['zone_id']}, {r['failure_class']})")
-        print(f"    {r['idea_summary'][:140]}")
-        print(f"    {r['created_at']}")
-    db.close()
-    return 0
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +191,10 @@ def _cmd_probe(args: argparse.Namespace) -> int:
         ))
     else:
         inst = prov.connect_existing()
-    token = inst.metadata["gateway_token"]
+    token = inst.metadata.get("gateway_token")
+    if token is None:
+        print("  [warning: no gateway_token in victim metadata — "
+              "proceeding unauthenticated; the victim may reject requests]")
     print(f"connected to victim '{args.target}' @ {inst.chat_endpoint}")
 
     def _send(client: VictimClient, msg: str) -> None:
@@ -291,8 +298,6 @@ def _cmd_demo_profile(args: argparse.Namespace) -> int:
     `run --cycles 1 --target X --mock` does, then prints the resulting
     findings so the demo is self-contained.
     """
-    import os
-
     from demo.victims.registry import PROFILES
 
     if args.profile not in PROFILES:

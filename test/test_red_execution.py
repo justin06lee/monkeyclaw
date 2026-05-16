@@ -161,7 +161,10 @@ def test_execution_respects_give_up_sentinel(tmp_path: Path):
     llm = MockLLM()
     llm.queue(GIVE_UP_SENTINEL)
 
-    agent = ExecutionAgent(llm, ExecutionConfig(max_turns=10))
+    # `min_turns_before_giveup=0` so the give-up sentinel is honoured
+    # immediately — the default (8) deliberately forces a deeper dive first.
+    agent = ExecutionAgent(
+        llm, ExecutionConfig(max_turns=10, min_turns_before_giveup=0))
     h = _harness(tmp_path, watched=[str(tmp_path)], allowed=[str(allowed)])
     with h:
         agent.execute(_idea("SBX-IPC", "approach", "criteria"),

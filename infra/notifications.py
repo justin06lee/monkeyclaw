@@ -37,6 +37,17 @@ class AlertDispatcher:
     def close(self) -> None:
         self._client.close()
 
+    def __enter__(self) -> AlertDispatcher:
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def _scrub(self, text: str) -> str:
+        """Redact the Telegram bot token from any string before logging."""
+        tok = self.cfg.telegram_bot_token
+        return text.replace(tok, "***") if tok else text
+
     # ------------------------------------------------------------------
     def send(self, message: str, severity: str) -> None:
         if not severity_at_least(severity, self.cfg.alert_severity_floor):
@@ -49,7 +60,10 @@ class AlertDispatcher:
                 self._send_telegram(prefixed)
                 ok_count += 1
             except Exception as e:  # noqa: BLE001
-                LOG.warning("telegram delivery failed: %s", e)
+                # The bot token is embedded in the Telegram request URL, so it
+                # appears inside any httpx exception. Scrub it before logging.
+                LOG.warning("telegram delivery failed: %s",
+                            self._scrub(str(e)))
         for url in self.cfg.webhook_urls:
             try:
                 self._send_webhook(url, message, severity)

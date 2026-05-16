@@ -97,9 +97,15 @@ class TelegramVictimSession:
             ) from e
         # Baseline: ignore any history already in the chat. Only messages that
         # arrive *after* this point count as the agent's replies.
-        recent = client.get_messages(self._entity, limit=1)
+        try:
+            recent = client.get_messages(self._entity, limit=1)
+            me = client.get_me()
+        except Exception as e:  # noqa: BLE001 - any Telethon error is transport
+            self.close()
+            raise TelegramVictimError(
+                f"failed to baseline Telegram session: {e}"
+            ) from e
         self._last_seen_id = recent[0].id if recent else 0
-        me = client.get_me()
         LOG.info("telegram attacker @%s connected; target=@%s",
                  getattr(me, "username", "?"), self.bot_username)
 
@@ -112,17 +118,18 @@ class TelegramVictimSession:
         """
         if self._client is None or self._entity is None:
             raise TelegramVictimError("not connected — call connect() first.")
-        sent = self._client.send_message(self._entity, text)
+        try:
+            sent = self._client.send_message(self._entity, text)
+        except Exception as e:  # noqa: BLE001 - any Telethon error is transport
+            raise TelegramVictimError(
+                f"failed to send message to @{self.bot_username}: {e}"
+            ) from e
         LOG.debug("telegram> sent msg %s to @%s", sent.id, self.bot_username)
 
         deadline = time.time() + self.response_timeout_s
         while time.time() < deadline:
             time.sleep(self.poll_interval_s)
-            # Incoming messages newer than everything we've already consumed.
-            msgs = self._client.get_messages(
-                self._entity, limit=10, min_id=self._last_seen_id)
-            replies = [m for m in reversed(msgs)
-                       if not m.out and m.id > self._last_seen_id and m.message]
+            replies = self._drain_replies()
             if replies:
                 self._last_seen_id = max(m.id for m in replies)
                 # The agent may answer in several bubbles — join them.
@@ -131,6 +138,41 @@ class TelegramVictimSession:
             f"victim bot @{self.bot_username} did not reply within "
             f"{self.response_timeout_s:.0f}s"
         )
+
+    # ------------------------------------------------------------------
+    # Per-poll page size. The agent can answer in many bubbles; one
+    # `get_messages` page may not cover them all, so `_drain_replies` keeps
+    # paging until no message newer than `_last_seen_id` remains.
+    _PAGE_SIZE = 50
+
+    def _drain_replies(self) -> list:
+        """Collect every incoming message newer than `_last_seen_id`.
+
+        Pages through history so a burst of >page-size agent bubbles in a
+        single poll interval is not silently truncated. Returned oldest-first.
+        """
+        assert self._client is not None and self._entity is not None
+        collected: list = []
+        max_id = 0  # 0 == no upper bound (newest page)
+        while True:
+            try:
+                # `max_id` excludes ids >= max_id, so each loop walks older.
+                page = self._client.get_messages(
+                    self._entity, limit=self._PAGE_SIZE,
+                    min_id=self._last_seen_id,
+                    max_id=max_id)
+            except Exception as e:  # noqa: BLE001 - any Telethon error is transport
+                raise TelegramVictimError(
+                    f"failed to fetch replies from @{self.bot_username}: {e}"
+                ) from e
+            fresh = [m for m in page
+                     if not m.out and m.id > self._last_seen_id and m.message]
+            collected.extend(fresh)
+            if len(page) < self._PAGE_SIZE:
+                break  # last page reached
+            max_id = min(m.id for m in page)
+        collected.sort(key=lambda m: m.id)
+        return collected
 
     # ------------------------------------------------------------------
     def close(self) -> None:

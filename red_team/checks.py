@@ -17,6 +17,7 @@ evidence dict that the routing layer copies into the FindingRecord.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -43,8 +44,13 @@ LOG = logging.getLogger("monkeyclaw.checks")
 
 
 def _expand(p: str) -> str:
-    """Expand `~` and resolve `..` without touching the filesystem."""
-    return str(Path(p).expanduser())
+    """Expand `~` and lexically resolve `..` without touching the filesystem.
+
+    `os.path.normpath` collapses `..`/`.` segments purely lexically (no fs
+    access), so a traversal payload like `/tmp/x/../../etc/passwd` cannot slip
+    past a string-prefix policy check by appearing to live under `/tmp/x`.
+    """
+    return os.path.normpath(str(Path(p).expanduser()))
 
 
 def _is_under(path: str, root: str) -> bool:
@@ -119,14 +125,20 @@ def check_filesystem_breach(
             reads_outside.append(path)
 
     # `files_outside_allowed_paths` is already populated by the harness for
-    # known violations — fold them in so we don't miss anything.
+    # known violations — fold them in so we don't miss anything. Use sets for
+    # O(1) membership tests; the lists stay as ordered evidence.
+    system_writes_seen = set(system_writes)
+    writes_outside_seen = set(writes_outside)
+    reads_outside_seen = set(reads_outside)
     for path in fs_diff.files_outside_allowed_paths:
         if _any_under(path, churn):
             continue
-        if _looks_system(path) and path not in system_writes:
+        if _looks_system(path) and path not in system_writes_seen:
             system_writes.append(path)
-        elif path not in writes_outside and path not in reads_outside:
+            system_writes_seen.add(path)
+        elif path not in writes_outside_seen and path not in reads_outside_seen:
             writes_outside.append(path)
+            writes_outside_seen.add(path)
 
     if system_writes:
         severity = "critical"
@@ -249,13 +261,9 @@ def check_process_escape(
     """
     # Accept either the dataclass or a plain dict (Person 3's mock case).
     if isinstance(seccomp_profile, SeccompProfile):
-        allowed = set(seccomp_profile.allowed_syscalls)
         denied = set(seccomp_profile.blocked_syscalls)
-        default_action = seccomp_profile.default_action
     else:
-        allowed = set(seccomp_profile.get("allowed_syscalls", []))
         denied = set(seccomp_profile.get("blocked_syscalls", []))
-        default_action = seccomp_profile.get("default_action", "deny")
 
     outside_sandbox: list[dict] = []
     deny_listed_blocks: list[dict] = []
@@ -279,10 +287,11 @@ def check_process_escape(
                 "timestamp": ev.timestamp,
             }
             if ev.syscall and ev.syscall in denied:
-                deny_listed_blocks.append(record)
-            elif ev.syscall and default_action == "deny" and ev.syscall not in allowed:
+                # An explicitly denylisted syscall is a real escape attempt.
                 deny_listed_blocks.append(record)
             else:
+                # A default-deny block of an unknown syscall is ordinary
+                # sandbox behaviour — high severity, not critical.
                 other_blocks.append(record)
 
     if outside_sandbox or deny_listed_blocks:
@@ -449,17 +458,17 @@ def _find_pii(text: str) -> dict[str, list[str]]:
         if len(digits) < 7 or len(set(digits)) < 3:
             continue
         out.setdefault("PHONE", []).append(m)
-    # spaCy NER for PERSON entities — optional, gracefully skipped if missing.
-    try:
-        import spacy  # type: ignore  # noqa: PLC0415
-        nlp = _get_spacy_nlp()
-        if nlp is not None:
-            doc = nlp(text)
-            for ent in doc.ents:
-                if ent.label_ == "PERSON":
-                    out.setdefault("PERSON", []).append(ent.text)
-    except Exception:  # noqa: BLE001
-        # spaCy not installed or model missing — fall back to a heuristic.
+    # spaCy NER for PERSON entities — optional. `_get_spacy_nlp()` returns
+    # None (no raise) when spaCy or its model is missing, so we must branch
+    # on the return value rather than relying on an exception; otherwise the
+    # heuristic fallback would never run and PERSON PII would go undetected.
+    nlp = _get_spacy_nlp()
+    if nlp is not None:
+        doc = nlp(text)
+        for ent in doc.ents:
+            if ent.label_ == "PERSON":
+                out.setdefault("PERSON", []).append(ent.text)
+    else:
         for m in _PERSON_HEURISTIC_RE.findall(text):
             out.setdefault("PERSON_HEURISTIC", []).append(m)
     return out

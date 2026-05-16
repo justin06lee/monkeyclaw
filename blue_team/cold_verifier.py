@@ -24,7 +24,6 @@ Implementation notes:
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -287,13 +286,12 @@ class ColdVerifier:
                 if _UNCLEAR in text:
                     ambiguity_reason = _extract_unclear_reason(text)
                     break
-                # Convert the agent output into a single message to send.
-                msg = text
+                # The agent output is the single message to send.
                 transcript.append(Message(
-                    role="attacker", content=msg, timestamp=now_iso(),
+                    role="attacker", content=text, timestamp=now_iso(),
                 ))
                 try:
-                    reply, side = client.send(msg)
+                    reply, side = client.send(text)
                 except VictimError as e:
                     transcript.append(Message(
                         role="victim",

@@ -377,7 +377,10 @@ class PatchCandidate:
     diff: str
     explanation: str
     side_effects: str
-    status: str  # "proposed" | "testing" | "approved" | "rejected"
+    # Lifecycle of a patch candidate. Code writes "proposed" (on generation),
+    # then "verified" / "approved" / "rejected" after verification; "testing"
+    # is the in-flight state. Mirrors schema.sql patches.status.
+    status: str  # "proposed" | "testing" | "approved" | "rejected" | "verified"
     # --- spec C5 candidate metadata (additive, optional) ---------------
     # `expected_tests`: human-readable test scenarios this patch should
     # satisfy. `confidence`: generator's self-rated confidence in [0, 1].
