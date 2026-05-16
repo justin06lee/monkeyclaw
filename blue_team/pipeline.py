@@ -43,6 +43,7 @@ import logging
 from dataclasses import asdict
 
 from infra.bootstrap import Runtime
+from infra.patch_builds_store import PatchBuildsStore
 from interfaces.config_schema import MonkeyClawConfig
 from interfaces.llm import LLMClient
 from interfaces.mcp_tools import MonkeyClawMCP
@@ -72,6 +73,14 @@ from blue_team.cold_verifier import (
     FailureDiagnostic,
 )
 from blue_team.patch_generator import PatchGenerator, PatchGeneratorConfig
+from blue_team.patch_isolation import (
+    PatchIsolation,
+    build_patched_replay_factory,
+    sweep_orphaned_worktrees,
+)
+from blue_team.patch_isolation import (
+    PatchIsolationConfig as PatchIsolationRuntimeConfig,
+)
 from blue_team.patch_verifier import (
     PatchVerifier,
     PatchVerifierConfig,
@@ -154,6 +163,28 @@ class Pipeline:
         self.policy = policy or policy_from_config(self.cfg)
         self.alert_severity_floor = alert_severity_floor
 
+        # ---- Patch isolation (real disposable-worktree verification) ----
+        pi_cfg = self.cfg.blue_team.patch_isolation
+        self.patch_isolation: PatchIsolation | None = None
+        if pi_cfg.enabled and pi_cfg.nemoclaw_repo_path:
+            mcp_db = (getattr(self.mcp, "db", None)
+                      or getattr(self.mcp, "_db", None))
+            store = PatchBuildsStore(mcp_db) if mcp_db is not None else None
+            self.patch_isolation = PatchIsolation(
+                provisioner=self.provisioner, store=store,
+                cfg=PatchIsolationRuntimeConfig(
+                    nemoclaw_repo_path=pi_cfg.nemoclaw_repo_path,
+                    base_ref=pi_cfg.base_ref,
+                    build_timeout_s=pi_cfg.build_timeout_s,
+                    worktree_root=pi_cfg.worktree_root))
+            # Janitor sweep — reclaim worktrees leaked by a prior crash.
+            sweep_orphaned_worktrees(pi_cfg.worktree_root, store)
+        else:
+            LOG.warning(
+                "patch isolation disabled (enabled=%s, repo=%s) — patch "
+                "verification runs on the mock surface (isolation_mode=mock)",
+                pi_cfg.enabled, pi_cfg.nemoclaw_repo_path)
+
         # ---- Component wiring (every component injectable for tests) ----
         self.repro_writer = repro_writer or ReproWriter()
         self.replay_minimizer = replay_minimizer or ReplayMinimizer(
@@ -207,6 +238,10 @@ class Pipeline:
             mcp=self.mcp, provisioner=self.provisioner,
             cfg=PatchVerifierConfig.from_blue_team_cfg(self.cfg.blue_team),
             policy=self.policy,
+            isolation=self.patch_isolation,
+            patched_replay_factory=(
+                build_patched_replay_factory(self.patch_isolation)
+                if self.patch_isolation is not None else None),
         )
         self.regression_runner = regression_runner or RegressionRunner(
             mcp=self.mcp, provisioner=self.provisioner, policy=self.policy,
