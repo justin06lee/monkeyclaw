@@ -117,3 +117,14 @@ def test_prepare_apply_failed_yields_apply_failed_status(tmp_path, db):
     with iso.prepare(patch) as build:
         assert build.build_status == "apply_failed"
         assert build.diff_result.applied is False
+
+
+def test_make_victim_replay_fn_binds_to_an_instance():
+    from blue_team.replay_minimizer import make_victim_replay_fn
+    from interfaces.provisioning import VictimInstance
+
+    inst = VictimInstance(
+        instance_id="VICT-1", chat_endpoint="mock://chat/VICT-1",
+        shell_endpoint=None, status="running", sandbox_id="VICT-1")
+    replay = make_victim_replay_fn(inst)
+    assert callable(replay)

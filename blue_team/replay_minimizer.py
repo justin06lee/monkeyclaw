@@ -278,6 +278,22 @@ def make_mock_replay_fn(
     return _fn
 
 
+def make_victim_replay_fn(victim: VictimInstance) -> ReplayFn:
+    """A ReplayFn that replays a transcript against a SPECIFIC already-built
+    victim instance — the patched victim built by PatchIsolation. The bound
+    `victim` argument overrides whatever instance the caller passes, so every
+    gate of one candidate replays against the same patched build."""
+
+    mock_fn = make_mock_replay_fn()
+
+    def replay(messages: list[Message], _instance: VictimInstance
+               ) -> LaneResult:
+        # Ignore the caller's instance; always use the bound patched victim.
+        return mock_fn(messages, victim)
+
+    return replay
+
+
 # ---------------------------------------------------------------------------
 # ReplayMinimizer
 # ---------------------------------------------------------------------------
@@ -654,4 +670,5 @@ __all__ = [
     "SEMANTIC_ZONES",
     "default_judge",
     "make_mock_replay_fn",
+    "make_victim_replay_fn",
 ]
