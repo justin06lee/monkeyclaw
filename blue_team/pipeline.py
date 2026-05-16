@@ -214,7 +214,15 @@ class Pipeline:
         if minimize.downgraded_to_suspicious:
             LOG.info("finding %s downgraded to suspicious — parked, no doc",
                       finding.finding_id)
-            # No repro_package is pushed — the queue side simply drops it.
+            # The queue row is in 'processing' (it was claimed) — explicitly
+            # fail it so the stale-claim sweep does not later requeue it and
+            # so the dashboard shows it needs review. Closes a real leak.
+            try:
+                self.mcp.mark_repro_queue_status(
+                    finding.finding_id, "failed",
+                    worker_id="repro_pipeline")
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("failed to mark queue row failed: %s", e)
             return
 
         # 2. Root cause (severity-gated inside the locator)
@@ -326,6 +334,14 @@ class Pipeline:
                           task.task_id, attempts_used)
             return None
 
+        # Advance the package lifecycle: queued -> triaged -> patching.
+        pkg_id = task.primary_package.package_id
+        try:
+            self.mcp.mark_repro_package_status(pkg_id, "triaged")
+            self.mcp.mark_repro_package_status(pkg_id, "patching")
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("package %s lifecycle advance failed: %s", pkg_id, e)
+
         candidates = self.patch_generator.generate_for_task(task)
         if not candidates:
             LOG.info("task %s: no patch candidates produced", task.task_id)
@@ -388,6 +404,20 @@ class Pipeline:
             task.vuln_ids, outcome.notes,
         )
 
+        # 4. Close the lifecycle loop: package patching->verified, and each
+        #    linked finding in_progress->patched->verified.
+        pkg = task.primary_package
+        try:
+            self.mcp.mark_repro_package_status(pkg.package_id, "verified")
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("mark package %s verified failed: %s",
+                        pkg.package_id, e)
+        try:
+            self.mcp.mark_finding_patched(pkg.finding_id)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("finding %s verify transition failed: %s",
+                        pkg.finding_id, e)
+
     def _reset_zone_coverage(self, zone_id: str) -> None:
         """Snap the zone's coverage score to 0.3.
 
@@ -406,12 +436,17 @@ class Pipeline:
         self.mcp.update_zone_coverage(zone_id, 0.3)
 
     def _on_task_exhausted(self, task: FixTask) -> None:
+        pkg_id = task.primary_package.package_id
         msg = (
             f"[PATCH STUCK / {task.severity}] task={task.task_id} "
             f"vulns={','.join(task.vuln_ids)} — all candidate patches "
             f"failed verification. Manual review required."
         )
         LOG.warning(msg)
+        try:
+            self.mcp.mark_repro_package_status(pkg_id, "stuck")
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("mark package %s stuck failed: %s", pkg_id, e)
         try:
             self.mcp.send_alert(msg, severity=task.severity)
         except Exception as e:  # noqa: BLE001

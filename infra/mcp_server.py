@@ -624,6 +624,18 @@ class MCPServer(MonkeyClawMCP):
                     (json.dumps(verification_results), patch_id),
                 )
 
+    def mark_finding_patched(self, finding_id: str) -> None:
+        """Advance a finding through patched then verified after its patch is
+        approved. in_progress -> patched -> verified, both edges audited."""
+        self.transitions.transition(
+            entity="finding", entity_id=finding_id, to_state="patched",
+            actor="blue_pipeline", reason="patch approved",
+        )
+        self.transitions.transition(
+            entity="finding", entity_id=finding_id, to_state="verified",
+            actor="blue_pipeline", reason="patch approved",
+        )
+
     # ------------------------------------------------------------------
     # MAP-Elites archive
     # ------------------------------------------------------------------

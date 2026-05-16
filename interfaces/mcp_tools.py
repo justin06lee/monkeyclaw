@@ -220,6 +220,10 @@ class MonkeyClawMCP(Protocol):
         """Transition a patch's status and optionally store verification results."""
         ...
 
+    def mark_finding_patched(self, finding_id: str) -> None:
+        """Advance a finding in_progress->patched->verified after approval."""
+        ...
+
     # ------------------------------------------------------------------
     # MAP-Elites archive
     # ------------------------------------------------------------------

@@ -569,6 +569,13 @@ class MockMCP(MonkeyClawMCP):
                 self._patch_statuses[patch_id]["verification_results"] = verification_results
         self._log("mark_patch_status", {"patch_id": patch_id, "status": status})
 
+    def mark_finding_patched(self, finding_id: str) -> None:
+        """Advance a finding in_progress->patched->verified after approval.
+
+        Mock mode never enforces the FSM — it records the call.
+        """
+        self._log("mark_finding_patched", {"finding_id": finding_id})
+
     # ------------------------------------------------------------------
     # MAP-Elites archive
     # ------------------------------------------------------------------
