@@ -25,15 +25,15 @@ class IdeationConfig(BaseModel):
 
 
 class LaneConfig(BaseModel):
-    pool_size: int = 4
+    # One lane per synthesized attack chain — the strategist produces
+    # `pool_size` chains per cycle and each gets its own deep-dive agent.
+    pool_size: int = 5
     lane_timeout_seconds: int = 1800
     max_turns: int = 50
     psutil_interval_seconds: float = 0.5
-    # Multi-strategy execution: per lane the attacker works through several
-    # candidate strategies (drawn from the cycle's generated ideas) against
-    # one victim, in one continuing conversation — pivoting and chaining.
-    strategies_per_lane: int = 5
-    turns_per_strategy: int = 3
+    # Deep-dive execution: the lane's agent fully commits to its chain and
+    # may not emit the give-up sentinel before this many real attacker turns.
+    min_turns_before_giveup: int = 8
 
 
 class JudgmentConfig(BaseModel):

@@ -13,10 +13,12 @@ ideation:
   retry_max: 3
 
 lanes:
-  pool_size: 4
-  lane_timeout_seconds: 600
+  # One lane per synthesized attack chain — 5 chains, 5 deep-dive agents.
+  pool_size: 5
+  lane_timeout_seconds: 1200
   max_turns: 50
   psutil_interval_seconds: 0.5
+  min_turns_before_giveup: 8
 
 judgment:
   tier2_zones: [PROMPT-INJ, SOCIAL-ENG, MEM-STATE, MEM-SHARED]

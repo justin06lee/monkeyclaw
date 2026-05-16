@@ -8,8 +8,9 @@ Conforms to `infra.orchestrator.RedTeamPipeline` Protocol:
         def judge(self, lane_result: LaneResult) -> None
 
 Wires:
-- IdeationEngine (3 prompt modes) → DedupOutcome[] → PrioritizedIdea[]
-- ExecutionAgent runs inside each lane
+- IdeationEngine (3 prompt modes) → DedupOutcome[] → scored ideas
+- Strategist synthesizes the scored ideas into N deep-dive attack chains
+- ExecutionAgent deep-dives one chain inside each lane
 - Judge (Tier 1 + Tier 2) → routing
 
 Usage from the orchestrator CLI:
@@ -35,6 +36,7 @@ from interfaces.provisioning import VictimInstance
 from interfaces.types import (
     CoverageGap,
     CycleSummaryInput,
+    IdeaInput,
     IdeaObject,
     LaneResult,
     PolicyConfig,
@@ -44,8 +46,9 @@ from red_team.dedup import deduplicate_and_log
 from red_team.execution_agent import ExecutionAgent, ExecutionConfig
 from red_team.ideation import IdeationConfig, IdeationEngine
 from red_team.judge import Judge, JudgeConfig
-from red_team.priority import select_top_n
+from red_team.priority import score_ideas
 from red_team.routing import route_judgment
+from red_team.strategist import Strategist
 
 LOG = logging.getLogger("monkeyclaw.red.pipeline")
 
@@ -111,8 +114,7 @@ class Pipeline:
         )
         execution_cfg = execution_cfg or ExecutionConfig(
             max_turns=self.cfg.lanes.max_turns,
-            strategies_per_lane=self.cfg.lanes.strategies_per_lane,
-            turns_per_strategy=self.cfg.lanes.turns_per_strategy,
+            min_turns_before_giveup=self.cfg.lanes.min_turns_before_giveup,
             temperature=0.7,
         )
         judge_cfg = judge_cfg or JudgeConfig(
@@ -120,15 +122,14 @@ class Pipeline:
             tier2_confidence_threshold=self.cfg.judgment.tier2_confidence_threshold,
         )
         self.ideation = IdeationEngine(self.llm, self.mcp, ideation_cfg)
+        self.strategist = Strategist(self.llm)
         self.execution = ExecutionAgent(self.llm, execution_cfg)
         self.judger = Judge(self.llm, self.policy, judge_cfg)
         self.alert_severity_floor = alert_severity_floor
 
-        # idea_id → IdeaObject so judge() can look up the source.
+        # idea_id → IdeaObject (the synthesized chain) so judge() can look up
+        # the source of a lane result.
         self._idea_book: dict[str, IdeaObject] = {}
-        # zone_id → all generated ideas for it this cycle; the execution
-        # agent works through several of these per lane (multi-strategy).
-        self._strategy_pool: dict[str, list[IdeaObject]] = {}
         self._book_lock = threading.Lock()
 
         # Cycle accounting for log_cycle_summary on the next generate_ideas
@@ -140,7 +141,8 @@ class Pipeline:
     # generate_ideas
     # ------------------------------------------------------------------
     def generate_ideas(self, cycle_id: int, n_lanes: int) -> list[IdeaObject]:
-        """Run all 3 modes on the top-priority zone(s), dedup, score, take top-N."""
+        """Run all 3 modes on the top-priority zone(s), dedup, score, then have
+        the strategist synthesize the batch into `n_lanes` deep-dive chains."""
         gaps = self.mcp.get_coverage_gaps(top_n=max(3, n_lanes))
         if not gaps:
             LOG.warning("no coverage gaps returned; cannot generate ideas")
@@ -196,22 +198,52 @@ class Pipeline:
             ideas_deduped += sum(1 for o in extra_outcomes if not o.keep)
             outcomes.extend(extra_outcomes)
 
-        prioritized = select_top_n(outcomes, zones_by_id, n_lanes)
-        chosen = [p.idea for p in prioritized]
+        # Score every kept idea, then hand the whole batch to the strategist.
+        # It synthesizes the raw ideas into `n_lanes` distinct deep-dive
+        # attack chains — one chain per lane.
+        prioritized = score_ideas(outcomes, zones_by_id)
+        kept_ideas = [p.idea for p in prioritized]
+        if not kept_ideas:
+            return []
 
-        # Strategy pool — every kept idea grouped by zone. Each lane's
-        # attacker works through several of these (multi-strategy attacks),
-        # so the whole generated batch gets used, not just the top-N.
-        pool: dict[str, list[IdeaObject]] = {}
-        for o in outcomes:
-            if o.keep:
-                pool.setdefault(o.idea.zone_id, []).append(o.idea)
+        chains = self.strategist.synthesize(
+            kept_ideas, zones_by_id, cycle_id, n_lanes)
 
-        # Remember each idea for judge()
+        # Fallback — if the strategist under-delivered, pad with the
+        # highest-priority raw ideas so every lane still gets a target.
+        if len(chains) < n_lanes:
+            have = {id(c) for c in chains}
+            for idea in kept_ideas:
+                if len(chains) >= n_lanes:
+                    break
+                if id(idea) not in have:
+                    chains.append(idea)
+        chains = chains[:n_lanes]
+
+        # Persist freshly-synthesized chains so they get a real idea_id and
+        # appear on the dashboard. Raw-idea fallbacks were already logged
+        # during dedup, so only the `CHAIN-LOCAL-` ones need logging.
+        for ch in chains:
+            if ch.idea_id.startswith("CHAIN-LOCAL-"):
+                ch.idea_id = self.mcp.log_idea(IdeaInput(
+                    cycle_id=ch.cycle_id,
+                    zone_id=ch.zone_id,
+                    source_mode=ch.source_mode,
+                    title=ch.title,
+                    approach=ch.approach,
+                    success_criteria=ch.success_criteria,
+                    estimated_turns=ch.estimated_turns,
+                    novelty_notes=ch.novelty_notes,
+                    priority_score=ch.priority_score,
+                    deduplicated=False,
+                    builds_on=ch.builds_on,
+                    variation_notes=ch.variation_notes,
+                ))
+
+        # Remember each chain for judge().
         with self._book_lock:
-            for i in chosen:
-                self._idea_book[i.idea_id] = i
-            self._strategy_pool = pool
+            for ch in chains:
+                self._idea_book[ch.idea_id] = ch
 
         self._last_cycle_metrics = {
             "cycle_id": cycle_id,
@@ -221,12 +253,11 @@ class Pipeline:
         }
 
         LOG.info(
-            "cycle %d: generated=%d deduped=%d chosen=%d "
-            "zones=%s",
-            cycle_id, ideas_generated, ideas_deduped, len(chosen),
-            list(set(zones_targeted))[:5],
+            "cycle %d: generated=%d deduped=%d kept=%d chains=%d zones=%s",
+            cycle_id, ideas_generated, ideas_deduped, len(kept_ideas),
+            len(chains), list(set(zones_targeted))[:5],
         )
-        return chosen
+        return chains
 
     # ------------------------------------------------------------------
     # execute_lane
@@ -238,12 +269,8 @@ class Pipeline:
         harness: MonitoringHarness,
         lane_cfg: LaneConfig,
     ) -> None:
-        # Hand the attacker the other generated ideas for this zone as a
-        # strategy pool — it works through several, pivoting and chaining.
-        with self._book_lock:
-            pool = list(self._strategy_pool.get(idea.zone_id, []))
-        self.execution.execute(idea, victim, harness, lane_cfg,
-                               strategy_pool=pool)
+        # One lane, one chain, one dedicated agent that deep-dives it.
+        self.execution.execute(idea, victim, harness, lane_cfg)
 
     # ------------------------------------------------------------------
     # judge

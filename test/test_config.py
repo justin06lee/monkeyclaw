@@ -16,7 +16,8 @@ def test_env_overrides(monkeypatch):
 
 def test_defaults_load():
     cfg = load_config()
-    # Spec defaults from §14.1
-    assert cfg.lanes.lane_timeout_seconds == 600
+    # Deep-dive lanes run one synthesized attack chain to depth, so the
+    # per-lane timeout is widened past the spec §14.1 default of 600s.
+    assert cfg.lanes.lane_timeout_seconds == 1200
     assert cfg.nemoclaw.repo_path
     assert "PROMPT-INJ" in cfg.judgment.tier2_zones
