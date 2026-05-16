@@ -458,6 +458,32 @@ def render_technique_coverage(mcp) -> str:
     )
 
 
+def render_patch_hardening(mcp, patch_id: str) -> str:  # noqa: ANN001
+    """The patch panel's gate-hardening breakdown — the gate1b variant
+    pass/fail matrix and the gate_detection quadrant (verifier-hardening §9)."""
+    variants = mcp.get_patch_variant_results(patch_id)
+    detections = mcp.get_patch_detection_results(patch_id)
+    vrows = "".join(
+        f"<tr><td>{v['operator']}</td>"
+        f"<td>{'BLOCKED' if v['blocked'] else 'LEAKED'}</td>"
+        f"<td>{v['judge_verdict']}</td></tr>"
+        for v in variants) or "<tr><td colspan=3>no variants</td></tr>"
+    drows = "".join(
+        f"<tr><td>{d['zone_id']}</td><td>{d['quadrant']}</td>"
+        f"<td>{d['observability']}</td>"
+        f"<td>{'pass' if d['passed'] else 'fail'}</td></tr>"
+        for d in detections) or "<tr><td colspan=4>not scored</td></tr>"
+    return (
+        "<section><h3>Gate 1b — Mutation Robustness</h3>"
+        "<table><thead><tr><th>Operator</th><th>Result</th>"
+        "<th>Verdict</th></tr></thead><tbody>" + vrows + "</tbody></table>"
+        "<h3>Gate 7 — Detection</h3>"
+        "<table><thead><tr><th>Zone</th><th>Quadrant</th>"
+        "<th>Observability</th><th>Gate</th></tr></thead><tbody>"
+        + drows + "</tbody></table></section>"
+    )
+
+
 def _render_executed_path_html(rows: list) -> str:  # noqa: ANN001
     """Build the executed-path HTML fragment from executed_paths rows."""
     if not rows:

@@ -203,3 +203,23 @@ def test_technique_coverage_view_renders(server):
     assert "Technique Coverage" in html
     assert "PROMPT-INJ" in html
     assert "AML.T0051" in html
+
+
+def test_patch_hardening_panel_renders(server):
+    from infra.dashboard import render_patch_hardening
+    from interfaces.types import VariantResult
+
+    server.log_patch_variant_results("P1", "MC-2026-0001", [
+        VariantResult(operator="paraphrase", variant_hash="h1",
+                      blocked=True, judge_verdict="blocked"),
+        VariantResult(operator="add_benign_framing", variant_hash="h2",
+                      blocked=False, judge_verdict="confirmed"),
+    ])
+    server.log_patch_detection_result(
+        patch_id="P1", vuln_id="MC-2026-0001", zone_id="SBX-FS",
+        quadrant="PASS", observability="observed", prevention="blocked",
+        passed=True, evidence="{}")
+    html = render_patch_hardening(server, "P1")
+    assert "paraphrase" in html
+    assert "add_benign_framing" in html
+    assert "PASS" in html
