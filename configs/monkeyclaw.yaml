@@ -87,6 +87,12 @@ blue_team:
   mutation_max_variants: 8
   detection_gate_enabled: true
   detection_strictness: observed_only
+  patch_isolation:
+    enabled: false
+    nemoclaw_repo_path: null
+    base_ref: "HEAD"
+    build_timeout_s: 900
+    worktree_root: "/tmp"
 
 orchestrator:
   red_team_batch_size: 50

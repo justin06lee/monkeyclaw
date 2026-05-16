@@ -8,7 +8,10 @@ be coordinated via the daily sync (see .agents/timeline.md).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from interfaces.provisioning import VictimInstance
 
 # ---------------------------------------------------------------------------
 # String literal types — narrow but kept as `str` in fields for SQL friendliness.
@@ -57,6 +60,8 @@ SandboxMode = Literal["ephemeral", "recover_only", "mock"]
 TechniqueKind = Literal["atlas", "owasp"]
 ResolvedBy = Literal["model", "keyword"]
 ChainTermination = Literal["completed", "chain_broken", "max_turns", "error"]
+IsolationMode = Literal["live", "mock"]
+PatchBuildStatus = Literal["built", "apply_failed", "build_failed", "mock"]
 
 HarmStage = Literal[
     "HARD_REFUSAL",
@@ -1305,6 +1310,37 @@ class VariantResult:
     judge_verdict: str
 
 
+# ---------------------------------------------------------------------------
+# Real patch isolation — disposable-worktree verification (patch-isolation §7)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DiffApplyResult:
+    """The result of a `git apply --check` (and optionally `git apply`) of a
+    candidate diff inside a disposable worktree."""
+
+    applied: bool = False
+    checked: bool = False
+    rejected_hunks: list[str] = field(default_factory=list)
+    stderr: str = ""
+
+
+@dataclass
+class PatchBuild:
+    """One attempted isolation build for one candidate patch. `victim` is the
+    rebuilt patched VictimInstance on the live path, None on the mock path."""
+
+    build_id: str
+    patch_id: str
+    worktree_path: str | None
+    victim: VictimInstance | None
+    diff_result: DiffApplyResult
+    isolation_mode: str  # IsolationMode
+    build_status: str  # PatchBuildStatus
+    build_duration_seconds: float = 0.0
+
+
 __all__ = [
     "AgentPolicy",
     "AttackChain",
@@ -1336,6 +1372,7 @@ __all__ = [
     "DetectionRuleInput",
     "DetectionRuleStatus",
     "DetectionVerdict",
+    "DiffApplyResult",
     "DupResult",
     "EdgeKind",
     "ExecutedPath",
@@ -1352,6 +1389,7 @@ __all__ = [
     "IdeaInput",
     "IdeaObject",
     "InferenceEvent",
+    "IsolationMode",
     "JudgeRole",
     "JudgeVote",
     "JudgeVoteInput",
@@ -1370,6 +1408,8 @@ __all__ = [
     "Observability",
     "PairwiseIdeaSetResult",
     "PairwiseResult",
+    "PatchBuild",
+    "PatchBuildStatus",
     "PatchCandidate",
     "PatchCandidateInput",
     "PathNode",

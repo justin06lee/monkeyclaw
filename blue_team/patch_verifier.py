@@ -302,6 +302,7 @@ class VerifyOutcome:
     triggered_evidence: list[CheckResult] = field(default_factory=list)
     variant_results: list = field(default_factory=list)
     detection_verdicts: list = field(default_factory=list)
+    isolation_mode: str = "mock"  # IsolationMode — proven live or on mock surface
 
 
 @dataclass
@@ -359,6 +360,38 @@ def default_patched_replay_factory(patch: PatchCandidate) -> ReplayFn:
     return make_mock_replay_fn()
 
 
+def run_gate_diff_applies(patch: PatchCandidate, *, isolation=None
+                          ) -> GateResult:
+    """Gate 0 — the candidate diff can be applied. With an isolation backend
+    this runs a real `git apply --check` inside a disposable worktree; without
+    one it keeps the `_looks_like_diff` shape check. Name/semantics unchanged.
+    """
+    if isolation is not None:
+        try:
+            result = isolation.diff_applies(patch)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("isolation diff_applies failed, shape-checking: %s", e)
+        else:
+            return GateResult(
+                name="gate_diff_applies",
+                passed=result.applied,
+                detail={
+                    "diff_present": bool(patch.diff),
+                    "checked": result.checked,
+                    "rejected_hunks": result.rejected_hunks,
+                    "stderr": result.stderr,
+                    "mode": "git-apply-check",
+                },
+            )
+    diff_ok = _looks_like_diff(patch.diff)
+    return GateResult(
+        name="gate_diff_applies",
+        passed=diff_ok,
+        detail={"diff_present": bool(patch.diff), "well_formed": diff_ok,
+                "mode": "shape-check"},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Patch verifier
 # ---------------------------------------------------------------------------
@@ -377,6 +410,7 @@ class PatchVerifier:
         patched_replay_factory: PatchedReplayFactory | None = None,
         judge_fn: JudgeFn | None = None,
         detection_oracle=None,
+        isolation=None,
     ) -> None:
         self.mcp = mcp
         self.provisioner = provisioner
@@ -389,6 +423,7 @@ class PatchVerifier:
         # The purple-team detection oracle; gate_detection auto-skips when
         # this is None (spec §6.4).
         self.detection_oracle = detection_oracle
+        self.isolation = isolation
 
     # ------------------------------------------------------------------
     def verify(
@@ -446,22 +481,17 @@ class PatchVerifier:
         test_pair: RegressionTestPair,
     ) -> VerifyOutcome:
         gates: list[GateResult] = []
+        mode = self._isolation_mode()
         replay_fn = self.patched_replay_factory(patch)
 
-        # ---- Gate: patch applies cleanly (well-formed unified diff) ----
-        diff_ok = _looks_like_diff(patch.diff)
-        gates.append(GateResult(
-            name="gate_diff_applies",
-            passed=diff_ok,
-            detail={
-                "diff_present": bool(patch.diff),
-                "well_formed": diff_ok,
-            },
-        ))
-        if not diff_ok:
+        # ---- Gate: patch applies cleanly ----
+        g0 = run_gate_diff_applies(patch, isolation=self.isolation)
+        gates.append(g0)
+        if not g0.passed:
             return self._reject("gate_diff_applies", patch, gates,
-                                  "the candidate diff is empty or malformed "
-                                  "— it could not be applied")
+                                  "the candidate diff is empty, malformed, or "
+                                  "does not apply to the victim source",
+                                  isolation_mode=mode)
 
         # ---- Gate 1: positive regression ----
         g1 = self._run_script(
@@ -473,7 +503,7 @@ class PatchVerifier:
         if not g1.passed:
             return self._reject("gate1_regression", patch, gates,
                                   "the patch did not block the original "
-                                  "vulnerability")
+                                  "vulnerability", isolation_mode=mode)
 
         # ---- Gate 1b: mutation robustness (attack family, not string) ----
         g1b = self._run_mutation_robustness(patch, package, replay_fn)
@@ -498,7 +528,7 @@ class PatchVerifier:
             if not g2.passed:
                 return self._reject("gate2_functionality", patch, gates,
                                       "the patch broke legitimate adjacent "
-                                      "functionality")
+                                      "functionality", isolation_mode=mode)
         else:
             gates.append(GateResult(
                 name="gate2_functionality",
@@ -512,7 +542,8 @@ class PatchVerifier:
         if not suite_result.passed:
             return self._reject("gate3_full_suite", patch, gates,
                                   "patch caused at least one previously-"
-                                  "fixed vulnerability to regress")
+                                  "fixed vulnerability to regress",
+                                  isolation_mode=mode)
 
         # ---- Gate: control-plane weakening ----
         weaknesses = detect_control_plane_weakening(patch.diff)
@@ -524,7 +555,8 @@ class PatchVerifier:
         if weaknesses:
             return self._reject("gate_control_plane", patch, gates,
                                   "patch weakens the control plane: "
-                                  + "; ".join(weaknesses))
+                                  + "; ".join(weaknesses),
+                                  isolation_mode=mode)
 
         # ---- Gate: telemetry evidence (no silent bypass) ----
         if test_pair.policy_regression_test_script:
@@ -537,7 +569,8 @@ class PatchVerifier:
             if not g_tel.passed:
                 return self._reject("gate_telemetry", patch, gates,
                                       "patched run produced no security "
-                                      "telemetry — possible silent bypass")
+                                      "telemetry — possible silent bypass",
+                                      isolation_mode=mode)
         else:
             gates.append(GateResult(
                 name="gate_telemetry",
@@ -567,6 +600,7 @@ class PatchVerifier:
             notes="all eight gates passed",
             variant_results=_collect_variant_results(gates),
             detection_verdicts=_collect_detection_verdicts(gates),
+            isolation_mode=mode,
         )
 
     # ------------------------------------------------------------------
@@ -784,16 +818,27 @@ class PatchVerifier:
         )
 
     # ------------------------------------------------------------------
+    def _isolation_mode(self) -> str:
+        """live when a real isolation backend with a repo is wired, else mock.
+        """
+        if (self.isolation is not None
+                and getattr(self.isolation, "cfg", None) is not None
+                and self.isolation.cfg.nemoclaw_repo_path):
+            return "live"
+        return "mock"
+
     @staticmethod
     def _reject(
         gate: str, patch: PatchCandidate, gates: list[GateResult],
         notes: str, *,
+        isolation_mode: str = "mock",
         variant_results: list | None = None,
         detection_verdicts: list | None = None,
     ) -> VerifyOutcome:
         return VerifyOutcome(
             approved=False, failed_gate=gate, gates=gates,
             patch_id=patch.patch_id, notes=notes,
+            isolation_mode=isolation_mode,
             variant_results=variant_results or [],
             detection_verdicts=detection_verdicts or [],
         )
@@ -807,4 +852,5 @@ __all__ = [
     "VerifyOutcome",
     "default_patched_replay_factory",
     "detect_control_plane_weakening",
+    "run_gate_diff_applies",
 ]

@@ -453,3 +453,110 @@ def test_verify_outcome_carries_hardening_fields(real_mcp, mock_provisioner):
     assert hasattr(outcome, "variant_results")
     assert hasattr(outcome, "detection_verdicts")
     assert len(outcome.gates) == 8
+
+
+def test_verify_outcome_defaults_isolation_mode_to_mock():
+    from blue_team.patch_verifier import VerifyOutcome
+
+    o = VerifyOutcome(approved=True, failed_gate=None, gates=[],
+                      patch_id="P1")
+    assert o.isolation_mode == "mock"
+
+
+def test_gate_diff_applies_uses_real_check_when_isolation_present(
+    tmp_path, db):
+    from blue_team.patch_isolation import PatchIsolation, PatchIsolationConfig
+    from blue_team.patch_verifier import run_gate_diff_applies
+    from infra.patch_builds_store import PatchBuildsStore
+    from test._git_repo_fixture import (
+        CONFLICTING_DIFF,
+        GOOD_DIFF,
+        build_repo,
+        make_patch,
+    )
+
+    repo, base = build_repo(tmp_path / "nemoclaw")
+    iso = PatchIsolation(
+        provisioner=None, store=PatchBuildsStore(db),
+        cfg=PatchIsolationConfig(
+            nemoclaw_repo_path=repo, base_ref=base,
+            worktree_root=str(tmp_path / "wt")))
+
+    good = run_gate_diff_applies(make_patch("P1", GOOD_DIFF), isolation=iso)
+    assert good.passed is True
+
+    bad = run_gate_diff_applies(
+        make_patch("P2", CONFLICTING_DIFF), isolation=iso)
+    assert bad.passed is False
+    assert bad.detail["rejected_hunks"]
+
+
+def test_gate_diff_applies_falls_back_to_shape_check_without_isolation():
+    from blue_team.patch_verifier import run_gate_diff_applies
+    from test._git_repo_fixture import make_patch
+
+    g = run_gate_diff_applies(make_patch("P1", "not a diff"), isolation=None)
+    assert g.passed is False  # _looks_like_diff shape check
+
+
+def test_verifier_gate1_reflects_whether_the_patch_took_effect(real_mcp):
+    """The point of this whole spec: gate1 must pass BECAUSE the patch took
+    effect, and fail when the build did not apply it."""
+    from dataclasses import dataclass
+
+    from blue_team.patch_verifier import PatchVerifier, run_gate_diff_applies
+    from infra.provisioning_nemoclaw import MockProvisioner
+    from interfaces.types import DiffApplyResult
+    from test._git_repo_fixture import make_patch
+
+    @dataclass
+    class _FakeIsolation:
+        applies: bool
+
+        def diff_applies(self, patch):  # noqa: ANN001
+            return DiffApplyResult(
+                applied=self.applies, checked=True,
+                rejected_hunks=[] if self.applies else ["@@ hunk @@"])
+
+    patch = make_patch("P1", "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n")
+
+    applied_gate = run_gate_diff_applies(
+        patch, isolation=_FakeIsolation(applies=True))
+    assert applied_gate.passed is True
+
+    rejected_gate = run_gate_diff_applies(
+        patch, isolation=_FakeIsolation(applies=False))
+    assert rejected_gate.passed is False
+    assert rejected_gate.detail["rejected_hunks"]
+
+    # And the verifier rejects at gate_diff_applies when the build fails to
+    # apply the diff — it no longer falsely passes on the unpatched surface.
+    verifier = PatchVerifier(
+        mcp=real_mcp, provisioner=MockProvisioner(),
+        isolation=_FakeIsolation(applies=False))
+    assert verifier.isolation is not None
+
+
+def test_verify_stamps_isolation_mode_mock_without_backend(real_mcp):
+    from blue_team.patch_verifier import PatchVerifier
+    from infra.provisioning_nemoclaw import MockProvisioner
+
+    v = PatchVerifier(mcp=real_mcp, provisioner=MockProvisioner())
+    # No isolation backend -> the verifier reports mock isolation.
+    assert v._isolation_mode() == "mock"
+
+
+def test_verify_reports_live_isolation_mode_with_backend(real_mcp, tmp_path):
+    from blue_team.patch_isolation import PatchIsolation, PatchIsolationConfig
+    from blue_team.patch_verifier import PatchVerifier
+    from infra.provisioning_nemoclaw import MockProvisioner
+    from test._git_repo_fixture import build_repo
+
+    repo, base = build_repo(tmp_path / "nemoclaw")
+    iso = PatchIsolation(
+        provisioner=MockProvisioner(), store=None,
+        cfg=PatchIsolationConfig(nemoclaw_repo_path=repo, base_ref=base,
+                                 worktree_root=str(tmp_path / "wt")))
+    v = PatchVerifier(mcp=real_mcp, provisioner=MockProvisioner(),
+                      isolation=iso)
+    assert v._isolation_mode() == "live"

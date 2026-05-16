@@ -188,13 +188,27 @@ def _packages(db_path: str) -> list[dict[str, Any]]:
     )
 
 
+def patch_isolation_badge(mode: str | None) -> str:
+    """Render the isolation-mode badge for the patch panel — a reviewer sees
+    at a glance whether a verdict was proven against a real build or the mock
+    surface (patch-isolation spec §9)."""
+    return mode if mode in ("live", "mock") else "mock"
+
+
 def _patches(db_path: str) -> list[dict[str, Any]]:
-    """Blue-team patch candidates."""
-    return _query(
+    """Blue-team patch candidates, joined to their latest isolation build."""
+    rows = _query(
         db_path,
-        "SELECT patch_id, zone_id, approach, invasiveness, status, created_at "
-        "FROM patches ORDER BY created_at DESC LIMIT 20",
+        "SELECT p.patch_id, p.zone_id, p.approach, p.invasiveness, p.status, "
+        "p.created_at, ("
+        "  SELECT pb.isolation_mode FROM patch_builds pb "
+        "  WHERE pb.patch_id = p.patch_id "
+        "  ORDER BY pb.created_at DESC LIMIT 1) AS isolation_mode "
+        "FROM patches p ORDER BY p.created_at DESC LIMIT 20",
     )
+    for row in rows:
+        row["isolation_mode"] = patch_isolation_badge(row.get("isolation_mode"))
+    return rows
 
 
 def _regression(db_path: str) -> list[dict[str, Any]]:
