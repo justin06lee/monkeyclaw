@@ -72,3 +72,17 @@ def test_degraded_path_when_graph_unavailable(db: Database):
     assert path.degraded is True
     # Degraded path still yields the semantic-search hit as a node.
     assert any(n.symbol.symbol_name == "write_file" for n in path.nodes)
+
+
+def test_trace_persists_executed_path_row(db: Database):
+    index_codebase(db, FIXTURE)
+    index_symbol_graph(db, root=FIXTURE)
+    tracer = PathTracer(graph=PythonCodeGraph(db), mcp=_StubMCP(), db=db)
+    tracer.trace(zone_id="SBX-FS", evidence=_evidence(), transcript=[],
+                 victim_logs=[], finding_id="F-1")
+    rows = db.fetchall(
+        "SELECT * FROM executed_paths WHERE finding_id = 'F-1'")
+    assert len(rows) == 1
+    assert rows[0]["zone_id"] == "SBX-FS"
+    assert rows[0]["degraded"] == 0
+    assert rows[0]["backend"] == "python"
