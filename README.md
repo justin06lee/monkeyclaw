@@ -19,6 +19,16 @@ executes them against live NemoClaw sandboxes, judges the results with tiered
 programmatic + semantic analysis, reproduces confirmed findings, and runs a
 blue-team loop that triages, patches, tests, and verifies the fix.
 
+## Why continuous red/blue testing
+
+Coding agents are privileged developer runtimes: they read source, run shell
+commands, call MCP tools, and reach the network. An injected or mistaken
+action can read a secret and exfiltrate it with ordinary commands. A one-time
+security audit cannot keep up — the agent, its tools, and its prompts change
+constantly. MonkeyClaw makes security a **continuous loop**: red finds it,
+blue proves and fixes it, and a growing regression suite keeps it fixed, so
+security improves over time instead of oscillating.
+
 ## Quick Start
 
 Full setup instructions are in [docs/dev_setup.md](docs/dev_setup.md).
@@ -27,7 +37,7 @@ The verified sequence is:
 ```bash
 uv sync
 ./scripts/check_env.sh          # must end with "== environment OK =="
-uv run pytest                   # 137 tests — all must pass
+uv run pytest                   # full suite — all must pass
 uv run monkeyclaw run --cycles 1 --target planted-filesystem --mock
 ```
 
@@ -59,6 +69,26 @@ uv run monkeyclaw dashboard
 No live NemoClaw sandbox handy? Add `--mock` to `run` / `repro` to drive the
 in-memory mock provisioner and planted-vulnerability victim instead.
 
+## Demo
+
+The demo runs with **zero model credentials** — one real pipeline cycle
+against a planted victim (via the in-memory mock provisioner) feeds every
+dashboard view:
+
+```bash
+demo/run_hackathon_demo.sh            # one real cycle + blue team, then the dashboard
+```
+
+Or drive it by hand:
+
+```bash
+uv run monkeyclaw run --cycles 1 --target monkey-victim --mock
+uv run monkeyclaw dashboard           # http://127.0.0.1:8787
+```
+
+See `docs/judge_quickstart.md` for the 30-second path and
+`docs/demo_script.md` for the guided walkthrough.
+
 Optional live Telegram feed of confirmed vulns + cycle summaries:
 
 ```bash
@@ -86,6 +116,26 @@ The `monkeyclaw` command is the single entrypoint for the whole loop.
 
 ## Architecture
 
+```text
+        ┌───────────────────────── red team ──────────────────────────┐
+        │  ideation → dedup/priority → execution → judge (Tier 1 + 2)  │
+        └───────────────────────────────┬──────────────────────────────┘
+                                         │ confirmed / suspicious finding
+                                         ▼
+        ┌──────────────────────── repro pipeline ──────────────────────┐
+        │  replay-minimize → root-cause → repro writer → cold verifier  │
+        └───────────────────────────────┬──────────────────────────────┘
+                                         │ cold-verified repro package
+                                         ▼
+        ┌───────────────────────── blue team ──────────────────────────┐
+        │  triage → patch generator → test generator → patch verifier   │
+        │  (6 gates) → regression runner                                │
+        └───────────────────────────────┬──────────────────────────────┘
+                                         │
+            SQLite knowledge base  ◀─────┴─────▶  live web dashboard
+            (coverage · findings · patches · regression suite)
+```
+
 MonkeyClaw runs a continuous **red → judge → repro → blue** loop over a registry
 of **18 NemoClaw attack-surface zones** (sandbox filesystem/network/process/IPC,
 privacy routing, permission model & runtime, skill install/exec/supply-chain,
@@ -111,8 +161,14 @@ lowest-coverage zone.
 Replay-minimizer → root-cause locator → repro writer → cold verifier → triage →
 patch generator → test generator → patch verifier → regression runner. Confirmed
 findings become minimized, cold-verified vulnerability documents; high-severity
-ones get root-cause locations and multiple candidate patches, each validated
-through a three-gate check (regression, functionality, full suite).
+ones get root-cause locations and multiple candidate patches. Every patch is
+validated through **six verifier gates** — the diff applies cleanly, the
+vulnerability is blocked, legitimate functionality still works, the full
+regression suite still passes, the diff does not weaken the control plane
+(deleted tests, loosened paths, suppressed telemetry, MCP/CI changes), and the
+patched run still produces security telemetry. Each verified vuln also yields
+three permanent regression tests: positive (attack blocked), negative
+(functionality preserved), and policy (telemetry still recorded).
 
 **Infrastructure** — `infra/`
 
@@ -144,15 +200,56 @@ MC_* env vars`. Nested fields use double-underscore env overrides, e.g.
 ## Tests
 
 ```bash
-uv run pytest          # 137 tests across red, blue, and infra
+uv run pytest          # 164 tests across red, blue, infra, and the dashboard
 uv run ruff check .
 ```
+
+## Project status
+
+**What works now**
+
+- The full red → judge → repro → blue loop, end to end, in mock mode.
+- All 18 attack zones registered with coverage tracking and decay.
+- Red team: three-mode ideation, embedding dedup, multi-turn execution,
+  Tier 1 (six programmatic checks) + Tier 2 (semantic) judgment.
+- Blue team: replay-minimization, cold verification, triage + grouping,
+  multi-approach patch generation, three-test generation, the six-gate
+  patch verifier, and the regression runner with flaky-test detection.
+- The eight-view live dashboard and the one-command demo.
+- Full automated test suite, all passing.
+
+**What is mocked for the hackathon**
+
+- The victim is an in-memory mock provisioner with a planted-vulnerability
+  agent; a real NemoClaw provisioner is wired but not the default path.
+- Patch verification runs the regression tests against the replay surface
+  rather than shelling into a rebuilt NemoClaw with the diff applied.
+- The dashboard cost panel uses a blended token-price estimate.
+
+**What a production version adds**
+
+- A real NemoClaw provisioner: ephemeral, snapshot-isolated victims with
+  the candidate diff actually applied in a disposable work area.
+- Patch application + build in a sandboxed worktree before gate 1.
+- A persistent event store behind the evidence timeline (today it is
+  derived from finding evidence + the alert log).
+- SIEM/telemetry export and an approval service for high-risk patches.
 
 ## Packaged as an OpenClaw skill
 
 `skill/SKILL.md` makes MonkeyClaw installable into any OpenClaw sandbox via
 `nemoclaw <sandbox> skill install skill/`. The host agent then drives the
 autonomous loop through the `monkeyclaw` CLI.
+
+## Documentation
+
+| Doc | What it covers |
+|-----|----------------|
+| `docs/judge_quickstart.md` | 30-second path to a running demo |
+| `docs/demo_script.md` | Guided ~4-minute presentation walkthrough |
+| `docs/pitch_script.md` | Problem → insight → architecture → why it wins |
+| `docs/zone_failure_class_mapping.md` | The 18 zones mapped to recognized agent-security failure classes |
+| `.agents/` | Workload split, interface contracts, component specs |
 
 ## Built With
 

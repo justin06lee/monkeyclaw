@@ -108,21 +108,37 @@ class NemoClawProvisioner(VictimProvisioner):
         if self._telemetry is not None:
             self._telemetry.policy_loaded(actor="provisioner",
                                           target=config.policy_path)
-        LOG.info("provisioning victim %s: restoring %s -> %s, then recover",
-                 instance_id, self.sandbox_name, self.clean_snapshot)
-
-        # 1. Reset filesystem/state to the clean snapshot.
-        self._run(
-            [self.cli, self.sandbox_name, "snapshot", "restore", self.clean_snapshot],
-            timeout=self.snapshot_restore_timeout_s,
-            what="snapshot restore",
-        )
-        # 2. Restart the gateway + agent so no runtime/session state carries over.
-        self._run(
-            [self.cli, self.sandbox_name, "recover"],
-            timeout=self.recover_timeout_s,
-            what="recover",
-        )
+        if self.clean_snapshot:
+            LOG.info("provisioning victim %s: restoring %s -> %s, then recover",
+                     instance_id, self.sandbox_name, self.clean_snapshot)
+            # 1. Reset filesystem/state to the clean snapshot.
+            self._run(
+                [self.cli, self.sandbox_name, "snapshot", "restore", self.clean_snapshot],
+                timeout=self.snapshot_restore_timeout_s,
+                what="snapshot restore",
+            )
+            # 2. Restart the gateway + agent so no runtime/session state carries over.
+            self._run(
+                [self.cli, self.sandbox_name, "recover"],
+                timeout=self.recover_timeout_s,
+                what="recover",
+            )
+        else:
+            # Recover-only mode: `clean_snapshot` is unset (snapshots are
+            # unavailable on this nemoclaw CPU sandbox), so we cannot reset
+            # the filesystem — but we still `recover` to restart the gateway
+            # + agent. That clears in-memory session/conversation state, so
+            # each lane gets a fresh agent with no carried-over prompt
+            # injection. Filesystem changes from prior lanes persist.
+            LOG.warning("provisioning victim %s: recover-only mode "
+                        "(clean_snapshot unset) — restarting agent on %s "
+                        "without snapshot restore", instance_id,
+                        self.sandbox_name)
+            self._run(
+                [self.cli, self.sandbox_name, "recover"],
+                timeout=self.recover_timeout_s,
+                what="recover",
+            )
         # 3. Fetch the gateway auth token for VictimClient.
         token = self._run(
             [self.cli, self.sandbox_name, "gateway-token", "--quiet"],

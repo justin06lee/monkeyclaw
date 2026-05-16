@@ -24,6 +24,8 @@ from datetime import UTC, datetime, timedelta
 
 from interfaces.mcp_tools import MonkeyClawMCP
 from interfaces.types import (
+    ArchiveCell,
+    ArchiveUpdateInput,
     CheckResult,
     CodeChunk,
     CoverageGap,
@@ -32,6 +34,8 @@ from interfaces.types import (
     DupResult,
     FindingInput,
     FindingRecord,
+    IdeaComponent,
+    IdeaComponentInput,
     IdeaInput,
     JudgeVote,
     JudgeVoteInput,
@@ -115,6 +119,8 @@ class MockMCP(MonkeyClawMCP):
         self._corpus_results: list[PolicyCorpusResult] = []
         self._patch_candidates: dict[str, PatchCandidateInput] = {}
         self._patch_statuses: dict[str, dict] = {}
+        self._archive_cells: dict[str, ArchiveCell] = {}
+        self._idea_components: dict[str, list[IdeaComponent]] = {}
         self._seed_history()
 
     def _seed_history(self) -> None:
@@ -562,6 +568,60 @@ class MockMCP(MonkeyClawMCP):
             if verification_results is not None:
                 self._patch_statuses[patch_id]["verification_results"] = verification_results
         self._log("mark_patch_status", {"patch_id": patch_id, "status": status})
+
+    # ------------------------------------------------------------------
+    # MAP-Elites archive
+    # ------------------------------------------------------------------
+    def update_archive_cell(self, update: ArchiveUpdateInput) -> ArchiveCell:
+        cell_id = f"{update.zone_id}|{update.interaction_style}|{update.response_movement}"
+        existing = self._archive_cells.get(cell_id)
+        if existing is None:
+            cell = ArchiveCell(
+                cell_id=cell_id, zone_id=update.zone_id,
+                interaction_style=update.interaction_style,
+                response_movement=update.response_movement,
+                best_idea_id=update.idea_id, best_score=update.score,
+                occupancy=1, updated_at=_now(),
+            )
+        else:
+            promote = update.score > existing.best_score
+            cell = ArchiveCell(
+                cell_id=cell_id, zone_id=update.zone_id,
+                interaction_style=update.interaction_style,
+                response_movement=update.response_movement,
+                best_idea_id=update.idea_id if promote else existing.best_idea_id,
+                best_score=update.score if promote else existing.best_score,
+                occupancy=existing.occupancy + 1, updated_at=_now(),
+            )
+        self._archive_cells[cell_id] = cell
+        self._log("update_archive_cell", {"cell_id": cell_id,
+                  "elite": cell.best_idea_id, "occupancy": cell.occupancy})
+        return cell
+
+    def get_archive_cells(self, zone: str | None) -> list[ArchiveCell]:
+        cells = list(self._archive_cells.values())
+        if zone is not None:
+            cells = [c for c in cells if c.zone_id == zone]
+        return cells
+
+    def store_idea_components(
+        self, idea_id: str, components: list[IdeaComponentInput]
+    ) -> list[str]:
+        ids: list[str] = []
+        rows = self._idea_components.setdefault(idea_id, [])
+        for comp in components:
+            cid = _new_id("CMP")
+            rows.append(IdeaComponent(
+                component_id=cid, idea_id=idea_id,
+                component_type=comp.component_type, content=comp.content,
+                created_at=_now(),
+            ))
+            ids.append(cid)
+        self._log("store_idea_components", {"idea_id": idea_id, "count": len(ids)})
+        return ids
+
+    def get_idea_components(self, idea_id: str) -> list[IdeaComponent]:
+        return list(self._idea_components.get(idea_id, []))
 
     # ------------------------------------------------------------------
     # Inspection helpers (mock-only — not part of the Protocol)

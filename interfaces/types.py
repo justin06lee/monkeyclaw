@@ -378,6 +378,11 @@ class PatchCandidate:
     explanation: str
     side_effects: str
     status: str  # "proposed" | "testing" | "approved" | "rejected"
+    # --- spec C5 candidate metadata (additive, optional) ---------------
+    # `expected_tests`: human-readable test scenarios this patch should
+    # satisfy. `confidence`: generator's self-rated confidence in [0, 1].
+    expected_tests: list[str] = field(default_factory=list)
+    confidence: float = 0.0
 
 
 @dataclass
@@ -402,6 +407,11 @@ class RegressionTestInput:
     test_script: str
     expected_result: str
     functionality_test_script: str | None = None
+    # --- spec C6 third test type (additive, optional) ------------------
+    # Confirms the required telemetry / policy-decision record still
+    # exists after the patch — catches silent bypasses where behavior is
+    # blocked but no security evidence is produced.
+    policy_regression_test_script: str | None = None
 
 
 @dataclass
@@ -413,6 +423,10 @@ class RegressionRunResult:
     coverage_delta: dict[str, float]
     new_tests_since_last_run: int
     run_duration_seconds: float
+    # --- spec C8 (additive, optional) ----------------------------------
+    # Tests that have oscillated between pass and fail across runs — the
+    # suite cannot trust them, so they are surfaced for quarantine.
+    flaky_tests: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -581,6 +595,26 @@ class ArchiveCell:
     updated_at: str
 
 
+@dataclass
+class ArchiveUpdateInput:
+    """Write-side payload for update_archive_cell."""
+
+    zone_id: str
+    interaction_style: str
+    response_movement: str
+    idea_id: str
+    score: float
+
+
+@dataclass
+class IdeaComponentInput:
+    """Write-side payload for store_idea_components — server fills component_id."""
+
+    idea_id: str
+    component_type: str
+    content: str
+
+
 # ---------------------------------------------------------------------------
 # Judge votes (Person B — multi-judge ensemble)
 # ---------------------------------------------------------------------------
@@ -668,6 +702,7 @@ class PatchCandidateInput:
 __all__ = [
     "AgentPolicy",
     "ArchiveCell",
+    "ArchiveUpdateInput",
     "CheckResult",
     "CodeChunk",
     "CoverageGap",
@@ -679,6 +714,7 @@ __all__ = [
     "FixSite",
     "FsDiff",
     "IdeaComponent",
+    "IdeaComponentInput",
     "IdeaInput",
     "IdeaObject",
     "InferenceEvent",

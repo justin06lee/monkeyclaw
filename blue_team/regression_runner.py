@@ -58,12 +58,23 @@ class _TestRunRecord:
     last_run_at: str = ""
     last_run_result: str = ""  # "pass" | "fail" | "error"
     consecutive_passes: int = 0
+    # Flakiness tracking: every time a result differs from the previous
+    # one, that is a transition. A test with >= `flaky_min_transitions`
+    # transitions has oscillated and cannot be trusted.
+    transitions: int = 0
+
+    def is_flaky(self, min_transitions: int) -> bool:
+        return self.transitions >= min_transitions
 
 
 @dataclass
 class RegressionRunnerConfig:
     coverage_bump_passing: float = 0.02
     coverage_penalty_regressed: float = -0.10
+    # A test that flips pass<->fail at least this many times is flaky.
+    # 2 transitions == pass->fail->pass (or the inverse): a true
+    # oscillation, not a one-way regression.
+    flaky_min_transitions: int = 2
 
 
 # ---------------------------------------------------------------------------
@@ -109,14 +120,18 @@ class RegressionRunner:
             outcome = self._run_one(test)
             zones_seen.setdefault(test.zone_id, []).append(outcome)
             rec = self._records.setdefault(test.test_id, _TestRunRecord())
-            previous_pass = rec.last_run_result == "pass"
+            previous_result = rec.last_run_result
+            previous_pass = previous_result == "pass"
+            new_result = "pass" if outcome else "fail"
+            # A transition is any change of result from the prior run.
+            if previous_result and previous_result != new_result:
+                rec.transitions += 1
             rec.last_run_at = now_iso()
+            rec.last_run_result = new_result
             if outcome:
-                rec.last_run_result = "pass"
                 rec.consecutive_passes += 1
                 passing += 1
             else:
-                rec.last_run_result = "fail"
                 # Newly failing: previously passing OR previously unrecorded
                 if previous_pass:
                     newly_failing.append(test.test_id)
@@ -145,6 +160,13 @@ class RegressionRunner:
         # Update the previous-id set for next run.
         self._previous_test_ids = current_ids
 
+        # Flaky tests: still in the suite and oscillating across runs.
+        flaky_tests = sorted(
+            tid for tid in current_ids
+            if self._records.get(tid, _TestRunRecord()).is_flaky(
+                self.cfg.flaky_min_transitions)
+        )
+
         result = RegressionRunResult(
             total_tests=len(suite),
             tests_passing=passing,
@@ -153,13 +175,14 @@ class RegressionRunner:
             coverage_delta=coverage_delta,
             new_tests_since_last_run=new_since_last,
             run_duration_seconds=time.time() - started,
+            flaky_tests=flaky_tests,
         )
         LOG.info(
             "regression: total=%d pass=%d fail=%d newly_failing=%d "
-            "new_since_last=%d duration=%.2fs",
+            "flaky=%d new_since_last=%d duration=%.2fs",
             result.total_tests, result.tests_passing, result.tests_failing,
-            len(result.newly_failing), result.new_tests_since_last_run,
-            result.run_duration_seconds,
+            len(result.newly_failing), len(result.flaky_tests),
+            result.new_tests_since_last_run, result.run_duration_seconds,
         )
         return result
 

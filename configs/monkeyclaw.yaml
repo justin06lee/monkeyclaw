@@ -12,6 +12,18 @@ ideation:
   near_dup_threshold: 0.80
   retry_max: 3
 
+# B9 — model tournament. When enabled, each listed entrant model also
+# ideates every targeted zone; their ideas join the shared dedup/priority
+# pool. Disabled by default — the single `ideation.model` path is used.
+model_tournament:
+  enabled: false
+  entrants: []
+  #   - role: red_ideation          # resolves model from models.roles
+  #   - role: cyber_specialist      # optional diversity entrant
+  #     provider: nvidia
+  #     model: nvidia/some-cyber-specialist
+  #     optional: true
+
 lanes:
   # One lane per synthesized attack chain — 5 chains, 5 deep-dive agents.
   pool_size: 5
@@ -77,6 +89,17 @@ nemoclaw:
     - ~/.nemoclaw
   allowed_paths:
     - /tmp/openshell
+  # Live `monkey-victim` sandbox.
+  sandbox_name: monkey-victim
+  # No-reset mode: nemoclaw v0.0.44 `snapshot create` fails on this CPU
+  # sandbox, so leave clean_snapshot empty — lanes connect to the persistent
+  # victim without per-lane snapshot restore/recover. Set this to a real
+  # snapshot name once snapshots work to restore per-lane isolation.
+  clean_snapshot: ""
+  # Empty: this sandbox runs as a standalone docker container, not a k3s pod
+  # inside a gateway container, so the docker-exec fs-diff path does not apply.
+  # The monitoring harness falls back to host-path snapshots.
+  gateway_container: ""
 
 models:
   roles:

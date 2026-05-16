@@ -531,6 +531,7 @@ class VictimClient:
         self.origin = origin
         self._http: httpx.Client | None = None
         self._gateway: _GatewayConnection | None = None
+        self._tg: Any = None  # interfaces.telegram_victim.TelegramVictimSession
 
     def close(self) -> None:
         if self._http is not None:
@@ -539,6 +540,9 @@ class VictimClient:
         if self._gateway is not None:
             self._gateway.close()
             self._gateway = None
+        if self._tg is not None:
+            self._tg.close()
+            self._tg = None
 
     def __enter__(self) -> VictimClient:
         return self
@@ -562,7 +566,32 @@ class VictimClient:
             return self._send_http(message), None
         if self.scheme == "ipc":
             return self._send_ipc(message), None
+        if self.scheme == "tg":
+            return self._send_tg(message)
         raise VictimError(f"unsupported chat_endpoint scheme: {self.chat_endpoint!r}")
+
+    # ------------------------------------------------------------------
+    def _send_tg(self, message: str) -> tuple[str, TurnSideEffects | None]:
+        """Attack a victim agent over its Telegram channel (`tg://<bot>`).
+
+        The MTProto session is lazily created and reused across turns so a
+        multi-turn attack is one continuous Telegram conversation.
+        """
+        if self._tg is None:
+            from interfaces.telegram_victim import (
+                TelegramVictimError,
+                TelegramVictimSession,
+            )
+            try:
+                self._tg = TelegramVictimSession(
+                    self.chat_endpoint, response_timeout_s=self.response_timeout_s)
+                self._tg.connect()
+            except TelegramVictimError as e:
+                raise VictimError(str(e)) from e
+        try:
+            return self._tg.send(message)
+        except Exception as e:  # noqa: BLE001
+            raise VictimError(f"telegram transport error: {e}") from e
 
     # ------------------------------------------------------------------
     def _send_mock(self, message: str) -> tuple[str, TurnSideEffects]:

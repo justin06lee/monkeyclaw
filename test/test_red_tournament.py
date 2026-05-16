@@ -100,3 +100,14 @@ def test_optional_entrant_failure_does_not_break_the_demo():
 def test_tournament_ideas_hook_disabled_returns_empty():
     from red_team.ideation import tournament_ideas
     assert tournament_ideas(ModelTournament(), None, None, None, 1) == []
+
+
+def test_pipeline_constructs_disabled_tournament():
+    """The red-team pipeline always has a tournament; with no config block
+    it is disabled, so generate_ideas falls back to single-model ideation."""
+    from infra.mock_mcp import MockMCP
+    from red_team.pipeline import Pipeline
+
+    pipeline = Pipeline(mcp=MockMCP(verbose=False))
+    assert pipeline.tournament is not None
+    assert pipeline.tournament.enabled is False

@@ -45,12 +45,13 @@ from interfaces.types import (
 from red_team.archive import EliteArchive
 from red_team.dedup import deduplicate_and_log
 from red_team.execution_agent import ExecutionAgent, ExecutionConfig
-from red_team.ideation import IdeationConfig, IdeationEngine
+from red_team.ideation import IdeationConfig, IdeationEngine, tournament_ideas
 from red_team.judge import Judge, JudgeConfig
 from red_team.priority import score_ideas
 from red_team.progress import score_progress, search_score
 from red_team.routing import route_judgment
 from red_team.strategist import Strategist
+from red_team.tournament import ModelTournament, load_tournament_config
 
 LOG = logging.getLogger("monkeyclaw.red.pipeline")
 
@@ -124,6 +125,10 @@ class Pipeline:
             tier2_confidence_threshold=self.cfg.judgment.tier2_confidence_threshold,
         )
         self.ideation = IdeationEngine(self.llm, self.mcp, ideation_cfg)
+        self._ideation_cfg = ideation_cfg
+        # B9 — model tournament. Disabled unless `red_team.model_tournament`
+        # is configured; when enabled, extra entrants also ideate per zone.
+        self.tournament = ModelTournament(load_tournament_config())
         self.strategist = Strategist(self.llm)
         self.execution = ExecutionAgent(self.llm, execution_cfg)
         self.judger = Judge(self.llm, self.policy, judge_cfg, mcp=self.mcp)
@@ -141,6 +146,16 @@ class Pipeline:
         # call (orchestrator updates the summary itself, but Person 2 owns
         # the deduplicated/executed counts).
         self._last_cycle_metrics: dict[str, int] = {}
+
+    # ------------------------------------------------------------------
+    def _llm_for_entrant(self, entrant) -> object:
+        """Resolve an LLM client for one model-tournament entrant."""
+        return make_llm(
+            backend=entrant.provider or None,
+            model=entrant.model or None,
+            role=entrant.role or None,
+            cfg=self.cfg,
+        )
 
     # ------------------------------------------------------------------
     # generate_ideas
@@ -165,6 +180,14 @@ class Pipeline:
             new_ideas = self.ideation.generate_for_zone(gap, cycle_id)
             ideas_generated += len(new_ideas)
             candidates.extend(new_ideas)
+            # B9 — when the model tournament is enabled, extra entrant models
+            # ideate the same zone; their ideas join the pool for dedup +
+            # priority. A disabled tournament returns [] (no-op).
+            t_ideas = tournament_ideas(
+                self.tournament, self._llm_for_entrant, self.mcp, gap,
+                cycle_id, self._ideation_cfg)
+            ideas_generated += len(t_ideas)
+            candidates.extend(t_ideas)
             # Estimate when we have enough — dedup typically halves the
             # pool, so chase 2.5× n_lanes before stopping.
             if len(candidates) >= max(int(n_lanes * 2.5), n_lanes + 2):

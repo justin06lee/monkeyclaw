@@ -84,6 +84,36 @@ def test_generator_emits_both_positive_and_negative():
     assert "legitimate_operation" in pair.negative_test_script
 
 
+def test_generator_emits_policy_regression_test():
+    """Spec C6: a third test type confirms the security telemetry / policy
+    decision is still recorded after the patch."""
+    pair: RegressionTestPair = TestGenerator().generate(_package(), _patch())
+    assert pair.policy_regression_test_script is not None
+    assert "MC-2026-0001" in pair.policy_regression_test_script
+    assert pair.positive_test.policy_regression_test_script is not None
+    assert (pair.positive_test.policy_regression_test_script
+            == pair.policy_regression_test_script)
+
+
+def test_policy_regression_test_runs_to_completion(tmp_path: Path):
+    allowed = tmp_path / "allowed"
+    escape = tmp_path / "evil"
+    provisioner = _planted_provisioner(allowed, escape)
+    pair = TestGenerator().generate(_package(), _patch())
+    policy = default_policy()
+    policy.allowed_paths = [str(allowed)]
+
+    result = execute_test_script(
+        pair.policy_regression_test_script,
+        replay_fn=make_mock_replay_fn(),
+        judge_fn=default_judge,
+        policy=policy,
+        provisioner=provisioner,
+    )
+    assert "passed" in result
+    assert result["expected"] == "policy_decision_recorded"
+
+
 def test_generator_falls_back_when_no_minimal_steps():
     pkg = _package()
     pkg.minimal_steps = []

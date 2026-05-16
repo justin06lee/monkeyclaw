@@ -53,6 +53,29 @@ def test_triage_orders_by_score():
     assert all(t.score > 0 for t in tasks)
 
 
+def test_triage_score_includes_repro_rate_factor():
+    """Spec C4: priority = severity_weight * blast_radius * repro_rate
+    / fix_complexity."""
+    pkg = _package("V1", "SBX-FS", severity="high", repro_rate=0.6)
+    [task] = TriageAgent().triage([pkg])
+    c = task.components
+    assert "repro_rate" in c, "repro_rate must be a scored component"
+    assert c["repro_rate"] == 0.6
+    expected = (
+        c["severity_weight"] * c["blast_radius"]
+        * c["repro_rate"] / c["fix_complexity"]
+    )
+    assert abs(task.score - expected) < 1e-9
+
+
+def test_triage_lower_repro_rate_scores_lower():
+    high = _package("V1", "SBX-FS", severity="high", repro_rate=0.6)
+    low = _package("V2", "SBX-FS", severity="high", repro_rate=0.3)
+    tasks = TriageAgent().triage([high, low])
+    by_id = {t.primary_package.vuln_id: t for t in tasks}
+    assert by_id["V1"].score > by_id["V2"].score
+
+
 def test_triage_drops_non_queued():
     p = _package("V1", "SBX-FS")
     p.blue_team_status = "patching"

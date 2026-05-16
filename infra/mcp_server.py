@@ -19,6 +19,8 @@ from datetime import UTC, datetime
 from infra.database import Database, EmbeddingModel
 from interfaces.mcp_tools import MonkeyClawMCP
 from interfaces.types import (
+    ArchiveCell,
+    ArchiveUpdateInput,
     CodeChunk,
     CoverageGap,
     CycleSummary,
@@ -26,6 +28,8 @@ from interfaces.types import (
     DupResult,
     FindingInput,
     FindingRecord,
+    IdeaComponent,
+    IdeaComponentInput,
     IdeaInput,
     JudgeVoteInput,
     ModelRunInput,
@@ -589,6 +593,85 @@ class MCPServer(MonkeyClawMCP):
             )
 
     # ------------------------------------------------------------------
+    # MAP-Elites archive
+    # ------------------------------------------------------------------
+    def update_archive_cell(self, update: ArchiveUpdateInput) -> ArchiveCell:
+        self._emit_invoked("update_archive_cell")
+        cell_id = f"{update.zone_id}|{update.interaction_style}|{update.response_movement}"
+        now = _now()
+        with self.db.lock():
+            row = self.db.fetchone(
+                "SELECT best_idea_id, best_score, occupancy "
+                "FROM idea_archive_cells WHERE cell_id = ?",
+                (cell_id,),
+            )
+            if row is None:
+                self.db.execute(
+                    "INSERT INTO idea_archive_cells(cell_id, zone_id, "
+                    "interaction_style, response_movement, best_idea_id, "
+                    "best_score, occupancy, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+                    (cell_id, update.zone_id, update.interaction_style,
+                     update.response_movement, update.idea_id, update.score, now),
+                )
+            else:
+                promote = update.score > row["best_score"]
+                self.db.execute(
+                    "UPDATE idea_archive_cells SET best_idea_id = ?, "
+                    "best_score = ?, occupancy = occupancy + 1, updated_at = ? "
+                    "WHERE cell_id = ?",
+                    (update.idea_id if promote else row["best_idea_id"],
+                     update.score if promote else row["best_score"],
+                     now, cell_id),
+                )
+            out = self.db.fetchone(
+                "SELECT * FROM idea_archive_cells WHERE cell_id = ?", (cell_id,))
+        return _archive_row_to_cell(out)
+
+    def get_archive_cells(self, zone: str | None) -> list[ArchiveCell]:
+        self._emit_invoked("get_archive_cells")
+        if zone is None:
+            rows = self.db.fetchall("SELECT * FROM idea_archive_cells")
+        else:
+            rows = self.db.fetchall(
+                "SELECT * FROM idea_archive_cells WHERE zone_id = ?", (zone,))
+        return [_archive_row_to_cell(r) for r in rows]
+
+    def store_idea_components(
+        self, idea_id: str, components: list[IdeaComponentInput]
+    ) -> list[str]:
+        self._emit_invoked("store_idea_components")
+        now = _now()
+        ids: list[str] = []
+        params: list[tuple] = []
+        for comp in components:
+            cid = _new_id("CMP")
+            ids.append(cid)
+            params.append((cid, idea_id, comp.component_type, comp.content, now))
+        with self.db.lock():
+            self.db.executemany(
+                "INSERT INTO idea_components(component_id, idea_id, "
+                "component_type, content, created_at) VALUES (?, ?, ?, ?, ?)",
+                params,
+            )
+        return ids
+
+    def get_idea_components(self, idea_id: str) -> list[IdeaComponent]:
+        self._emit_invoked("get_idea_components")
+        rows = self.db.fetchall(
+            "SELECT * FROM idea_components WHERE idea_id = ? ORDER BY created_at",
+            (idea_id,),
+        )
+        return [
+            IdeaComponent(
+                component_id=r["component_id"], idea_id=r["idea_id"],
+                component_type=r["component_type"], content=r["content"],
+                created_at=r["created_at"],
+            )
+            for r in rows
+        ]
+
+    # ------------------------------------------------------------------
     # Notifications
     # ------------------------------------------------------------------
     def send_alert(self, message: str, severity: str) -> None:
@@ -613,6 +696,16 @@ class MCPServer(MonkeyClawMCP):
 # ---------------------------------------------------------------------------
 # Row → dataclass helpers
 # ---------------------------------------------------------------------------
+
+
+def _archive_row_to_cell(r) -> ArchiveCell:
+    return ArchiveCell(
+        cell_id=r["cell_id"], zone_id=r["zone_id"],
+        interaction_style=r["interaction_style"],
+        response_movement=r["response_movement"],
+        best_idea_id=r["best_idea_id"], best_score=r["best_score"],
+        occupancy=r["occupancy"], updated_at=r["updated_at"],
+    )
 
 
 def _finding_row_to_record(r) -> FindingRecord:

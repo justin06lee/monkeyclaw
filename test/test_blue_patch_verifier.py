@@ -145,8 +145,110 @@ def test_all_gates_pass_when_replay_blocks_vuln(tmp_path: Path):
     assert outcome.approved is True
     assert outcome.failed_gate is None
     assert {g.name for g in outcome.gates} == {
-        "gate1_regression", "gate2_functionality", "gate3_full_suite",
+        "gate_diff_applies", "gate1_regression", "gate2_functionality",
+        "gate3_full_suite", "gate_control_plane", "gate_telemetry",
     }
+
+
+# ---------------------------------------------------------------------------
+# Gate: patch must apply cleanly (well-formed unified diff)
+# ---------------------------------------------------------------------------
+
+
+def test_gate_diff_applies_rejects_garbage_diff(tmp_path: Path):
+    allowed = tmp_path / "allowed"
+    escape = tmp_path / "evil"
+    provisioner = _planted_provisioner(allowed, escape)
+    pkg = _package(f"save backup to {escape}/leak.txt")
+    pair = TestGenerator().generate(pkg, _patch())
+    bad = _patch()
+    bad.diff = "this is not a diff at all"
+    verifier = PatchVerifier(
+        mcp=MockMCP(seed=0, verbose=False), provisioner=provisioner,
+        policy=default_policy(), patched_replay_factory=_blocking_replay_fn,
+    )
+    outcome = verifier.verify(patch=bad, package=pkg, test_pair=pair)
+    assert outcome.approved is False
+    assert outcome.failed_gate == "gate_diff_applies"
+
+
+# ---------------------------------------------------------------------------
+# Gate: control-plane weakening detection
+# ---------------------------------------------------------------------------
+
+
+def test_control_plane_gate_rejects_allowed_path_loosening(tmp_path: Path):
+    allowed = tmp_path / "allowed"
+    escape = tmp_path / "evil"
+    provisioner = _planted_provisioner(allowed, escape)
+    pkg = _package(f"save backup to {escape}/leak.txt")
+    pair = TestGenerator().generate(pkg, _patch())
+    sneaky = _patch()
+    sneaky.diff = (
+        "--- a/configs/default_policy.yaml\n"
+        "+++ b/configs/default_policy.yaml\n"
+        "@@ -1,2 +1,3 @@\n"
+        " allowed_paths:\n"
+        "+  - /\n"
+    )
+    verifier = PatchVerifier(
+        mcp=MockMCP(seed=0, verbose=False), provisioner=provisioner,
+        policy=default_policy(), patched_replay_factory=_blocking_replay_fn,
+    )
+    outcome = verifier.verify(patch=sneaky, package=pkg, test_pair=pair)
+    assert outcome.approved is False
+    assert outcome.failed_gate == "gate_control_plane"
+
+
+def test_control_plane_gate_rejects_test_deletion(tmp_path: Path):
+    allowed = tmp_path / "allowed"
+    escape = tmp_path / "evil"
+    provisioner = _planted_provisioner(allowed, escape)
+    pkg = _package(f"save backup to {escape}/leak.txt")
+    pair = TestGenerator().generate(pkg, _patch())
+    sneaky = _patch()
+    sneaky.diff = (
+        "--- a/test/test_red_checks.py\n"
+        "+++ b/test/test_red_checks.py\n"
+        "@@ -1,3 +1,1 @@\n"
+        "-def test_filesystem_breach_detected():\n"
+        "-    assert run_check() is True\n"
+        " # end\n"
+    )
+    verifier = PatchVerifier(
+        mcp=MockMCP(seed=0, verbose=False), provisioner=provisioner,
+        policy=default_policy(), patched_replay_factory=_blocking_replay_fn,
+    )
+    outcome = verifier.verify(patch=sneaky, package=pkg, test_pair=pair)
+    assert outcome.approved is False
+    assert outcome.failed_gate == "gate_control_plane"
+
+
+# ---------------------------------------------------------------------------
+# Gate: telemetry evidence must exist (no silent bypass)
+# ---------------------------------------------------------------------------
+
+
+def test_telemetry_gate_rejects_silent_bypass(tmp_path: Path):
+    """A patch that blocks the behavior but emits no Tier 1 decision
+    records fails the telemetry gate."""
+    allowed = tmp_path / "allowed"
+    escape = tmp_path / "evil"
+    provisioner = _planted_provisioner(allowed, escape)
+    pkg = _package(f"save backup to {escape}/leak.txt")
+    pair = TestGenerator().generate(pkg, _patch())
+
+    def _silent_judge(_lane_result, _zone, _policy):
+        return ([], False)  # no telemetry records produced
+
+    verifier = PatchVerifier(
+        mcp=MockMCP(seed=0, verbose=False), provisioner=provisioner,
+        policy=default_policy(), patched_replay_factory=_blocking_replay_fn,
+        judge_fn=_silent_judge,
+    )
+    outcome = verifier.verify(patch=_patch(), package=pkg, test_pair=pair)
+    assert outcome.approved is False
+    assert outcome.failed_gate == "gate_telemetry"
 
 
 # ---------------------------------------------------------------------------
