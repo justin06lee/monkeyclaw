@@ -81,3 +81,14 @@ def test_new_dataclasses_importable_and_constructible():
         output_tokens=20, latency_ms=100, cost_usd=None, success=True, error=None,
     )
     assert run.success is True
+
+
+def test_protocol_declares_new_methods():
+    from interfaces.mcp_tools import MonkeyClawMCP
+    for name in (
+        "log_telemetry_event", "get_session_timeline", "log_model_run",
+        "log_judge_vote", "log_policy_corpus_result", "get_policy_corpus_results",
+        "mark_repro_queue_status", "mark_repro_package_status",
+        "log_patch_candidate", "mark_patch_status",
+    ):
+        assert hasattr(MonkeyClawMCP, name), f"protocol missing {name}"
