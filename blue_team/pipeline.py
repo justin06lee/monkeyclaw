@@ -98,6 +98,8 @@ from blue_team.repro_writer import ReproWriter, ReproWriterInput
 from blue_team.root_cause import RootCauseConfig, RootCauseLocator, RootCauseResult
 from blue_team.test_generator import RegressionTestPair, TestGenerator
 from blue_team.triage import FixTask, TriageAgent, TriageConfig
+from infra.approval_service import ApprovalService
+from infra.notifications import AlertDispatcher
 
 LOG = logging.getLogger("monkeyclaw.blue.pipeline")
 
@@ -264,6 +266,19 @@ class Pipeline:
         # forever. Bounded by config.blue_team.patch_verify_max_attempts.
         self._task_attempt_count: dict[str, int] = {}
 
+        # Severity-gated approval service — verified patches route through
+        # this gate before being finalized (approval spec §11).
+        self.approval_service = ApprovalService(
+            mcp=self.mcp,
+            dispatcher=AlertDispatcher(self.cfg.notifications),
+            cfg=self.cfg.approvals,
+        )
+        # Patches held pending approval keep their RegressionTestPair here
+        # so the resolved-request poll can finalize them later.
+        self._pending_test_pairs: dict[str, RegressionTestPair] = {}
+        self._pending_tasks: dict[str, FixTask] = {}
+        self._pending_outcomes: dict[str, VerifyOutcome] = {}
+
     # ==================================================================
     # process_repro_queue
     # ==================================================================
@@ -406,7 +421,9 @@ class Pipeline:
         approved = 0
         for task in tasks:
             outcome = self._patch_task(task)
-            if outcome is not None and outcome.approved:
+            # Count only finalized patches — a verified-but-PENDING patch is
+            # held by the approval gate, not finalized (approval spec §11).
+            if outcome is not None and outcome.approved and outcome.finalized:
                 approved += 1
         return approved
 
@@ -443,7 +460,10 @@ class Pipeline:
                 patch=cand, package=task.primary_package, test_pair=pair,
             )
             if outcome.approved:
-                self._on_patch_approved(task, cand, pair, outcome)
+                finalized = self._on_patch_approved(task, cand, pair, outcome)
+                # A PENDING patch passed verification but is not finalized;
+                # signal that to process_blue_queue via `finalized`.
+                outcome.finalized = finalized
                 return outcome
             LOG.info(
                 "task %s: patch %s rejected at %s — %s",
@@ -460,47 +480,105 @@ class Pipeline:
         patch: PatchCandidate,
         pair: RegressionTestPair,
         outcome: VerifyOutcome,
+    ) -> bool:
+        """A patch passed the six gates — gate it through the approval
+        service before finalizing (approval spec §11).
+
+        Returns True only when the patch was finalized this call (an
+        auto-allow); a PENDING patch is held and returns False.
+        """
+        generalization = getattr(outcome, "generalization_status", None)
+        try:
+            decision = self.approval_service.request(
+                patch, severity=task.severity, generalization=generalization)
+        except Exception as e:  # noqa: BLE001
+            # A service crash leaves the patch in the safe state — unfinalized.
+            LOG.exception("approval service failed for %s: %s",
+                          patch.patch_id, e)
+            self._safe_mark_patch(patch.patch_id, "pending_approval")
+            return False
+
+        if decision.decision == "ALLOW":
+            self._finalize_patch(
+                task.task_id, task.severity, list(task.vuln_ids),
+                patch.zone_id, patch, pair.positive_test, outcome.notes,
+                task.primary_package)
+            return True
+        if decision.decision == "PENDING":
+            LOG.info("patch %s held pending approval (request %s)",
+                     patch.patch_id, decision.request_id)
+            self._safe_mark_patch(patch.patch_id, "pending_approval")
+            self._pending_test_pairs[patch.patch_id] = pair
+            self._pending_tasks[patch.patch_id] = task
+            self._pending_outcomes[patch.patch_id] = outcome
+            return False
+        # DENY (cannot occur from request(), kept for completeness).
+        self._safe_mark_patch(patch.patch_id, "rejected")
+        self._on_task_exhausted(task)
+        return False
+
+    def _safe_mark_patch(self, patch_id: str, status: str) -> None:
+        """mark_patch_status, swallowing FSM/transition errors — used for the
+        approval-gate statuses which the patch may not have an FSM edge for."""
+        try:
+            self.mcp.mark_patch_status(patch_id, status)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("mark_patch_status(%s, %s) failed: %s",
+                        patch_id, status, e)
+
+    def _finalize_patch(
+        self,
+        task_id: str,
+        severity: str,
+        vuln_ids: list[str],
+        zone_id: str,
+        patch: PatchCandidate,
+        positive_test,  # noqa: ANN001 — RegressionTestInput
+        notes: str,
+        package,  # noqa: ANN001 — ReproPackage
     ) -> None:
+        """Commit an approved patch: regression test, coverage reset, alert,
+        lifecycle close. The original _on_patch_approved body."""
         # 1. Add the positive regression test to the permanent suite.
         try:
-            test_id = self.mcp.add_regression_test(pair.positive_test)
+            test_id = self.mcp.add_regression_test(positive_test)
         except Exception as e:  # noqa: BLE001
             LOG.warning("add_regression_test failed: %s", e)
             test_id = "(uncommitted)"
 
         # 2. Reset zone coverage to 0.3 per spec §4.4.
         try:
-            self._reset_zone_coverage(patch.zone_id)
+            self._reset_zone_coverage(zone_id)
         except Exception as e:  # noqa: BLE001
-            LOG.warning("coverage reset failed for %s: %s", patch.zone_id, e)
+            LOG.warning("coverage reset failed for %s: %s", zone_id, e)
 
         # 3. Send alert.
         self.mcp.send_alert(
-            f"[PATCH APPROVED / {task.severity}] task={task.task_id} "
+            f"[PATCH APPROVED / {severity}] task={task_id} "
             f"patch={patch.patch_id} approach={patch.approach!r} "
-            f"vulns={','.join(task.vuln_ids)} (zone {patch.zone_id})",
-            severity=task.severity,
+            f"vulns={','.join(vuln_ids)} (zone {zone_id})",
+            severity=severity,
         )
 
         LOG.info(
             "patch APPROVED: task=%s patch=%s test=%s vulns=%s notes=%s",
-            task.task_id, patch.patch_id, test_id,
-            task.vuln_ids, outcome.notes,
+            task_id, patch.patch_id, test_id, vuln_ids, notes,
         )
 
         # 4. Close the lifecycle loop: package patching->verified, and each
         #    linked finding in_progress->patched->verified.
-        pkg = task.primary_package
-        try:
-            self.mcp.mark_repro_package_status(pkg.package_id, "verified")
-        except Exception as e:  # noqa: BLE001
-            LOG.warning("mark package %s verified failed: %s",
-                        pkg.package_id, e)
-        try:
-            self.mcp.mark_finding_patched(pkg.finding_id)
-        except Exception as e:  # noqa: BLE001
-            LOG.warning("finding %s verify transition failed: %s",
-                        pkg.finding_id, e)
+        if package is not None:
+            try:
+                self.mcp.mark_repro_package_status(
+                    package.package_id, "verified")
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("mark package %s verified failed: %s",
+                            package.package_id, e)
+            try:
+                self.mcp.mark_finding_patched(package.finding_id)
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("finding %s verify transition failed: %s",
+                            package.finding_id, e)
 
     def _reset_zone_coverage(self, zone_id: str) -> None:
         """Snap the zone's coverage score to 0.3.
