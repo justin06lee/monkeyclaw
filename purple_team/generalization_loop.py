@@ -19,6 +19,7 @@ from interfaces.types import (
     GeneralizationRound,
     GeneralizationRoundInput,
 )
+from purple_team.bounce_builder import build as build_bounce
 from purple_team.bypass_detector import BypassDetector
 from purple_team.mutation_replayer import MutationReplayer
 from purple_team.operator_budget import budget_for
@@ -102,41 +103,104 @@ class GeneralizationLoop:
     def run(
         self, patch: object, package: object, test_pair: object, task: object
     ) -> GeneralizationResult:
-        """Round 0 only for now — produce + score variants. Phase 2's next
-        task adds the bounce/re-patch rounds."""
+        """The full bounded loop. Round 0 verifies the literal patch's
+        family; rounds 1..max_rounds re-patch against each round's bypass.
+        Exits GENERALIZED (no bypass within budget) or UNCONVERGED."""
         finding_id = getattr(package, "finding_id", "")
-        operators = budget_for(0, getattr(package, "affected_zone", ""), [])
-        variants = self.replayer.replay_variants(patch, package, operators)
-        results = [self.detector.score(v, package) for v in variants]
-        bypassed = [r for r in results if r.status == "bypassed"]
-        inconclusive = [r for r in results if r.status == "inconclusive"]
+        zone_id = getattr(package, "affected_zone", "")
+        rounds: list[GeneralizationRound] = []
+        current_patch = patch
+        current_task = task
+        prior_bypass_ops: list[str] = []
 
-        if results and len(inconclusive) == len(results):
+        for round_index in range(self.cfg.max_rounds + 1):
+            operators = budget_for(round_index, zone_id, prior_bypass_ops)
+            variants = self.replayer.replay_variants(
+                current_patch, package, operators)
+            results = [self.detector.score(v, package) for v in variants]
+            bypassed = [r for r in results if r.status == "bypassed"]
+            inconclusive = [r for r in results
+                            if r.status == "inconclusive"]
+
+            # Every variant inconclusive -> never claim generalization.
+            if results and len(inconclusive) == len(results):
+                rnd = self._persist_round(
+                    current_patch, package, round_index, operators, results,
+                    "unconverged", None)
+                rounds.append(rnd)
+                return GeneralizationResult(
+                    finding_id=finding_id,
+                    final_patch_id=getattr(current_patch, "patch_id", ""),
+                    status="unconverged", reason="replay_unavailable",
+                    rounds=rounds, open_bypasses=[])
+
+            # No bypass -> the patch generalized.
+            if not bypassed:
+                rnd = self._persist_round(
+                    current_patch, package, round_index, operators, results,
+                    "generalized", None)
+                rounds.append(rnd)
+                return GeneralizationResult(
+                    finding_id=finding_id,
+                    final_patch_id=getattr(current_patch, "patch_id", ""),
+                    status="generalized", reason=None, rounds=rounds,
+                    open_bypasses=[])
+
+            # A bypass exists. Out of round budget -> UNCONVERGED.
+            if round_index == self.cfg.max_rounds:
+                rnd = self._persist_round(
+                    current_patch, package, round_index, operators, results,
+                    "unconverged", None)
+                rounds.append(rnd)
+                return GeneralizationResult(
+                    finding_id=finding_id,
+                    final_patch_id=getattr(current_patch, "patch_id", ""),
+                    status="unconverged", reason="round_budget_exhausted",
+                    rounds=rounds, open_bypasses=bypassed)
+
+            # Bounce: build the constraint, re-patch, re-verify.
+            prior_bypass_ops = sorted(
+                {*prior_bypass_ops, *(r.operator for r in bypassed)})
+            transcripts = {
+                v.operator: v.mutated_transcript for v in variants
+                if v.operator in {r.operator for r in bypassed}}
+            current_task, _constraint = build_bounce(
+                current_task, results, transcripts)
+            repatched = self._repatch(current_task, package, test_pair)
+            if repatched is None:
+                rnd = self._persist_round(
+                    current_patch, package, round_index, operators, results,
+                    "unconverged", None)
+                rounds.append(rnd)
+                return GeneralizationResult(
+                    finding_id=finding_id,
+                    final_patch_id=getattr(current_patch, "patch_id", ""),
+                    status="unconverged", reason="repatch_failed_gates",
+                    rounds=rounds, open_bypasses=bypassed)
             rnd = self._persist_round(
-                patch, package, 0, operators, results, "unconverged", None)
-            return GeneralizationResult(
-                finding_id=finding_id,
-                final_patch_id=getattr(patch, "patch_id", ""),
-                status="unconverged", reason="replay_unavailable",
-                rounds=[rnd], open_bypasses=[])
+                current_patch, package, round_index, operators, results,
+                "bounced", getattr(repatched, "patch_id", None))
+            rounds.append(rnd)
+            current_patch = repatched
 
-        if not bypassed:
-            rnd = self._persist_round(
-                patch, package, 0, operators, results, "generalized", None)
-            return GeneralizationResult(
-                finding_id=finding_id,
-                final_patch_id=getattr(patch, "patch_id", ""),
-                status="generalized", reason=None, rounds=[rnd],
-                open_bypasses=[])
+        # Unreachable — the loop always returns inside the range.
+        raise RuntimeError(  # pragma: no cover
+            "generalization loop did not terminate")
 
-        # A bypass exists — Task 9 adds the bounce. For now, persist + report.
-        rnd = self._persist_round(
-            patch, package, 0, operators, results, "bounced", None)
-        return GeneralizationResult(
-            finding_id=finding_id,
-            final_patch_id=getattr(patch, "patch_id", ""),
-            status="unconverged", reason="round_budget_exhausted",
-            rounds=[rnd], open_bypasses=bypassed)
+    def _repatch(
+        self, task: object, package: object, test_pair: object
+    ) -> object | None:
+        """Generate re-patch candidates and return the first to pass the full
+        six-gate verifier, or None if none pass / none are produced."""
+        if self.patch_generator is None or self.patch_verifier is None:
+            return None
+        candidates = self.patch_generator.generate_for_task(task)
+        for cand in candidates:
+            outcome = self.patch_verifier.verify(
+                patch=cand, package=package, test_pair=test_pair)
+            if getattr(outcome, "approved", False):
+                return cand
+        return None
 
 
 __all__ = ["GeneralizationConfig", "GeneralizationLoop"]

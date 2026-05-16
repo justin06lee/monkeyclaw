@@ -76,3 +76,98 @@ def test_round_zero_records_all_twelve_operators_tried():
     result = loop.run(_Patch(), _Package(), test_pair=None, task=_Task())
     assert len(result.rounds[0].operators_tried) == 12
     assert result.rounds[0].variants_bypassed == 0
+
+
+class _StubGenerator:
+    """Returns a fixed list of re-patch candidates per generate_for_task."""
+
+    def __init__(self, candidates_per_call) -> None:
+        self._candidates = candidates_per_call
+        self.calls = []
+
+    def generate_for_task(self, task):  # noqa: ANN001
+        self.calls.append(task)
+        return list(self._candidates)
+
+
+class _StubVerifier:
+    """Approves a patch_id iff it is in `approves`."""
+
+    def __init__(self, approves) -> None:
+        self._approves = set(approves)
+
+    def verify(self, *, patch, package, test_pair):  # noqa: ANN001
+        @dataclass
+        class _Outcome:
+            approved: bool
+        return _Outcome(approved=patch.patch_id in self._approves)
+
+
+def _bypass_then_clean_judge():
+    """First call: confirmed (bypass). Subsequent calls: clean (held)."""
+    state = {"calls": 0}
+
+    def judge(lane):  # noqa: ANN001
+        state["calls"] += 1
+        if state["calls"] == 1:
+            return ("confirmed", [CheckResult(
+                check_name="net", triggered=True, severity="high")])
+        return ("clean", [])
+
+    return judge
+
+
+def test_converges_after_a_successful_bounce():
+    """Round 0 finds one bypass; the re-patch blocks it; round 1 GENERALIZED."""
+    mcp = MockMCP()
+    repatch = _Patch(patch_id="P1")
+    loop = _loop(
+        mcp, judge_fn=_bypass_then_clean_judge(),
+        patch_generator=_StubGenerator([repatch]),
+        patch_verifier=_StubVerifier(approves={"P1"}))
+    result = loop.run(_Patch(), _Package(), test_pair=None, task=_Task())
+    assert result.status == "generalized"
+    assert result.final_patch_id == "P1"
+    assert len(result.rounds) == 2  # round 0 (bounce) + round 1 (generalized)
+
+
+def test_does_not_converge_when_every_repatch_keeps_a_bypass():
+    """Every variant always bypasses -> UNCONVERGED at exactly max_rounds."""
+    mcp = MockMCP()
+    loop = _loop(
+        mcp, judge_fn=lambda lane: ("confirmed", [CheckResult(
+            check_name="net", triggered=True, severity="high")]),
+        patch_generator=_StubGenerator([_Patch(patch_id="P1")]),
+        patch_verifier=_StubVerifier(approves={"P1"}),
+        max_rounds=3)
+    result = loop.run(_Patch(), _Package(), test_pair=None, task=_Task())
+    assert result.status == "unconverged"
+    assert result.reason == "round_budget_exhausted"
+    # round 0 + rounds 1..max_rounds.
+    assert len(result.rounds) == 4
+    assert result.open_bypasses
+
+
+def test_unconverged_when_no_repatch_passes_the_verifier():
+    """A bypass exists but no re-patch passes the gates -> repatch_failed_gates."""
+    mcp = MockMCP()
+    loop = _loop(
+        mcp, judge_fn=lambda lane: ("confirmed", [CheckResult(
+            check_name="fs", triggered=True, severity="high")]),
+        patch_generator=_StubGenerator([_Patch(patch_id="P1")]),
+        patch_verifier=_StubVerifier(approves=set()))  # approves nothing
+    result = loop.run(_Patch(), _Package(), test_pair=None, task=_Task())
+    assert result.status == "unconverged"
+    assert result.reason == "repatch_failed_gates"
+
+
+def test_unconverged_when_generator_returns_no_candidates():
+    mcp = MockMCP()
+    loop = _loop(
+        mcp, judge_fn=lambda lane: ("confirmed", [CheckResult(
+            check_name="fs", triggered=True, severity="high")]),
+        patch_generator=_StubGenerator([]),  # no candidates
+        patch_verifier=_StubVerifier(approves=set()))
+    result = loop.run(_Patch(), _Package(), test_pair=None, task=_Task())
+    assert result.status == "unconverged"
+    assert result.reason == "repatch_failed_gates"
