@@ -12,6 +12,18 @@ ideation:
   near_dup_threshold: 0.80
   retry_max: 3
 
+# B9 — model tournament. When enabled, each listed entrant model also
+# ideates every targeted zone; their ideas join the shared dedup/priority
+# pool. Disabled by default — the single `ideation.model` path is used.
+model_tournament:
+  enabled: false
+  entrants: []
+  #   - role: red_ideation          # resolves model from models.roles
+  #   - role: cyber_specialist      # optional diversity entrant
+  #     provider: nvidia
+  #     model: nvidia/some-cyber-specialist
+  #     optional: true
+
 lanes:
   # One lane per synthesized attack chain — 5 chains, 5 deep-dive agents.
   pool_size: 5
