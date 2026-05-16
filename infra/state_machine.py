@@ -194,3 +194,29 @@ class TransitionEngine:
                 self.db.execute("ROLLBACK")
                 raise
         return fid
+
+    def sweep_stale_claims(self, older_than_seconds: int) -> int:
+        """Requeue repro_queue rows stuck in 'processing' past the timeout
+        (the requeue recovery edge). Each requeue is audited. Returns the
+        count requeued."""
+        with self.db.lock():
+            stale = self.db.fetchall(
+                "SELECT finding_id FROM repro_queue "
+                "WHERE status='processing' AND dequeued_at IS NOT NULL "
+                "AND dequeued_at < datetime('now', ?)",
+                (f"-{int(older_than_seconds)} seconds",),
+            )
+        count = 0
+        for row in stale:
+            try:
+                self.transition(
+                    entity="repro_queue", entity_id=row["finding_id"],
+                    to_state="queued", actor="sweep",
+                    reason="stale claim recovered",
+                    expected_from="processing",
+                )
+                count += 1
+            except StaleTransition:
+                # A late worker completed it between the SELECT and here.
+                continue
+        return count
