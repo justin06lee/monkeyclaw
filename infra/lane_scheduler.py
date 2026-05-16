@@ -79,6 +79,7 @@ class LaneScheduler:
         mcp: MonkeyClawMCP | None = None,
         enforcer: PolicyEnforcer | None = None,
         sandbox_runs=None,
+        telemetry_capturer=None,
     ) -> None:
         self.lane_cfg = lane_cfg
         self.nemoclaw_cfg = nemoclaw_cfg
@@ -86,6 +87,10 @@ class LaneScheduler:
         # Optional SandboxRunsStore. When set, each lane writes a sandbox_runs
         # audit row. Unset (mock/no-db) -> behavior is identical to before.
         self._sandbox_runs = sandbox_runs
+        # Optional SandboxTelemetryCapturer. When set and the victim exposes a
+        # real container, each lane captures real observables. Unset -> the
+        # harness-supplied observables are used unchanged.
+        self._telemetry_capturer = telemetry_capturer
         # Optional MonkeyClawMCP. When set, each lane emits A5 session
         # telemetry. Unset -> behavior is identical to before.
         self._mcp = mcp
@@ -254,6 +259,17 @@ class LaneScheduler:
             result = harness.result()
             result.deterministic = (
                 instance.metadata.get("deterministic", "true") == "true")
+            if (self._telemetry_capturer is not None
+                    and instance.metadata.get("sandbox_container")):
+                try:
+                    bundle = self._telemetry_capturer.capture(instance)
+                    result.network_log = list(bundle.network_events)
+                    result.process_log = list(bundle.process_events)
+                    result.inference_routing_log = list(
+                        bundle.inference_events)
+                except Exception as e:  # noqa: BLE001
+                    LOG.warning("telemetry capture failed for lane %s: %s",
+                                lane_id, e)
             if emitter is not None:
                 emitter.session_finished(
                     actor="lane-scheduler",

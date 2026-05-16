@@ -44,3 +44,12 @@ def test_capture_degrades_missing_stream_to_empty(tmp_path: Path, monkeypatch):
     cap = SandboxTelemetryCapturer(cli_binary="nemoclaw")
     bundle = cap.capture(_instance())
     assert bundle.network_events == []   # degraded, no exception
+
+
+def test_lane_scheduler_accepts_a_telemetry_capturer():
+    import inspect
+
+    from infra.lane_scheduler import LaneScheduler
+
+    params = inspect.signature(LaneScheduler.__init__).parameters
+    assert "telemetry_capturer" in params
