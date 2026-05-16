@@ -221,6 +221,25 @@ class JudgeConfig:
         if self.tier2_zones is None:
             self.tier2_zones = set(TIER2_ZONES)
 
+    @classmethod
+    def from_dict(cls, raw: dict | None) -> JudgeConfig:
+        """Build a JudgeConfig from the red_team.judge config block."""
+        raw = raw or {}
+        appeal_raw = raw.get("appeal") or {}
+        return cls(
+            tier2_confidence_threshold=float(
+                raw.get("tier2_confidence_threshold", 0.5)),
+            use_ensemble=bool(raw.get("use_ensemble", True)),
+            appeal=AppealConfig(
+                enabled=bool(appeal_raw.get("enabled", False)),
+                disagreement_threshold=float(
+                    raw.get("disagreement_threshold", 0.5)),
+                low_confidence_threshold=float(
+                    raw.get("low_confidence_threshold", 0.35)),
+                per_cycle_cap=int(appeal_raw.get("per_cycle_cap", 3)),
+            ),
+        )
+
 
 class Judge:
     """Tier 1 + optional Tier 2 judge."""

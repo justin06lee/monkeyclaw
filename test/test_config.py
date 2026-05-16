@@ -21,3 +21,18 @@ def test_defaults_load():
     assert cfg.lanes.lane_timeout_seconds == 1200
     assert cfg.nemoclaw.repo_path
     assert "PROMPT-INJ" in cfg.judgment.tier2_zones
+
+
+def test_judge_config_block_present():
+    import yaml
+    from pathlib import Path
+    cfg = yaml.safe_load(
+        Path("configs/monkeyclaw.yaml").read_text())
+    judge = cfg["red_team"]["judge"]
+    assert judge["disagreement_threshold"] == 0.5
+    assert judge["low_confidence_threshold"] == 0.35
+    assert judge["appeal"]["enabled"] is False
+    assert judge["appeal"]["per_cycle_cap"] == 3
+    assert "elo_noise_band" in judge
+    assert "elo_k" in judge
+    assert "pairwise_compare_budget" in judge
