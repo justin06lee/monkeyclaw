@@ -260,6 +260,28 @@ def _status(db_path: str) -> dict[str, Any]:
     }
 
 
+def render_executed_path(db, finding_id: str) -> str:  # noqa: ANN001
+    """Render the executed path for one finding as an HTML fragment.
+
+    Real-root-cause spec §9 finding-detail view. Takes a Database handle (the
+    finding-detail consumer holds one); the SPA dashboard has no server-side
+    per-finding page, so this is exposed as a standalone fragment renderer.
+    """
+    rows = db.fetchall(
+        "SELECT * FROM executed_paths WHERE finding_id = ? "
+        "ORDER BY created_at DESC LIMIT 1", (finding_id,))
+    if not rows:
+        return "<div class='exec-path empty'>No executed path traced.</div>"
+    r = rows[0]
+    badge = "degraded" if r["degraded"] else "traced"
+    return (
+        f"<div class='exec-path {badge}'>"
+        f"<h4>Executed path — zone {r['zone_id']}</h4>"
+        f"<p>backend: {r['backend']} · nodes: {r['node_count']} · "
+        f"status: {badge}</p></div>"
+    )
+
+
 def _all(db_path: str) -> dict[str, Any]:
     """Single atomic snapshot — the page renders from one fetch."""
     return {

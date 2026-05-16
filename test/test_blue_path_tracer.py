@@ -86,3 +86,16 @@ def test_trace_persists_executed_path_row(db: Database):
     assert rows[0]["zone_id"] == "SBX-FS"
     assert rows[0]["degraded"] == 0
     assert rows[0]["backend"] == "python"
+
+
+def test_dashboard_renders_executed_path(db: Database):
+    from infra.dashboard import render_executed_path
+
+    db.execute(
+        "INSERT INTO executed_paths(path_id, finding_id, zone_id, "
+        "anchor_symbols, sink_symbols, node_count, backend, degraded, "
+        "created_at) VALUES (?,?,?,?,?,?,?,?,datetime('now'))",
+        ("EP-1", "F-9", "SBX-FS", '[]', '[]', 3, "python", 0))
+    html = render_executed_path(db, finding_id="F-9")
+    assert "SBX-FS" in html
+    assert "python" in html
