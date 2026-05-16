@@ -57,6 +57,9 @@ class Entrant:
 class ModelTournamentConfig:
     enabled: bool = False
     entrants: list[Entrant] = field(default_factory=list)
+    tournament_zones_per_cycle: int = 1
+    h2h_weight: float = 0.6
+    exploration_floor: float = 0.1
 
 
 def _coerce_config(raw: object) -> ModelTournamentConfig:
@@ -78,6 +81,10 @@ def _coerce_config(raw: object) -> ModelTournamentConfig:
     return ModelTournamentConfig(
         enabled=bool(raw.get("enabled", False)),
         entrants=entrants,
+        tournament_zones_per_cycle=int(
+            raw.get("tournament_zones_per_cycle", 1)),
+        h2h_weight=float(raw.get("h2h_weight", 0.6)),
+        exploration_floor=float(raw.get("exploration_floor", 0.1)),
     )
 
 

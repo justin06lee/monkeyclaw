@@ -20,6 +20,9 @@ ideation:
 # pool. Disabled by default — the single `ideation.model` path is used.
 model_tournament:
   enabled: false
+  tournament_zones_per_cycle: 1
+  h2h_weight: 0.6
+  exploration_floor: 0.1
   entrants: []
   #   - role: red_ideation          # resolves model from models.roles
   #   - role: cyber_specialist      # optional diversity entrant

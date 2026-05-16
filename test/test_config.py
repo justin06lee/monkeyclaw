@@ -59,3 +59,22 @@ def test_ideation_taxonomy_config_defaults():
     cfg = load_config()
     assert cfg.ideation.taxonomy_mode is True
     assert cfg.ideation.taxonomy_gap_top_n == 4
+
+
+def test_model_tournament_config_gains_routing_keys():
+    import yaml
+    from pathlib import Path
+    cfg = yaml.safe_load(Path("configs/monkeyclaw.yaml").read_text())
+    mt = cfg["model_tournament"]
+    assert mt["enabled"] is False  # disabled-by-default unchanged
+    assert mt["tournament_zones_per_cycle"] == 1
+    assert mt["h2h_weight"] == 0.6
+    assert mt["exploration_floor"] == 0.1
+
+
+def test_load_tournament_config_reads_routing_keys():
+    from red_team.tournament import load_tournament_config
+    cfg = load_tournament_config()
+    assert cfg.tournament_zones_per_cycle == 1
+    assert cfg.h2h_weight == 0.6
+    assert cfg.exploration_floor == 0.1
