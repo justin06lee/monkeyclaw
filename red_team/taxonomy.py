@@ -74,26 +74,39 @@ class Taxonomy:
 
     def resolve(self, text: str) -> list[TechniqueRef]:
         """Best-effort match of free-text idea title/approach to technique
-        IDs by name + keyword. Gibberish resolves to []."""
+        IDs by name + keyword. Each significant (>=4 char) token of a
+        technique name must match a word in the text by a 5-char stem
+        prefix, so morphological variants ('exfiltrate' vs 'exfiltration')
+        still resolve while gibberish resolves to []."""
         if not text:
             return []
-        lowered = text.lower()
+        words = [w for w in re.split(r"[^a-z]+", text.lower()) if w]
         out: list[TechniqueRef] = []
         for t in self._techniques.values():
             tokens = [w for w in re.split(r"[^a-z]+", t.name.lower())
                       if len(w) >= 4]
-            if tokens and all(tok in lowered for tok in tokens):
+            if tokens and all(_token_matches(tok, words) for tok in tokens):
                 out.append(TechniqueRef(
                     kind="atlas", technique_id=t.technique_id, name=t.name,
                     corpus_version=self.version, resolved_by="keyword"))
         for c in self._owasp.values():
             tokens = [w for w in re.split(r"[^a-z]+", c.name.lower())
                       if len(w) >= 4]
-            if tokens and all(tok in lowered for tok in tokens):
+            if tokens and all(_token_matches(tok, words) for tok in tokens):
                 out.append(TechniqueRef(
                     kind="owasp", technique_id=c.category_id, name=c.name,
                     corpus_version=self.version, resolved_by="keyword"))
         return out
+
+
+def _token_matches(token: str, words: list[str]) -> bool:
+    """A name token matches a text word when they share a >=5-char stem
+    prefix (so 'exfiltration' matches 'exfiltrate'). Short tokens must
+    match exactly to keep gibberish from resolving."""
+    stem = token[:5]
+    if len(token) < 5:
+        return token in words
+    return any(w.startswith(stem) for w in words)
 
 
 def _load_yaml(path: Path) -> dict:

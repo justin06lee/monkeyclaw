@@ -47,7 +47,7 @@ techniques:
     description: An adversary abuses an LLM plugin or tool to run actions.
     is_agentic: true
   - id: AML.T0070
-    name: Agent Memory Manipulation
+    name: Agent Memory Poisoning
     tactic: Persistence
     parent_id: null
     description: >-
