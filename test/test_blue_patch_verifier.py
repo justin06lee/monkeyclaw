@@ -320,3 +320,39 @@ def test_verify_outcome_defaults_isolation_mode_to_mock():
     o = VerifyOutcome(approved=True, failed_gate=None, gates=[],
                       patch_id="P1")
     assert o.isolation_mode == "mock"
+
+
+def test_gate_diff_applies_uses_real_check_when_isolation_present(
+    tmp_path, db):
+    from blue_team.patch_isolation import PatchIsolation, PatchIsolationConfig
+    from blue_team.patch_verifier import run_gate_diff_applies
+    from infra.patch_builds_store import PatchBuildsStore
+    from test._git_repo_fixture import (
+        CONFLICTING_DIFF,
+        GOOD_DIFF,
+        build_repo,
+        make_patch,
+    )
+
+    repo, base = build_repo(tmp_path / "nemoclaw")
+    iso = PatchIsolation(
+        provisioner=None, store=PatchBuildsStore(db),
+        cfg=PatchIsolationConfig(
+            nemoclaw_repo_path=repo, base_ref=base,
+            worktree_root=str(tmp_path / "wt")))
+
+    good = run_gate_diff_applies(make_patch("P1", GOOD_DIFF), isolation=iso)
+    assert good.passed is True
+
+    bad = run_gate_diff_applies(
+        make_patch("P2", CONFLICTING_DIFF), isolation=iso)
+    assert bad.passed is False
+    assert bad.detail["rejected_hunks"]
+
+
+def test_gate_diff_applies_falls_back_to_shape_check_without_isolation():
+    from blue_team.patch_verifier import run_gate_diff_applies
+    from test._git_repo_fixture import make_patch
+
+    g = run_gate_diff_applies(make_patch("P1", "not a diff"), isolation=None)
+    assert g.passed is False  # _looks_like_diff shape check

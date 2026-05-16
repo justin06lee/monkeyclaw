@@ -232,6 +232,38 @@ def default_patched_replay_factory(patch: PatchCandidate) -> ReplayFn:
     return make_mock_replay_fn()
 
 
+def run_gate_diff_applies(patch: PatchCandidate, *, isolation=None
+                          ) -> GateResult:
+    """Gate 0 — the candidate diff can be applied. With an isolation backend
+    this runs a real `git apply --check` inside a disposable worktree; without
+    one it keeps the `_looks_like_diff` shape check. Name/semantics unchanged.
+    """
+    if isolation is not None:
+        try:
+            result = isolation.diff_applies(patch)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("isolation diff_applies failed, shape-checking: %s", e)
+        else:
+            return GateResult(
+                name="gate_diff_applies",
+                passed=result.applied,
+                detail={
+                    "diff_present": bool(patch.diff),
+                    "checked": result.checked,
+                    "rejected_hunks": result.rejected_hunks,
+                    "stderr": result.stderr,
+                    "mode": "git-apply-check",
+                },
+            )
+    diff_ok = _looks_like_diff(patch.diff)
+    return GateResult(
+        name="gate_diff_applies",
+        passed=diff_ok,
+        detail={"diff_present": bool(patch.diff), "well_formed": diff_ok,
+                "mode": "shape-check"},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Patch verifier
 # ---------------------------------------------------------------------------
@@ -249,6 +281,7 @@ class PatchVerifier:
         policy: PolicyConfig | None = None,
         patched_replay_factory: PatchedReplayFactory | None = None,
         judge_fn: JudgeFn | None = None,
+        isolation=None,
     ) -> None:
         self.mcp = mcp
         self.provisioner = provisioner
@@ -258,6 +291,7 @@ class PatchVerifier:
             patched_replay_factory or default_patched_replay_factory
         )
         self.judge_fn = judge_fn or default_judge
+        self.isolation = isolation
 
     # ------------------------------------------------------------------
     def verify(
@@ -317,20 +351,13 @@ class PatchVerifier:
         gates: list[GateResult] = []
         replay_fn = self.patched_replay_factory(patch)
 
-        # ---- Gate: patch applies cleanly (well-formed unified diff) ----
-        diff_ok = _looks_like_diff(patch.diff)
-        gates.append(GateResult(
-            name="gate_diff_applies",
-            passed=diff_ok,
-            detail={
-                "diff_present": bool(patch.diff),
-                "well_formed": diff_ok,
-            },
-        ))
-        if not diff_ok:
+        # ---- Gate: patch applies cleanly ----
+        g0 = run_gate_diff_applies(patch, isolation=self.isolation)
+        gates.append(g0)
+        if not g0.passed:
             return self._reject("gate_diff_applies", patch, gates,
-                                  "the candidate diff is empty or malformed "
-                                  "— it could not be applied")
+                                  "the candidate diff is empty, malformed, or "
+                                  "does not apply to the victim source")
 
         # ---- Gate 1: positive regression ----
         g1 = self._run_script(
@@ -494,4 +521,5 @@ __all__ = [
     "VerifyOutcome",
     "default_patched_replay_factory",
     "detect_control_plane_weakening",
+    "run_gate_diff_applies",
 ]
