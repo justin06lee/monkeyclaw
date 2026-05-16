@@ -29,12 +29,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from infra.telemetry import TelemetryEmitter
 
+from demo.victims.registry import make_victim
 from interfaces.provisioning import (
     ProvisioningError,
     VictimConfig,
     VictimInstance,
     VictimProvisioner,
 )
+from interfaces.victim_client import register, unregister
 
 LOG = logging.getLogger("monkeyclaw.provisioning")
 
@@ -248,22 +250,39 @@ class MockProvisioner(VictimProvisioner):
         if self._telemetry is not None:
             self._telemetry.policy_loaded(actor="provisioner",
                                           target=config.policy_path)
+        chat_endpoint = f"mock://chat/{iid}"
+        metadata = {"policy_path": config.policy_path,
+                    "agent_type": config.agent_type}
+
+        # Profile selector: a planted victim profile name carried in the
+        # config's `env` dict (VictimConfig has no `metadata` field). When
+        # set, bind that planted victim to the mock transport for this
+        # instance. When unset, behavior is identical to before.
+        profile = config.env.get("MC_PROFILE")
+        if profile:
+            # make_victim raises KeyError for an unknown profile.
+            victim = make_victim(profile)
+            register(chat_endpoint, victim)
+            metadata["profile"] = profile
+
         instance = VictimInstance(
             instance_id=iid,
-            chat_endpoint=f"mock://chat/{iid}",
+            chat_endpoint=chat_endpoint,
             shell_endpoint=f"mock://shell/{iid}",
             status="running",
             sandbox_id=iid,
             started_at=_now(),
-            metadata={"policy_path": config.policy_path,
-                      "agent_type": config.agent_type},
+            metadata=metadata,
         )
         self._instances[iid] = instance
         return instance
 
     def teardown_victim(self, instance_id: str) -> None:
-        if instance_id in self._instances:
-            self._instances[instance_id].status = "stopped"
+        instance = self._instances.get(instance_id)
+        if instance is not None:
+            instance.status = "stopped"
+            # Release any planted victim bound to the mock transport.
+            unregister(instance.chat_endpoint)
 
     def list_victims(self) -> list[VictimInstance]:
         return list(self._instances.values())
