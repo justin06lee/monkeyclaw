@@ -290,10 +290,14 @@ def main(argv: list[str] | None = None) -> int:
         argyph = ArgyphIndex(binary=cfg.code_context.argyph_binary)
         if argyph.available:
             LOG.info("code-context backend: argyph (%s)", argyph.binary)
-            argyph.index(str(root))
-            return 0
-        LOG.info("code-context backend: argyph configured but binary "
-                 "unavailable; falling back to python indexer")
+            try:
+                argyph.index(str(root))
+                return 0
+            except Exception as exc:
+                LOG.warning("argyph indexing failed (%s); falling back to python indexer", exc)
+        else:
+            LOG.info("code-context backend: argyph configured but binary "
+                     "unavailable; falling back to python indexer")
     else:
         LOG.info("code-context backend: python tree-sitter indexer")
 

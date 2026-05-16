@@ -76,6 +76,8 @@ class MCPServer(MonkeyClawMCP):
         if backend == "argyph":
             from infra.argyph_index import ArgyphIndex  # noqa: PLC0415
             self._argyph = ArgyphIndex(binary=argyph_binary)
+        else:
+            self._argyph = None
 
     def attach_telemetry(self, emitter) -> None:
         """Attach a TelemetryEmitter so MCP calls emit agent.mcp.invoked.
