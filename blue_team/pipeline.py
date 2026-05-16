@@ -83,6 +83,8 @@ from blue_team.replay_minimizer import (
     ReplayMinimizer,
     ReplayMinimizerConfig,
 )
+from blue_team.code_graph_sqlite import PythonCodeGraph
+from blue_team.path_tracer import PathTracer
 from blue_team.repro_writer import ReproWriter, ReproWriterInput
 from blue_team.root_cause import RootCauseConfig, RootCauseLocator, RootCauseResult
 from blue_team.test_generator import RegressionTestPair, TestGenerator
@@ -161,12 +163,33 @@ class Pipeline:
             ),
             policy=self.policy,
         )
-        self.root_cause = root_cause or RootCauseLocator(
-            llm=_client("root_cause"), mcp=self.mcp,
-            cfg=RootCauseConfig(
-                severity_threshold=self.cfg.repro.root_cause_severity_threshold,
-            ),
-        )
+        if root_cause is not None:
+            self.root_cause = root_cause
+        else:
+            # The tracer needs a Database handle — for code-graph reads
+            # (PythonCodeGraph) and executed_paths persistence. The MCP server
+            # exposes one as `.db`; mock MCPs do not, in which case the
+            # locator falls back to its keyword (degraded) path.
+            tracer = None
+            cg = self.cfg.repro.code_graph
+            mcp_db = getattr(self.mcp, "db", None)
+            if cg.enabled and mcp_db is not None:
+                tracer = PathTracer(
+                    graph=PythonCodeGraph(mcp_db),
+                    mcp=self.mcp,
+                    max_hops=cg.max_hops,
+                    db=mcp_db,
+                )
+            self.root_cause = RootCauseLocator(
+                llm=_client("root_cause"), mcp=self.mcp,
+                cfg=RootCauseConfig(
+                    severity_threshold=self.cfg.repro.root_cause_severity_threshold,
+                    path_rank_weight=cg.path_rank_weight,
+                    llm_conf_weight=cg.llm_conf_weight,
+                    max_hops=cg.max_hops,
+                ),
+                tracer=tracer,
+            )
         self.cold_verifier = cold_verifier or ColdVerifier(
             llm=_client("cold_verification"), provisioner=self.provisioner,
             cfg=ColdVerifierConfig.from_runtime_cfg(

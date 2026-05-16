@@ -98,3 +98,18 @@ def test_unknown_fallback_when_path_has_no_site():
                      minimal_transcript=[],
                      evidence=[CheckResult("policy_check", True, "high", {})])
     assert res.candidate_fix_sites[0].file == "(unknown)"
+
+
+def test_pipeline_injects_a_tracer_into_the_locator(tmp_path):
+    from blue_team.path_tracer import PathTracer
+    from blue_team.pipeline import Pipeline
+    from infra.database import Database
+    from infra.mcp_server import MCPServer
+    from infra.provisioning_nemoclaw import MockProvisioner
+
+    # MCPServer exposes a Database via `.db`, so the pipeline can build a
+    # graph-backed tracer (mock MCPs would degrade to the keyword path).
+    mcp = MCPServer(Database(tmp_path / "t.db"))
+    pipe = Pipeline(mcp=mcp, provisioner=MockProvisioner())
+    assert pipe.root_cause._tracer is not None
+    assert isinstance(pipe.root_cause._tracer, PathTracer)
