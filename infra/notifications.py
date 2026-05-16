@@ -62,11 +62,13 @@ class AlertDispatcher:
 
     # ------------------------------------------------------------------
     def _send_telegram(self, text: str) -> None:
+        # Plain text — no parse_mode. The alerts carry literal markers like
+        # "[INFO]"/"[CRITICAL]" which Markdown would mis-parse as links and
+        # strip the brackets from.
         url = f"https://api.telegram.org/bot{self.cfg.telegram_bot_token}/sendMessage"
         resp = self._client.post(url, json={
             "chat_id": self.cfg.telegram_chat_id,
             "text": text,
-            "parse_mode": "Markdown",
         })
         resp.raise_for_status()
 
