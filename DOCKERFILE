@@ -1,0 +1,11 @@
+# Ubuntu base, installs the Brev CLI via its official install script.
+
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://raw.githubusercontent.com/brevdev/brev-cli/main/bin/install-latest.sh | bash
+
+ENV PATH=/root/.local/bin:$PATH
