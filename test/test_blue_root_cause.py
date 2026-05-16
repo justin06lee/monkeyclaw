@@ -138,3 +138,39 @@ def test_root_cause_query_includes_evidence_signals():
     )
     assert "SBX-FS" in captured["query"]
     assert "filesystem_breach" in captured["query"]
+
+
+# ---------------------------------------------------------------------------
+# Frozen output contract — real-root-cause spec §4
+# ---------------------------------------------------------------------------
+
+
+def test_locate_signature_is_frozen():
+    import inspect
+
+    from blue_team.root_cause import RootCauseLocator
+
+    params = set(inspect.signature(RootCauseLocator.locate).parameters)
+    assert {"zone_id", "severity", "minimal_transcript",
+            "evidence", "zone_description"} <= params
+
+
+def test_root_cause_result_shape_is_frozen():
+    from dataclasses import fields
+
+    from blue_team.root_cause import RootCauseResult
+
+    fnames = {f.name for f in fields(RootCauseResult)}
+    assert fnames == {"root_cause_confidence", "candidate_fix_sites",
+                      "execution_trace", "notes", "skipped"}
+
+
+def test_severity_gate_still_skips_low():
+    from blue_team.root_cause import RootCauseConfig, RootCauseLocator
+
+    loc = RootCauseLocator(llm=MockLLM(), mcp=MockMCP(seed=0, verbose=False),
+                           cfg=RootCauseConfig())
+    res = loc.locate(zone_id="SBX-FS", severity="low",
+                     minimal_transcript=[], evidence=[])
+    assert res.skipped is True
+    assert res.candidate_fix_sites == []

@@ -1131,6 +1131,23 @@ class TechniqueCoverage:
     gap_technique_ids: list[str] = field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# Real root-cause analysis — code graph (real-root-cause spec §7)
+# Defined in interfaces/code_graph.py; re-exported here so blue_team imports
+# from one place.
+# ---------------------------------------------------------------------------
+
+from interfaces.code_graph import (  # noqa: E402
+    CodeEdge,
+    CodeGraph,
+    CodeSymbol,
+    EdgeKind,
+    ExecutedPath,
+    GraphBackend,
+    PathNode,
+    SymbolKind,
+)
+
 __all__ = [
     "AgentPolicy",
     "AppealVerdict",
@@ -1139,6 +1156,9 @@ __all__ = [
     "AttackElo",
     "CheckResult",
     "CodeChunk",
+    "CodeEdge",
+    "CodeGraph",
+    "CodeSymbol",
     "ControlDecision",
     "ControlValidationKind",
     "ControlValidationRun",
@@ -1153,11 +1173,14 @@ __all__ = [
     "DetectionRuleStatus",
     "DetectionVerdict",
     "DupResult",
+    "EdgeKind",
+    "ExecutedPath",
     "FAILURE_MODE_TO_STAGE",
     "FindingInput",
     "FindingRecord",
     "FixSite",
     "FsDiff",
+    "GraphBackend",
     "HARM_LADDER",
     "HarmStage",
     "IdeaComponent",
@@ -1183,6 +1206,7 @@ __all__ = [
     "PairwiseResult",
     "PatchCandidate",
     "PatchCandidateInput",
+    "PathNode",
     "PolicyConfig",
     "PolicyCorpusCase",
     "PolicyCorpusResult",
@@ -1210,6 +1234,7 @@ __all__ = [
     "SelfGovernanceCheck",
     "SelfGovernanceReport",
     "SessionTimeline",
+    "SymbolKind",
     "TechniqueCoverage",
     "TechniqueKind",
     "TechniqueRef",

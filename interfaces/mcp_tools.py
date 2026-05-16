@@ -184,6 +184,12 @@ class MonkeyClawMCP(Protocol):
         """Vector search over NemoClaw source. Returns file path, line range, content."""
         ...
 
+    # NOTE (real-root-cause spec §7): the code-graph tables (code_symbols /
+    # code_edges / executed_paths) are intentionally NOT exposed as MCP tools.
+    # PythonCodeGraph and PathTracer read them directly from SQLite — the graph
+    # walk is latency-sensitive and the consumer (blue_team) already holds a
+    # Database handle, so a tool round-trip would add cost with no benefit.
+
     # ------------------------------------------------------------------
     # Notifications
     # ------------------------------------------------------------------

@@ -69,6 +69,11 @@ repro:
   delta_debug_max_iterations: 30
   root_cause_severity_threshold: high
   cold_verify_max_attempts: 3
+  code_graph:
+    enabled: true
+    max_hops: 6
+    path_rank_weight: 0.5
+    llm_conf_weight: 0.5
 
 blue_team:
   patch_verify_max_attempts: 3

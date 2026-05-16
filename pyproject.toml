@@ -59,6 +59,7 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "test/*" = ["F811", "F401", "I001", "F841"]  # F811/F401: fixtures; I001/F841: B/C-owned test lint debt
+"test/fixtures/rc_repo/*" = ["F811", "F401", "I001", "F841", "F821"]  # rca fixture: deliberate unresolved reference
 "red_team/*" = ["I001", "F401", "B007"]  # B-owned; lint debt tracked for Person B
 "blue_team/*" = ["I001", "F401", "B007", "UP037"]  # C-owned; lint debt tracked for Person C
 

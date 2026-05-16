@@ -55,8 +55,12 @@ def _zones(db_path: str) -> list[dict[str, Any]]:
 
 def _findings(db_path: str) -> list[dict[str, Any]]:
     """Confirmed/suspicious findings, joined to their repro + patch status so
-    the timeline shows the whole red-to-blue lifecycle of each finding."""
-    return _query(
+    the timeline shows the whole red-to-blue lifecycle of each finding.
+
+    Each finding also carries an `executed_path` HTML fragment (real-root-cause
+    spec §9 finding-detail view) rendered from the latest `executed_paths` row.
+    """
+    findings = _query(
         db_path,
         "SELECT f.finding_id, f.zone_id, f.verdict, f.severity, "
         "f.failure_class, f.tier_caught, f.idea_summary, f.patch_status, "
@@ -67,6 +71,16 @@ def _findings(db_path: str) -> list[dict[str, Any]]:
         "ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 "
         "WHEN 'medium' THEN 2 ELSE 3 END, f.created_at DESC LIMIT 40",
     )
+    for f in findings:
+        f["executed_path"] = _render_executed_path_html(
+            _query(
+                db_path,
+                "SELECT * FROM executed_paths WHERE finding_id = ? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (f["finding_id"],),
+            )
+        )
+    return findings
 
 
 def _cycles(db_path: str) -> list[dict[str, Any]]:
@@ -442,6 +456,34 @@ def render_technique_coverage(mcp) -> str:
         "<th>Confirmed</th><th>Exercised %</th><th>Gap techniques</th>"
         "</tr></thead><tbody>" + "".join(rows) + "</tbody></table></section>"
     )
+
+
+def _render_executed_path_html(rows: list) -> str:  # noqa: ANN001
+    """Build the executed-path HTML fragment from executed_paths rows."""
+    if not rows:
+        return "<div class='exec-path empty'>No executed path traced.</div>"
+    r = rows[0]
+    badge = "degraded" if r["degraded"] else "traced"
+    return (
+        f"<div class='exec-path {badge}'>"
+        f"<h4>Executed path — zone {r['zone_id']}</h4>"
+        f"<p>backend: {r['backend']} · nodes: {r['node_count']} · "
+        f"status: {badge}</p></div>"
+    )
+
+
+def render_executed_path(db, finding_id: str) -> str:  # noqa: ANN001
+    """Render the executed path for one finding as an HTML fragment.
+
+    Real-root-cause spec §9 finding-detail view. Takes a Database handle (the
+    finding-detail consumer holds one). The SPA dashboard consumes the same
+    fragment per finding via `_findings`, which calls `_render_executed_path_html`
+    directly off its read-only connection.
+    """
+    rows = db.fetchall(
+        "SELECT * FROM executed_paths WHERE finding_id = ? "
+        "ORDER BY created_at DESC LIMIT 1", (finding_id,))
+    return _render_executed_path_html(rows)
 
 
 def _all(db_path: str) -> dict[str, Any]:
