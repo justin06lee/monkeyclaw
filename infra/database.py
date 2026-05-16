@@ -152,7 +152,7 @@ class Database:
         return conn
 
     def _apply_schema(self, conn: sqlite3.Connection) -> None:
-        sql = self.schema_path.read_text()
+        sql = self.schema_path.read_text(encoding="utf-8")
         conn.executescript(sql)
 
     def _run_migrations(self, conn: sqlite3.Connection) -> None:
