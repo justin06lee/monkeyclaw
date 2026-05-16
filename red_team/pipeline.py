@@ -464,6 +464,33 @@ class Pipeline:
                 novelty_notes="",
             )
 
+        chain = getattr(idea, "chain", None)
+        if chain is not None:
+            # Cross-zone chain lane — attribute the chain across its zones.
+            try:
+                judgment = self.judger.judge(
+                    lane_result,
+                    idea_summary=f"{idea.title}: {idea.approach}",
+                    success_criteria=idea.success_criteria)
+                attribution = attribute_chain(chain, lane_result, judgment)
+                chain_finding_id = route_chain_judgment(
+                    attribution, chain, self.mcp,
+                    archive=self._archive,
+                    alert_severity_floor=self.alert_severity_floor)
+                LOG.info(
+                    "judge: chain lane=%s chain=%s verdict=%s zones=%d "
+                    "finding=%s",
+                    lane_result.lane_id, chain.chain_id, judgment.verdict,
+                    len(attribution.chain_finding.zones_traversed),
+                    chain_finding_id)
+                return judgment
+            except Exception as e:  # noqa: BLE001
+                # Per-lane isolation — a chain attribution failure must not
+                # abort the cycle (spec §12).
+                LOG.exception("chain attribution failed for lane %s: %s",
+                              lane_result.lane_id, e)
+                return None  # type: ignore[return-value]
+
         judgment = self.judger.judge(
             lane_result,
             idea_summary=f"{idea.title}: {idea.approach}",
