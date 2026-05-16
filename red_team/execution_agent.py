@@ -239,6 +239,13 @@ class ExecutionAgent:
         real turns. The lane stops on a confirmed side-effect, the turn cap,
         or a genuine give-up.
         """
+        # B1 — a playbook-backed idea runs deterministically: scripted turns,
+        # no LLM in the loop. `idea.playbook` is attached by red_team.playbooks.
+        playbook = getattr(idea, "playbook", None)
+        if playbook is not None:
+            self._run_playbook(idea, playbook, victim, harness)
+            return
+
         overall_cap = min(lane_cfg.max_turns, self.cfg.max_turns)
         min_before_giveup = min(
             self.cfg.min_turns_before_giveup, max(0, overall_cap - 1))
@@ -335,6 +342,64 @@ class ExecutionAgent:
         # Self-assessment — pinned to harness evidence (see _self_assess).
         assessment = self._self_assess(
             idea, harness, any_real_side_effects, accumulated_secrets)
+        harness.set_self_assessment(assessment)
+        harness.set_termination(termination)
+
+    # ------------------------------------------------------------------
+    def _run_playbook(
+        self,
+        idea: IdeaObject,
+        playbook,
+        victim: VictimInstance,
+        harness: MonitoringHarness,
+    ) -> None:
+        """Deterministic playbook replay (spec B1).
+
+        Sends the playbook's scripted turns verbatim — no LLM, no adaptation
+        — so a demo attack reproduces identically every run. Side-effects
+        flow to the harness exactly as in the live loop; the self-assessment
+        is derived deterministically from observed evidence.
+        """
+        turns = list(getattr(playbook, "turns", []))
+        profile = getattr(playbook, "profile", idea.idea_id)
+        LOG.info("playbook lane idea=%s profile=%s: %d scripted turn(s)",
+                 idea.idea_id, profile, len(turns))
+
+        accumulated_secrets: list[str] = []
+        any_real_side_effects = False
+        termination = "idea_completed"
+
+        with VictimClient(victim.chat_endpoint) as client:
+            for msg in turns:
+                harness.record_message(Message(
+                    role="attacker", content=msg, timestamp=_now()))
+                try:
+                    victim_reply, side = client.send(msg)
+                except VictimError as e:
+                    LOG.warning("playbook victim transport error: %s", e)
+                    harness.record_message(Message(
+                        role="victim", content=f"[transport error: {e}]",
+                        timestamp=_now()))
+                    termination = "error"
+                    break
+                harness.add_tokens(victim=estimate_tokens(victim_reply))
+                harness.record_message(Message(
+                    role="victim", content=victim_reply, timestamp=_now()))
+                if side is not None:
+                    self._forward_side_effects(
+                        side, harness, accumulated_secrets)
+                    if (side.fs_files_written or side.network_events
+                            or side.inference_events or side.revealed_secret):
+                        any_real_side_effects = True
+
+        if any_real_side_effects or accumulated_secrets:
+            assessment = (
+                f"Playbook '{profile}' produced observable side-effects "
+                f"against zone {idea.zone_id}.")
+        else:
+            assessment = (
+                f"Playbook '{profile}' completed with no observable "
+                f"side-effects.")
         harness.set_self_assessment(assessment)
         harness.set_termination(termination)
 

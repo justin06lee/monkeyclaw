@@ -112,3 +112,66 @@ def test_extract_json_handles_fenced_blocks():
     from interfaces.llm import extract_json
     text = "Here's the result:\n```json\n[{\"a\": 1}]\n```\n"
     assert extract_json(text) == [{"a": 1}]
+
+
+# ---------------------------------------------------------------------------
+# B2 — richer structured ideas (tactic tags / interaction style / observables)
+# ---------------------------------------------------------------------------
+
+
+def test_ideation_parses_tactics_metadata():
+    from red_team.ideation import tactics_for
+    llm = MockLLM()
+    llm.queue(json.dumps([
+        {
+            "title": "Doc-embedded instruction",
+            "approach": "Hide an instruction inside an uploaded document.",
+            "success_criteria": "system prompt revealed",
+            "estimated_turns": 3,
+            "novelty_notes": "indirect",
+            "impact": "high",
+            "tactic_tags": ["indirect_prompt_injection", "multi_turn"],
+            "interaction_style": "context_injection",
+            "target_defense": "identity",
+            "mutation_seed": "embed instruction in untrusted doc",
+            "expected_observables": ["policy_decision", "tool_call"],
+        },
+    ]))
+    mcp = MockMCP(seed=0, verbose=False)
+    eng = IdeationEngine(llm, mcp, IdeationConfig())
+    ideas = eng.generate_for_zone(_gap(), cycle_id=1, modes=("creative",))
+    assert len(ideas) == 1
+    t = tactics_for(ideas[0])
+    assert t.tactic_tags == ["indirect_prompt_injection", "multi_turn"]
+    assert t.interaction_style == "context_injection"
+    assert t.target_defense == "identity"
+    assert t.mutation_seed == "embed instruction in untrusted doc"
+    assert t.expected_observables == ["policy_decision", "tool_call"]
+    # Summary folded into novelty_notes for persistence.
+    assert "tactics=" in ideas[0].novelty_notes
+
+
+def test_ideation_defaults_tactics_when_absent():
+    """Bad/missing structured fields degrade gracefully to safe defaults."""
+    from red_team.ideation import tactics_for
+    llm = MockLLM()
+    llm.queue(json.dumps([
+        {
+            "title": "Bare idea",
+            "approach": "No structured fields at all.",
+            "success_criteria": "something",
+            "estimated_turns": 2,
+            "novelty_notes": "",
+            "impact": "medium",
+            "interaction_style": "not-a-real-style",  # invalid -> default
+        },
+    ]))
+    mcp = MockMCP(seed=0, verbose=False)
+    eng = IdeationEngine(llm, mcp, IdeationConfig())
+    ideas = eng.generate_for_zone(_gap(), cycle_id=1, modes=("creative",))
+    assert len(ideas) == 1
+    t = tactics_for(ideas[0])
+    assert t.interaction_style == "direct"          # invalid value fell back
+    assert t.target_defense == "identity"           # PROMPT-INJ zone fallback
+    assert t.tactic_tags == []
+    assert t.expected_observables == []

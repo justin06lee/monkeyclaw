@@ -156,9 +156,18 @@ _PAGE = """<!doctype html>
           --creative:#c792ea; --code:#5cc8ff; --history:#3fb950; }
   * { box-sizing:border-box; margin:0; }
   body { background:var(--bg); color:var(--txt); font:14px/1.5 ui-monospace,
-         "SF Mono",Menlo,Consolas,monospace; padding:20px 24px; }
-  h1 { font-size:28px; letter-spacing:.5px; }
-  h1 .sub { color:var(--dim); font-size:14px; font-weight:400; }
+         "SF Mono",Menlo,Consolas,monospace; padding:0 24px 28px; }
+  .wrap { max-width:1180px; margin:0 auto; }
+  /* navbar */
+  .nav { position:sticky; top:0; z-index:20; display:flex; flex-direction:column;
+         align-items:center; justify-content:center; gap:6px;
+         padding:18px 24px 16px; margin:0 -24px;
+         background:rgba(10,12,16,.82); backdrop-filter:blur(10px);
+         -webkit-backdrop-filter:blur(10px); border-bottom:1px solid var(--line); }
+  .nav img { height:48px; width:auto; display:block;
+             filter:drop-shadow(0 0 14px rgba(245,166,35,.18)); }
+  .nav .tag { color:var(--dim); font-size:11px; letter-spacing:2px;
+              text-transform:uppercase; }
   h2 { font-size:12px; text-transform:uppercase; letter-spacing:1.5px;
        color:var(--dim); margin:0 0 10px; }
   .panel { background:var(--panel); border:1px solid var(--line);
@@ -206,7 +215,11 @@ _PAGE = """<!doctype html>
   .dedup { opacity:.5; }
   .empty { color:var(--dim); padding:12px 0; }
 </style></head><body>
-<h1>MonkeyClaw <span class="sub">— autonomous NemoClaw red team</span></h1>
+<nav class="nav">
+  <img src="/logo.png" alt="MonkeyClaw">
+  <span class="tag">autonomous NemoClaw red team</span>
+</nav>
+<div class="wrap">
 <div id="live" class="idle"><span class="pulse"></span><span id="liveText">connecting…</span></div>
 
 <div class="stats" id="stats"></div>
@@ -236,6 +249,7 @@ _PAGE = """<!doctype html>
     <h2>Cycle History</h2>
     <div class="scroll" id="cycles"></div>
   </div>
+</div>
 </div>
 
 <script>
@@ -327,15 +341,24 @@ tick(); setInterval(tick, 4000);
 # ---------------------------------------------------------------------------
 
 
+_LOGO_PATH = Path(__file__).resolve().parent.parent / "assets" / "monkeyclaw-dark.png"
+
+
 def build_dashboard_app(db_path: str):
     from fastapi import FastAPI
-    from fastapi.responses import HTMLResponse
+    from fastapi.responses import FileResponse, HTMLResponse, Response
 
     app = FastAPI(title="MonkeyClaw Dashboard")
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
         return _PAGE
+
+    @app.get("/logo.png")
+    def logo() -> Response:
+        if _LOGO_PATH.exists():
+            return FileResponse(_LOGO_PATH, media_type="image/png")
+        return Response(status_code=404)
 
     @app.get("/api/status")
     def api_status() -> dict[str, Any]:

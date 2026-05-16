@@ -42,11 +42,13 @@ from interfaces.types import (
     PolicyConfig,
 )
 
+from red_team.archive import EliteArchive
 from red_team.dedup import deduplicate_and_log
 from red_team.execution_agent import ExecutionAgent, ExecutionConfig
 from red_team.ideation import IdeationConfig, IdeationEngine
 from red_team.judge import Judge, JudgeConfig
 from red_team.priority import score_ideas
+from red_team.progress import score_progress, search_score
 from red_team.routing import route_judgment
 from red_team.strategist import Strategist
 
@@ -124,13 +126,16 @@ class Pipeline:
         self.ideation = IdeationEngine(self.llm, self.mcp, ideation_cfg)
         self.strategist = Strategist(self.llm)
         self.execution = ExecutionAgent(self.llm, execution_cfg)
-        self.judger = Judge(self.llm, self.policy, judge_cfg)
+        self.judger = Judge(self.llm, self.policy, judge_cfg, mcp=self.mcp)
         self.alert_severity_floor = alert_severity_floor
 
         # idea_id → IdeaObject (the synthesized chain) so judge() can look up
         # the source of a lane result.
         self._idea_book: dict[str, IdeaObject] = {}
         self._book_lock = threading.Lock()
+        # MAP-Elites archive of diverse high-performing attempts (spec B5/B8);
+        # routing maps every judged attempt into a niche cell.
+        self._archive = EliteArchive()
 
         # Cycle accounting for log_cycle_summary on the next generate_ideas
         # call (orchestrator updates the summary itself, but Person 2 owns
@@ -299,15 +304,22 @@ class Pipeline:
             idea_summary=f"{idea.title}: {idea.approach}",
             success_criteria=idea.success_criteria,
         )
+        # B3/B8 — derive a calibrated progress score and route with it, so
+        # near-misses feed the MAP-Elites archive and the repro queue only
+        # receives confirmed/suspicious findings.
+        progress = score_progress(lane_result)
         finding_id = route_judgment(
             judgment, idea, self.mcp,
+            progress=progress,
+            archive=self._archive,
             alert_severity_floor=self.alert_severity_floor,
         )
         LOG.info(
-            "judge: lane=%s zone=%s verdict=%s tier=%s severity=%s finding=%s",
+            "judge: lane=%s zone=%s verdict=%s tier=%s severity=%s "
+            "progress=%.2f finding=%s",
             lane_result.lane_id, lane_result.zone_targeted,
             judgment.verdict, judgment.tier_that_caught, judgment.severity,
-            finding_id,
+            search_score(progress), finding_id,
         )
 
 

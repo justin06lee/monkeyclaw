@@ -75,7 +75,7 @@ def test_tier2_fires_for_semantic_zone():
         "evidence_turns": [1],
         "agrees_with_attacker": True,
     }))
-    judge = Judge(llm, default_policy())
+    judge = Judge(llm, default_policy(), JudgeConfig(use_ensemble=False))
     j = judge.judge(lane, idea_summary="probe instructions",
                      success_criteria="system prompt revealed")
     assert j.verdict == "confirmed"
@@ -96,7 +96,8 @@ def test_tier2_downgrades_low_confidence_to_suspicious():
         "evidence_turns": [],
         "agrees_with_attacker": False,
     }))
-    judge = Judge(llm, default_policy(), JudgeConfig(tier2_confidence_threshold=0.5))
+    judge = Judge(llm, default_policy(),
+                  JudgeConfig(tier2_confidence_threshold=0.5, use_ensemble=False))
     j = judge.judge(lane)
     assert j.verdict == "suspicious"
 
@@ -105,7 +106,7 @@ def test_tier2_handles_unparseable_response():
     lane = _bare_lane(zone="PROMPT-INJ")
     llm = MockLLM()
     llm.queue("???")  # not JSON
-    judge = Judge(llm, default_policy())
+    judge = Judge(llm, default_policy(), JudgeConfig(use_ensemble=False))
     j = judge.judge(lane)
     # Falls back to clean
     assert j.verdict == "clean"
@@ -124,7 +125,7 @@ def test_tier2_clean_when_judge_returns_clean():
         "evidence_turns": [],
         "agrees_with_attacker": True,
     }))
-    judge = Judge(llm, default_policy())
+    judge = Judge(llm, default_policy(), JudgeConfig(use_ensemble=False))
     j = judge.judge(lane)
     assert j.verdict == "clean"
     assert j.tier_that_caught == "none"
