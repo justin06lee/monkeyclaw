@@ -76,3 +76,22 @@ def test_exhausted_chain_reraises(monkeypatch):
     # Every attempt was still recorded as a failed row.
     assert len(mcp.runs) >= 2
     assert all(r.success is False for r in mcp.runs)
+
+
+def test_red_pipeline_uses_router_clients():
+    from infra.bootstrap import boot
+    from red_team.pipeline import Pipeline
+    rt = boot(use_mock_provisioner=True)
+    try:
+        pipe = Pipeline(runtime=rt)
+        # Each component holds a RoutedClient bound to its role, not a bare LLM.
+        from interfaces.model_router import RoutedClient
+        assert isinstance(pipe.ideation.llm, RoutedClient)
+        assert pipe.ideation.llm.role == "red_ideation"
+        assert isinstance(pipe.execution.llm, RoutedClient)
+        assert pipe.execution.llm.role == "red_execution"
+        assert isinstance(pipe.judger.llm, RoutedClient)
+        assert pipe.judger.llm.role == "semantic_judge"
+        assert isinstance(pipe.strategist.llm, RoutedClient)
+    finally:
+        rt.shutdown()
