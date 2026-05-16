@@ -98,6 +98,36 @@ def test_patch_generator_emits_multiple_alts_for_high_severity():
     assert candidates[0].zone_id == "SBX-FS"
 
 
+def test_patch_generator_carries_expected_tests_and_confidence():
+    """Spec C5: each candidate must include expected tests + confidence."""
+    llm = MockLLM()
+    llm.queue(json.dumps([
+        {"label": "Canonicalize", "invasiveness": "low", "diff": _GOOD_DIFF,
+          "explanation": "resolve symlinks", "side_effects": "none",
+          "expected_tests": ["symlink escape blocked",
+                              "normal write still works"],
+          "confidence": 0.8},
+    ]))
+    mcp = MockMCP(seed=0, verbose=False)
+    gen = PatchGenerator(llm, mcp)
+    [c] = gen.generate_for_task(_task("low"))
+    assert c.expected_tests == [
+        "symlink escape blocked", "normal write still works"]
+    assert c.confidence == 0.8
+
+
+def test_patch_generator_defaults_missing_expected_tests_and_confidence():
+    llm = MockLLM()
+    llm.queue(json.dumps([
+        {"label": "x", "invasiveness": "low", "diff": _GOOD_DIFF,
+          "explanation": "x", "side_effects": "x"},
+    ]))
+    gen = PatchGenerator(llm, MockMCP(seed=0, verbose=False))
+    [c] = gen.generate_for_task(_task("low"))
+    assert c.expected_tests == []
+    assert 0.0 <= c.confidence <= 1.0
+
+
 def test_patch_generator_one_alt_for_low_severity():
     llm = MockLLM()
     llm.queue(json.dumps([

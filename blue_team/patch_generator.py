@@ -64,6 +64,12 @@ Each alternative must include:
    vulnerability.
 - `side_effects`: one paragraph — what legitimate behavior changes, what
    downstream systems might be affected, performance impact if any.
+- `expected_tests`: a JSON array of short strings naming the test
+   scenarios this patch should satisfy (the positive regression that
+   should now pass, the functionality that must still work, any policy
+   /telemetry assertion).
+- `confidence`: a number in [0, 1] — your confidence that this patch
+   eliminates the vulnerability without regressions.
 
 Output JSON only, no prose, no fences:
 
@@ -73,7 +79,9 @@ Output JSON only, no prose, no fences:
     "invasiveness": "low",
     "diff": "--- a/path ...",
     "explanation": "...",
-    "side_effects": "..."
+    "side_effects": "...",
+    "expected_tests": ["...", "..."],
+    "confidence": 0.0
   }
 ]
 
@@ -95,6 +103,24 @@ def _looks_like_diff(text: str) -> bool:
     if not text:
         return False
     return bool(_DIFF_HUNK_RE.search(text) and _DIFF_FILE_RE.search(text))
+
+
+def _coerce_expected_tests(value: object) -> list[str]:
+    """Normalize the model's `expected_tests` field into a list[str]."""
+    if isinstance(value, list):
+        return [str(v).strip()[:300] for v in value if str(v).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()[:300]]
+    return []
+
+
+def _coerce_confidence(value: object) -> float:
+    """Clamp the model's `confidence` field into [0.0, 1.0]."""
+    try:
+        c = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(c, 1.0))
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +303,9 @@ class PatchGenerator:
                 explanation=str(entry.get("explanation", ""))[:4000],
                 side_effects=str(entry.get("side_effects", ""))[:2000],
                 status="proposed",
+                expected_tests=_coerce_expected_tests(
+                    entry.get("expected_tests")),
+                confidence=_coerce_confidence(entry.get("confidence")),
             ))
 
         # Sort: low → medium → high invasiveness (spec wants least invasive
