@@ -150,3 +150,53 @@ def test_pairwise_idea_set_result_has_winner_and_margin():
         margin=0.4, reasoning="frontier set is more distinct")
     assert r.winner_label == "frontier"
     assert 0.0 <= r.margin <= 1.0
+
+
+def _tournament():
+    return ModelTournament(ModelTournamentConfig(
+        enabled=True, entrants=[Entrant(role="red_ideation")]))
+
+
+def test_record_outcome_counts_per_zone():
+    t = _tournament()
+    t.record_outcome("nemotron", verdict="confirmed", zone_id="SBX-FS")
+    t.record_outcome("nemotron", verdict="suspicious", zone_id="SBX-NET")
+    fs = t.leaderboard(zone_id="SBX-FS")
+    net = t.leaderboard(zone_id="SBX-NET")
+    assert fs["nemotron"]["confirmed"] == 1
+    assert fs["nemotron"]["suspicious"] == 0
+    assert net["nemotron"]["suspicious"] == 1
+
+
+def test_leaderboard_global_rollup_sums_zones():
+    t = _tournament()
+    t.record_outcome("nemotron", verdict="confirmed", zone_id="SBX-FS")
+    t.record_outcome("nemotron", verdict="confirmed", zone_id="SBX-NET")
+    # no zone_id -> global rollup across all zones.
+    assert t.leaderboard()["nemotron"]["confirmed"] == 2
+
+
+def test_record_outcome_without_zone_uses_global_bucket():
+    t = _tournament()
+    t.record_outcome("nemotron", verdict="confirmed")
+    assert t.leaderboard()["nemotron"]["confirmed"] == 1
+
+
+def test_load_winrates_round_trips():
+    from interfaces.types import ModelZoneWinrate
+
+    t = _tournament()
+    t.load_winrates([
+        ModelZoneWinrate(zone_id="SBX-FS", model_label="nemotron",
+                         winrate=0.72),
+        ModelZoneWinrate(zone_id="SBX-FS", model_label="frontier",
+                         winrate=0.41),
+    ])
+    assert t.winrate("SBX-FS", "nemotron") == 0.72
+    assert t.winrate("SBX-FS", "frontier") == 0.41
+
+
+def test_winrate_returns_neutral_prior_for_unknown_pair():
+    t = _tournament()
+    # no history at all -> neutral prior so routing treats it optimistically.
+    assert t.winrate("SBX-FS", "never-seen") == 0.5
