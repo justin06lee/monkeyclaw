@@ -124,14 +124,21 @@ class NemoClawProvisioner(VictimProvisioner):
                 what="recover",
             )
         else:
-            # No-reset mode: `clean_snapshot` is unset, so connect to the
-            # persistent victim without snapshot restore/recover. Agent and
-            # filesystem state carry over between lanes. Used where snapshots
-            # are unavailable (e.g. nemoclaw CPU sandboxes that don't support
-            # `snapshot create`).
-            LOG.warning("provisioning victim %s: no-reset mode (clean_snapshot "
-                        "unset) — connecting to persistent %s without reset",
-                        instance_id, self.sandbox_name)
+            # Recover-only mode: `clean_snapshot` is unset (snapshots are
+            # unavailable on this nemoclaw CPU sandbox), so we cannot reset
+            # the filesystem — but we still `recover` to restart the gateway
+            # + agent. That clears in-memory session/conversation state, so
+            # each lane gets a fresh agent with no carried-over prompt
+            # injection. Filesystem changes from prior lanes persist.
+            LOG.warning("provisioning victim %s: recover-only mode "
+                        "(clean_snapshot unset) — restarting agent on %s "
+                        "without snapshot restore", instance_id,
+                        self.sandbox_name)
+            self._run(
+                [self.cli, self.sandbox_name, "recover"],
+                timeout=self.recover_timeout_s,
+                what="recover",
+            )
         # 3. Fetch the gateway auth token for VictimClient.
         token = self._run(
             [self.cli, self.sandbox_name, "gateway-token", "--quiet"],
