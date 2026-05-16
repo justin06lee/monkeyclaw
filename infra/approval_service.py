@@ -198,23 +198,17 @@ class ApprovalService:
 
     # ------------------------------------------------------------------
     def _find_ask(self, request_id: str) -> ApprovalEvent | None:
-        for r in self.list_pending():
-            if r.request_id == request_id:
-                # list_pending yields ApprovalRequest; re-read the ask event.
-                return ApprovalEvent(
-                    event_id="", request_id=r.request_id,
-                    patch_id=r.patch_id, vuln_ids=r.vuln_ids,
-                    zone_id=r.zone_id, severity=r.severity, decision="ask",
-                    posture=r.posture, approver="system", reason="",
-                    ask_expiry=r.ask_expiry, grant_expiry=None,
-                    generalization_status=r.generalization_status,
-                    pr_url=None, created_at=r.created_at)
-        # Not pending: it may have been resolved/expired already.
+        """The `ask` event for a request_id, found across the full audit
+        log (resolved or not). None when the request never existed."""
+        for ev in self.mcp.get_approval_events_by_request(request_id):
+            if ev.decision == "ask":
+                return ev
         return None
 
     def _is_resolved(self, request_id: str) -> bool:
-        return not any(
-            r.request_id == request_id for r in self.list_pending())
+        return any(
+            ev.decision in ("allow", "deny", "expired")
+            for ev in self.mcp.get_approval_events_by_request(request_id))
 
     def _overdue_grants(self, now: datetime) -> list[ApprovalEvent]:
         out: list[ApprovalEvent] = []

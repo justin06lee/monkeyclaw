@@ -846,6 +846,14 @@ class MockMCP(MonkeyClawMCP):
             (e for e in self._approval_events if e.patch_id == patch_id),
             key=lambda e: e.created_at)
 
+    def get_approval_events_by_request(
+        self, request_id: str,
+    ) -> list[ApprovalEvent]:
+        return sorted(
+            (e for e in self._approval_events
+             if e.request_id == request_id),
+            key=lambda e: e.created_at)
+
     def get_pending_approvals(self) -> list[ApprovalRequest]:
         resolved = {e.request_id for e in self._approval_events
                     if e.decision in ("allow", "deny", "expired")}

@@ -1020,6 +1020,14 @@ class MCPServer(MonkeyClawMCP):
             "ORDER BY created_at ASC", (patch_id,))
         return [self._row_to_approval_event(r) for r in rows]
 
+    def get_approval_events_by_request(
+        self, request_id: str,
+    ) -> list[ApprovalEvent]:
+        rows = self.db.fetchall(
+            "SELECT * FROM approval_events WHERE request_id = ? "
+            "ORDER BY created_at ASC", (request_id,))
+        return [self._row_to_approval_event(r) for r in rows]
+
     def get_pending_approvals(self) -> list[ApprovalRequest]:
         # request_ids with an `ask` row but no allow/deny/expired row.
         rows = self.db.fetchall(

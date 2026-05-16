@@ -376,6 +376,12 @@ class MonkeyClawMCP(Protocol):
         """Every approval_events row for one patch, oldest first."""
         ...
 
+    def get_approval_events_by_request(
+        self, request_id: str,
+    ) -> list[ApprovalEvent]:
+        """Every approval_events row for one request_id, oldest first."""
+        ...
+
     def get_resolved_allows(self) -> list[ApprovalEvent]:
         """Every `allow` event with a non-null grant_expiry and no later
         `expired` row for the same request_id."""
