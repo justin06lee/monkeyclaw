@@ -158,23 +158,49 @@ class Orchestrator:
         LOG.info("--- cycle %d ---", cycle_id)
         start = time.time()
         n = self.rt.cfg.lanes.pool_size
-        ideas = self.red.generate_ideas(cycle_id, n)
-        for idea in ideas:
-            self.scheduler.submit(idea)
-        self.scheduler.drain(timeout=self.rt.cfg.lanes.lane_timeout_seconds + 60)
-        with self._results_lock:
-            results = list(self._results)
-            self._results.clear()
+        results: list[LaneResult] = []
+        ideas: list[IdeaObject] = []
+        try:
+            ideas = self.red.generate_ideas(cycle_id, n)
+            for idea in ideas:
+                self.scheduler.submit(idea)
+            # Drain in-flight lanes before we leave the lane phase — no lane
+            # may still be touching the sandbox when bookkeeping runs.
+            self.scheduler.drain(
+                timeout=self.rt.cfg.lanes.lane_timeout_seconds + 60)
+            with self._results_lock:
+                results = list(self._results)
+                self._results.clear()
+            for r in results:
+                # One lane's judge failure must not abort the cycle — isolate
+                # each, log it, and continue. Person 2's judge writes findings
+                # via MCP; for the stub path, no findings are produced.
+                try:
+                    self.red.judge(r)
+                except Exception as e:  # noqa: BLE001
+                    LOG.exception("judge failed for lane %s (zone %s): %s",
+                                  r.lane_id, r.zone_targeted, e)
+            # Repro batch (blue side runs continuously, we nudge it per cycle).
+            try:
+                self.blue.process_repro_queue()
+                self.blue.process_blue_queue()
+            except Exception as e:  # noqa: BLE001
+                LOG.exception("blue queue processing failed in cycle %d: %s",
+                              cycle_id, e)
+        except Exception as e:  # noqa: BLE001
+            # A failure in the lane phase itself must not skip end-of-cycle
+            # bookkeeping — fall through to the always-run block below.
+            LOG.exception("cycle %d lane phase failed: %s", cycle_id, e)
+        finally:
+            self._finalize_cycle(cycle_id, ideas, results, start)
+
+    def _finalize_cycle(self, cycle_id: int, ideas: list[IdeaObject],
+                        results: list[LaneResult], start: float) -> None:
+        """End-of-cycle bookkeeping that ALWAYS runs, even if lanes failed:
+        write the cycle summary, decay unvisited-zone coverage, and run
+        regression if configured."""
         confirmed = 0
         suspicious = 0
-        for r in results:
-            self.red.judge(r)
-            # Person 2's judge writes findings via MCP. We don't double-count here;
-            # for the stub path, no findings are produced.
-        # Repro batch (blue side runs continuously, but we nudge it once per cycle)
-        self.blue.process_repro_queue()
-        self.blue.process_blue_queue()
-        # End-of-cycle bookkeeping
         zones = sorted({r.zone_targeted for r in results})
         # Person 2's judge writes findings to the DB during the judge loop
         # above — read back the real verdict counts for this cycle.
@@ -186,20 +212,26 @@ class Orchestrator:
             suspicious = sum(1 for f in cyc if f["verdict"] == "suspicious")
         except Exception as e:  # noqa: BLE001
             LOG.warning("could not read cycle findings: %s", e)
-        self.rt.mcp.log_cycle_summary(CycleSummaryInput(
-            cycle_id=cycle_id,
-            summary=(f"Cycle {cycle_id}: {len(ideas)} ideas, "
-                     f"{len(results)} lanes completed, "
-                     f"{confirmed} confirmed, {suspicious} suspicious."),
-            zones_targeted=zones,
-            ideas_generated=len(ideas),
-            ideas_deduplicated=0,
-            ideas_executed=len(results),
-            vulns_confirmed=confirmed,
-            vulns_suspicious=suspicious,
-            total_tokens_used=sum(r.tokens_used_attacker + r.tokens_used_victim for r in results),
-            wall_time_seconds=time.time() - start,
-        ))
+        # ALWAYS write the cycle summary, even if the lane phase failed.
+        try:
+            self.rt.mcp.log_cycle_summary(CycleSummaryInput(
+                cycle_id=cycle_id,
+                summary=(f"Cycle {cycle_id}: {len(ideas)} ideas, "
+                         f"{len(results)} lanes completed, "
+                         f"{confirmed} confirmed, {suspicious} suspicious."),
+                zones_targeted=zones,
+                ideas_generated=len(ideas),
+                ideas_deduplicated=0,
+                ideas_executed=len(results),
+                vulns_confirmed=confirmed,
+                vulns_suspicious=suspicious,
+                total_tokens_used=sum(
+                    r.tokens_used_attacker + r.tokens_used_victim
+                    for r in results),
+                wall_time_seconds=time.time() - start,
+            ))
+        except Exception as e:  # noqa: BLE001
+            LOG.exception("failed to write cycle %d summary: %s", cycle_id, e)
         # Telegram live-feed: one summary message per completed cycle. Routing
         # already alerts on each confirmed vuln individually; this is the
         # per-cycle digest. Delivered when a Telegram token is configured.
@@ -212,13 +244,21 @@ class Orchestrator:
             )
         except Exception as e:  # noqa: BLE001
             LOG.warning("cycle-summary alert failed: %s", e)
-        # Coverage decay for unvisited zones
-        all_zones = {z.zone_id for z in self.rt.mcp.get_coverage_gaps(top_n=999)}
-        for zid in all_zones - set(zones):
-            self.rt.mcp.update_zone_coverage(zid, -0.01)
-        # Regression at end of cycle if configured
+        # ALWAYS apply coverage decay for unvisited zones.
+        try:
+            all_zones = {
+                z.zone_id for z in self.rt.mcp.get_coverage_gaps(top_n=999)}
+            for zid in all_zones - set(zones):
+                self.rt.mcp.update_zone_coverage(zid, -0.01)
+        except Exception as e:  # noqa: BLE001
+            LOG.exception("unvisited-zone decay failed in cycle %d: %s",
+                          cycle_id, e)
+        # ALWAYS run regression at end of cycle if configured.
         if self.rt.cfg.orchestrator.regression_before_batch:
-            self.blue.run_regression()
+            try:
+                self.blue.run_regression()
+            except Exception as e:  # noqa: BLE001
+                LOG.exception("regression failed in cycle %d: %s", cycle_id, e)
 
     # ------------------------------------------------------------------
     def _on_result(self, result: LaneResult) -> None:
