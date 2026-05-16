@@ -47,3 +47,24 @@ def test_recover_victim_unknown_instance_raises(
     p = NemoClawProvisioner(sandbox_name="monkey-victim")
     with pytest.raises(ProvisioningError):
         p.recover_victim("VICT-nope")
+
+
+def test_snapshot_victim_issues_create_call(tmp_path: Path, monkeypatch):
+    calls = write_stub(tmp_path, monkeypatch, snapshots=True, recover=True)
+    p = NemoClawProvisioner(sandbox_name="monkey-victim")
+    inst = p.connect_existing()
+    snap = p.snapshot_victim(inst.instance_id, "lane-snap")
+    assert snap.name == "lane-snap"
+    assert snap.deterministic is True
+    assert "snapshot create lane-snap" in calls.read_text()
+
+
+def test_snapshot_victim_without_support_raises(tmp_path: Path, monkeypatch):
+    from interfaces.provisioning import ProvisioningError
+    import pytest
+
+    write_stub(tmp_path, monkeypatch, snapshots=False, recover=True)
+    p = NemoClawProvisioner(sandbox_name="monkey-victim")
+    inst = p.connect_existing()
+    with pytest.raises(ProvisioningError, match="snapshot"):
+        p.snapshot_victim(inst.instance_id, "lane-snap")

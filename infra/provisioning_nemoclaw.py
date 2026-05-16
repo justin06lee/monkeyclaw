@@ -231,6 +231,25 @@ class NemoClawProvisioner(VictimProvisioner):
         instance.status = "running"
         return instance
 
+    def snapshot_victim(self, instance_id: str, name: str) -> VictimSnapshot:
+        """Capture the current victim state as a named snapshot. Raises when
+        the local build has no snapshot support — never returns a snapshot
+        that is not really a snapshot."""
+        instance = self._instances.get(instance_id)
+        if instance is None:
+            raise ProvisioningError(f"unknown instance {instance_id}")
+        if not self.capabilities.snapshots:
+            raise ProvisioningError(
+                f"cannot snapshot `{name}`: this nemoclaw build reports no "
+                f"snapshot support (capabilities.snapshots=False)")
+        self._run(
+            [self.cli, self.sandbox_name, "snapshot", "create", name],
+            timeout=self.snapshot_restore_timeout_s, what="snapshot create")
+        return VictimSnapshot(
+            name=name, sandbox_id=self.sandbox_name, created_at=_now(),
+            deterministic=True, patched=False,
+            base_snapshot=self.clean_snapshot or None)
+
     def teardown_victim(self, instance_id: str) -> None:
         # No-op: the sandbox is persistent and reset on the next
         # provision_victim. We only mark our local record stopped.
