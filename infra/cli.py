@@ -271,6 +271,42 @@ def _cmd_blueteam(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# demo — one-shot preset: a single mock cycle against a planted profile
+# ---------------------------------------------------------------------------
+
+
+def _cmd_demo(args: argparse.Namespace) -> int:
+    """Run the canned demo: one mock cycle against a planted victim profile.
+
+    This is a thin preset over `run` — `demo --profile X` does exactly what
+    `run --cycles 1 --target X --mock` does, then prints the resulting
+    findings so the demo is self-contained.
+    """
+    from demo.victims.registry import PROFILES
+
+    if args.profile not in PROFILES:
+        print(f"unknown planted profile {args.profile!r}; "
+              f"known: {', '.join(sorted(PROFILES))}")
+        return 1
+
+    print(f"=== MonkeyClaw demo — planted profile '{args.profile}' ===\n")
+
+    # Reuse the run path verbatim: build a Namespace matching `run`'s args.
+    run_args = argparse.Namespace(
+        cycles=1, perpetual=False, target=args.profile, mock=True,
+    )
+    rc = _cmd_run(run_args)
+    if rc != 0:
+        print(f"\ndemo cycle failed (run exited {rc}).")
+        return rc
+
+    # Print the findings the cycle produced, the way `findings` does.
+    print("\n--- findings from this demo ---")
+    _cmd_findings(args)
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # test — self-checks (notification delivery)
 # ---------------------------------------------------------------------------
 
@@ -364,7 +400,15 @@ def build_parser() -> argparse.ArgumentParser:
                         help="demo: triage -> patch -> test for queued repros")
     bt.add_argument("vuln_id", nargs="?", default=None,
                     help="optional: limit to one vuln_id / finding_id")
+    bt.add_argument("--mock", action="store_true",
+                    help="use the mock provisioner (default for demo mode)")
     bt.set_defaults(func=_cmd_blueteam)
+
+    dm = sub.add_parser("demo",
+                        help="one-shot demo: a mock cycle against a planted profile")
+    dm.add_argument("--profile", default="planted-filesystem",
+                    help="planted victim profile (default planted-filesystem)")
+    dm.set_defaults(func=_cmd_demo)
 
     ts = sub.add_parser("test", help="self-checks (e.g. notification delivery)")
     ts.add_argument("kind", choices=["notification"], help="what to test")
