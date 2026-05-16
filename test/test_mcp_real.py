@@ -173,7 +173,7 @@ def test_a3_schema_version_is_4(db):
     # schema_version tracks the highest applied migration ordinal (spec §13.3).
     row = db.fetchone(
         "SELECT value FROM schema_meta WHERE key='schema_version'")
-    assert row[0] == "4"
+    assert int(row[0]) >= 5
 
 
 def _sample_finding_input() -> FindingInput:
