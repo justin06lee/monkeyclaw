@@ -310,7 +310,7 @@ class MCPServer(MonkeyClawMCP):
         # Verify the finding exists
         if self.db.fetchone("SELECT 1 FROM findings WHERE finding_id = ?", (finding_id,)) is None:
             raise KeyError(f"unknown finding_id {finding_id}")
-        import uuid as _uuid
+        from infra.state_machine import new_transition_id  # noqa: PLC0415
         with self.db.lock():
             self.db.execute("BEGIN IMMEDIATE")
             try:
@@ -324,7 +324,7 @@ class MCPServer(MonkeyClawMCP):
                     "INSERT INTO queue_transitions(transition_id, entity, "
                     "entity_id, from_state, to_state, actor, reason) "
                     "VALUES(?,?,?,?,?,?,?)",
-                    (f"TR-{_uuid.uuid4().hex[:12]}", "repro_queue", finding_id,
+                    (new_transition_id(), "repro_queue", finding_id,
                      None, "queued", "routing", f"enqueued ({priority})"),
                 )
                 self.db.execute("COMMIT")
@@ -370,45 +370,36 @@ class MCPServer(MonkeyClawMCP):
         transcripts = json.dumps({
             k: [asdict(m) for m in v] for k, v in package.transcripts.items()
         })
-        with self.db.lock():
-            self.db.execute("BEGIN IMMEDIATE")
-            try:
-                self.db.execute(
-                    "INSERT INTO repro_packages(package_id, finding_id, "
-                    "vuln_id, title, severity, repro_rate, minimal_steps, "
-                    "affected_zone, affected_paths, ideas_used, transcripts, "
-                    "suggested_mitigations, repro_document_md, cold_verified, "
-                    "ready_for_blue, blue_team_status, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (pid, package.finding_id, vuln_id, package.title,
-                     package.severity, package.repro_rate,
-                     json.dumps(package.minimal_steps), package.affected_zone,
-                     affected_paths, json.dumps(package.ideas_used),
-                     transcripts, json.dumps(package.suggested_mitigations),
-                     package.repro_document_md,
-                     1 if package.cold_verified else 0,
-                     1 if package.ready_for_blue else 0, "queued", _now()),
-                )
-                self.db.execute(
-                    "UPDATE findings SET repro_rate = ? WHERE finding_id = ?",
-                    (package.repro_rate, package.finding_id),
-                )
-                self.db.execute("COMMIT")
-            except Exception:
-                self.db.execute("ROLLBACK")
-                raise
-        # Audited lifecycle transitions: complete the queue row and advance
-        # the finding open->in_progress. The queue row may legally already be
-        # 'processing' (claimed) — transition processing->completed.
-        self.transitions.transition(
-            entity="repro_queue", entity_id=package.finding_id,
-            to_state="completed", actor="repro_pipeline",
-            reason=f"package {pid}",
+        # The package INSERT, the findings.repro_rate UPDATE and both
+        # audited lifecycle transitions (repro_queue ->completed, finding
+        # ->in_progress) commit or roll back together as one atomic unit —
+        # a crash mid-way can no longer leave a package without its
+        # lifecycle transitions. The queue row may legally already be
+        # 'processing' (claimed): processing->completed is a valid edge.
+        insert_sql = (
+            "INSERT INTO repro_packages(package_id, finding_id, "
+            "vuln_id, title, severity, repro_rate, minimal_steps, "
+            "affected_zone, affected_paths, ideas_used, transcripts, "
+            "suggested_mitigations, repro_document_md, cold_verified, "
+            "ready_for_blue, blue_team_status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
-        self.transitions.transition(
-            entity="finding", entity_id=package.finding_id,
-            to_state="in_progress", actor="repro_pipeline",
-            reason=f"package {pid}",
+        insert_params = (
+            pid, package.finding_id, vuln_id, package.title,
+            package.severity, package.repro_rate,
+            json.dumps(package.minimal_steps), package.affected_zone,
+            affected_paths, json.dumps(package.ideas_used),
+            transcripts, json.dumps(package.suggested_mitigations),
+            package.repro_document_md,
+            1 if package.cold_verified else 0,
+            1 if package.ready_for_blue else 0, "queued", _now(),
+        )
+        self.transitions.store_repro_package(
+            insert_sql=insert_sql,
+            insert_params=insert_params,
+            finding_id=package.finding_id,
+            finding_repro_rate=package.repro_rate,
+            package_id=pid,
         )
         return pid
 
@@ -459,19 +450,21 @@ class MCPServer(MonkeyClawMCP):
         passed = result == "pass"
         target = "quarantined" if flaky else ("passing" if passed else "failing")
         new_passes = (row["consecutive_passes"] + 1) if passed else 0
-        with self.db.lock():
-            self.db.execute(
+        # The run-fields UPDATE and the run_state FSM transition commit or
+        # roll back together — a crash can't leave last_run_result written
+        # without its matching run_state edge.
+        self.transitions.record_regression_run(
+            test_id=test_id,
+            update_sql=(
                 "UPDATE regression_tests SET last_run_at = ?, "
                 "last_run_result = ?, consecutive_passes = ? "
-                "WHERE test_id = ?",
-                (_now(), result, new_passes, test_id),
-            )
-        if target != current:
-            self.transitions.transition(
-                entity="regression_test", entity_id=test_id,
-                to_state=target, actor="regression_runner",
-                reason=f"run result={result} flaky={flaky}",
-            )
+                "WHERE test_id = ?"
+            ),
+            update_params=(_now(), result, new_passes, test_id),
+            target=target,
+            current=current,
+            reason=f"run result={result} flaky={flaky}",
+        )
         return target
 
     def reopen_finding(self, finding_id: str, reason: str) -> None:
