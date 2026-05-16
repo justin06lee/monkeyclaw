@@ -82,4 +82,57 @@ def build_seed(
     )
 
 
-__all__ = ["ArchiveSeed", "build_seed"]
+_HEADER = "# Archive — Diverse Elites & Open Niches"
+
+# How many open niches to name explicitly; the grid is 648 cells so naming
+# them all would swamp the prompt.
+_MAX_EMPTY_LISTED = 8
+
+
+def render_seed(seed: ArchiveSeed) -> str:
+    """Format an ArchiveSeed into the prompt text block ideation appends.
+
+    Deterministic: identical input always produces identical text, and the
+    output contains no prose outside the documented sections.
+    """
+    lines: list[str] = [_HEADER, ""]
+
+    if seed.zone_elites:
+        lines.append("High-performing elites already found in this zone — "
+                      "vary them, do not repeat them:")
+        for e in seed.zone_elites:
+            lines.append(
+                f"- [{e.interaction_style}/{e.response_movement} "
+                f"score={e.score:.1f}] {e.idea_title}: {e.approach}")
+        lines.append("")
+
+    if seed.cross_zone_elites:
+        lines.append("Elites from other zones sharing an interaction style — "
+                      "borrow their framing:")
+        for e in seed.cross_zone_elites:
+            lines.append(
+                f"- [{e.zone}/{e.interaction_style} score={e.score:.1f}] "
+                f"{e.idea_title}: {e.approach}")
+        lines.append("")
+
+    if seed.combination_pairs:
+        lines.append("Recombination directives — combine these elite pairs "
+                      "into one new attack:")
+        for a, b in seed.combination_pairs:
+            lines.append(
+                f"- combine the framing of '{a.idea_title}' "
+                f"({a.interaction_style}) with the escalation of "
+                f"'{b.idea_title}' ({b.interaction_style})")
+        lines.append("")
+
+    if seed.empty_niches:
+        lines.append(f"Open niches in zone {seed.zone_id} — deliberately aim "
+                      f"new ideas at these unexplored (style, movement) pairs:")
+        for _zone, style, movement in seed.empty_niches[:_MAX_EMPTY_LISTED]:
+            lines.append(f"- {style} → {movement}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+__all__ = ["ArchiveSeed", "build_seed", "render_seed"]

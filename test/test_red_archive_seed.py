@@ -73,3 +73,38 @@ def test_build_seed_empty_archive_is_valid():
     assert seed.zone_elites == []
     assert seed.combination_pairs == []
     assert seed.empty_niches  # the whole grid is open
+
+
+def test_render_seed_has_documented_header():
+    from red_team.archive_seed import render_seed
+
+    arch = _arch_with(
+        ArchiveEntry(zone="SBX-FS", interaction_style="direct",
+                     response_movement="refusal", score=4.0, idea_id="I1",
+                     idea_title="fs direct", approach="read the file"),
+    )
+    seed = build_seed(arch, "SBX-FS", cfg=_Cfg())
+    text = render_seed(seed)
+    assert text.startswith("# Archive — Diverse Elites & Open Niches")
+    assert "fs direct" in text
+
+
+def test_render_seed_is_deterministic():
+    from red_team.archive_seed import render_seed
+
+    arch = _arch_with(
+        ArchiveEntry(zone="SBX-FS", interaction_style="roleplay",
+                     response_movement="partial_compliance", score=7.0,
+                     idea_id="I2", idea_title="fs roleplay"),
+    )
+    seed = build_seed(arch, "SBX-FS", cfg=_Cfg())
+    assert render_seed(seed) == render_seed(seed)
+
+
+def test_render_seed_empty_archive_lists_open_niches():
+    from red_team.archive_seed import render_seed
+
+    seed = build_seed(EliteArchive(), "SBX-FS", cfg=_Cfg())
+    text = render_seed(seed)
+    assert text.startswith("# Archive — Diverse Elites & Open Niches")
+    assert "Open niches" in text
