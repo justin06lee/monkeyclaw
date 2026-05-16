@@ -148,3 +148,47 @@ def test_select_top_n_skips_discarded():
     top = select_top_n(outcomes, zones, n=5)
     assert len(top) == 1
     assert top[0].idea.title == "kept"
+
+
+def test_score_ideas_accepts_detection_coverage_gap_boost():
+    from interfaces.types import CoverageGap, DupResult, IdeaObject
+    from red_team.dedup import DedupOutcome
+    from red_team.priority import score_ideas
+
+    idea = IdeaObject(
+        idea_id="I1", cycle_id=1, zone_id="SBX-FS", source_mode="creative",
+        title="t", approach="generic probe", success_criteria="c",
+        estimated_turns=3, novelty_notes="-")
+    outcome = DedupOutcome(
+        idea=idea, dup=DupResult(False, 0.5, None), keep=True,
+        near_dup=False, novelty_score=0.5, logged_idea_id="I1")
+    zone = CoverageGap(zone_id="SBX-FS", zone_name="Sandbox / FS",
+                       coverage_score=0.5, priority_score=0.0, vulns_open=0,
+                       last_tested_at=None, severity_weight=1.0)
+
+    baseline = score_ideas([outcome], {"SBX-FS": zone})[0].priority
+    boosted = score_ideas([outcome], {"SBX-FS": zone},
+                          detection_coverage_gap={"SBX-FS": 1.0})[0].priority
+    # a blind zone (detection gap 1.0) ranks strictly higher.
+    assert boosted > baseline
+
+
+def test_score_ideas_absent_detection_signal_is_unchanged():
+    from interfaces.types import CoverageGap, DupResult, IdeaObject
+    from red_team.dedup import DedupOutcome
+    from red_team.priority import score_ideas
+
+    idea = IdeaObject(
+        idea_id="I1", cycle_id=1, zone_id="SBX-FS", source_mode="creative",
+        title="t", approach="generic probe", success_criteria="c",
+        estimated_turns=3, novelty_notes="-")
+    outcome = DedupOutcome(
+        idea=idea, dup=DupResult(False, 0.5, None), keep=True,
+        near_dup=False, novelty_score=0.5, logged_idea_id="I1")
+    zone = CoverageGap(zone_id="SBX-FS", zone_name="Sandbox / FS",
+                       coverage_score=0.5, priority_score=0.0, vulns_open=0,
+                       last_tested_at=None, severity_weight=1.0)
+    a = score_ideas([outcome], {"SBX-FS": zone})[0].priority
+    b = score_ideas([outcome], {"SBX-FS": zone},
+                    detection_coverage_gap=None)[0].priority
+    assert a == b
