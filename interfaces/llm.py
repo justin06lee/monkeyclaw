@@ -328,6 +328,19 @@ def _have_nvidia_key() -> bool:
     return bool(os.environ.get("NVIDIA_API_KEY") or os.environ.get("NIM_API_KEY"))
 
 
+def local_backend_name() -> str:
+    """The guaranteed-available backend in the current environment.
+
+    `claude_cli` when its binary is on PATH, else `mock`. This is the last
+    link of every router fallback chain, so a credential-free run always
+    resolves every role. It deliberately ignores the NVIDIA path — the local
+    link must not depend on a network model.
+    """
+    if shutil.which(DEFAULT_CLI_BINARY):
+        return "claude_cli"
+    return "mock"
+
+
 def make_llm(
     backend: str | None = None, *, model: str | None = None,
     role: str | None = None, cfg: Any = None,
@@ -447,5 +460,6 @@ __all__ = [
     "MockLLM",
     "NemotronLLM",
     "extract_json",
+    "local_backend_name",
     "make_llm",
 ]
