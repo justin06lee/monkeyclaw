@@ -1,0 +1,39 @@
+{
+  "name": "purple-team-telemetry",
+  "version": "1.0.0",
+  "description": "Observe-only OpenClaw plugin: records every lifecycle hook to a JSONL sink for MonkeyClaw's purple-team NativeEventAdapter. Never enforces — decision hooks always return allow.",
+  "author": "MonkeyClaw team",
+  "entry": "index.js",
+  "config": {
+    "sink": {
+      "type": "string",
+      "default": "~/.openclaw/logs/purple-telemetry.jsonl",
+      "description": "Path the plugin appends one JSON line per hook fire to."
+    }
+  },
+  "hooks": [
+    "session_start",
+    "session_resume",
+    "session_end",
+    "before_agent_run",
+    "llm_input",
+    "model_call_started",
+    "model_call_ended",
+    "llm_output",
+    "before_tool_call",
+    "after_tool_call",
+    "subagent_spawning",
+    "subagent_spawned",
+    "subagent_ended",
+    "agent_end",
+    "outbound_dispatch",
+    "message_delivery",
+    "network.request"
+  ],
+  "decisionHooks": [
+    "before_agent_run",
+    "before_tool_call",
+    "subagent_spawning",
+    "outbound_dispatch"
+  ]
+}
