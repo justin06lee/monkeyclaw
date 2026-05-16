@@ -109,24 +109,75 @@ models:
     red_ideation:
       provider: nvidia
       model: nvidia/nemotron-3-super-120b-a12b
+    red_code_ideation:
+      provider: anthropic_or_openai
+      model: frontier-coding
     red_execution:
       provider: nvidia
       model: nvidia/nemotron-3-super-120b-a12b
     semantic_judge:
       provider: nvidia
       model: nvidia/nemotron-3-super-120b-a12b
+    semantic_judge_appeal:
+      provider: anthropic_or_openai
+      model: frontier-coding
     safety_judge:
       provider: nvidia
       model: nvidia/nemotron-content-safety-reasoning-4b
+    mutation:
+      provider: nvidia
+      model: nvidia/nemotron-3-nano
+    cold_verification:
+      provider: nvidia
+      model: nvidia/nemotron-3-nano
+    summarization:
+      provider: nvidia
+      model: nvidia/nemotron-3-nano
     root_cause:
       provider: anthropic_or_openai
       model: frontier-coding
     patch_generation:
       provider: anthropic_or_openai
       model: frontier-coding
+    test_generation:
+      provider: anthropic_or_openai
+      model: frontier-coding
     codex_code_work:
       provider: openai
       model: gpt-5.3-codex
+  # Risk/complexity tiers — the routing policy maps a role to one of these.
+  tiers:
+    cheap:
+      route: {provider: nvidia, model: nvidia/nemotron-3-nano}
+    workhorse:
+      route: {provider: nvidia, model: nvidia/nemotron-3-super-120b-a12b}
+    heavy:
+      route: {provider: nvidia, model: nvidia/nemotron-3-ultra}
+    frontier:
+      route: {provider: anthropic_or_openai, model: frontier-coding}
+  # Role -> tier. safety_judge is omitted: it is a direct specialised route.
+  policy:
+    red_ideation: workhorse
+    red_code_ideation: frontier
+    red_execution: workhorse
+    semantic_judge: workhorse
+    semantic_judge_appeal: frontier
+    mutation: cheap
+    cold_verification: cheap
+    summarization: cheap
+    root_cause: frontier
+    patch_generation: frontier
+    test_generation: frontier
+    cheap_extraction: cheap
+    codex_code_work: frontier
+  # Per-million-token USD prices for cost accounting.
+  pricing:
+    nvidia/nemotron-3-nano: {input_per_mtok_usd: 0.04, output_per_mtok_usd: 0.16}
+    nvidia/nemotron-3-super-120b-a12b: {input_per_mtok_usd: 0.30, output_per_mtok_usd: 0.90}
+    nvidia/nemotron-3-ultra: {input_per_mtok_usd: 0.90, output_per_mtok_usd: 2.70}
+    nvidia/nemotron-content-safety-reasoning-4b: {input_per_mtok_usd: 0.02, output_per_mtok_usd: 0.08}
+    frontier-coding: {input_per_mtok_usd: 3.00, output_per_mtok_usd: 15.00}
+    gpt-5.3-codex: {input_per_mtok_usd: 3.00, output_per_mtok_usd: 15.00}
 
 guardrails:
   artifact_dir: data/artifacts

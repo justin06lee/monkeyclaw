@@ -115,23 +115,91 @@ class NemoClawConfig(BaseModel):
 class ModelRoute(BaseModel):
     provider: str
     model: str
+    # Additive, optional: an explicit ordered fallback chain for this route.
+    # Absent -> the router appends only the tier default + guaranteed-local.
+    fallback: list[ModelRoute] = Field(default_factory=list)
+
+
+class ModelTier(BaseModel):
+    """A risk/complexity tier: the route to use plus an optional fallback chain."""
+    route: ModelRoute
+    fallback: list[ModelRoute] = Field(default_factory=list)
+
+
+class PriceRow(BaseModel):
+    """Per-million-token USD prices for one model."""
+    input_per_mtok_usd: float
+    output_per_mtok_usd: float
 
 
 def _default_model_roles() -> dict[str, ModelRoute]:
     return {
         "cheap_extraction": ModelRoute(provider="nvidia", model="nvidia/nemotron-3-nano"),
         "red_ideation": ModelRoute(provider="nvidia", model="nvidia/nemotron-3-super-120b-a12b"),
+        "red_code_ideation": ModelRoute(provider="anthropic_or_openai", model="frontier-coding"),
         "red_execution": ModelRoute(provider="nvidia", model="nvidia/nemotron-3-super-120b-a12b"),
         "semantic_judge": ModelRoute(provider="nvidia", model="nvidia/nemotron-3-super-120b-a12b"),
+        "semantic_judge_appeal": ModelRoute(provider="anthropic_or_openai", model="frontier-coding"),
         "safety_judge": ModelRoute(provider="nvidia", model="nvidia/nemotron-content-safety-reasoning-4b"),
+        "mutation": ModelRoute(provider="nvidia", model="nvidia/nemotron-3-nano"),
+        "cold_verification": ModelRoute(provider="nvidia", model="nvidia/nemotron-3-nano"),
+        "summarization": ModelRoute(provider="nvidia", model="nvidia/nemotron-3-nano"),
         "root_cause": ModelRoute(provider="anthropic_or_openai", model="frontier-coding"),
         "patch_generation": ModelRoute(provider="anthropic_or_openai", model="frontier-coding"),
+        "test_generation": ModelRoute(provider="anthropic_or_openai", model="frontier-coding"),
         "codex_code_work": ModelRoute(provider="openai", model="gpt-5.3-codex"),
+    }
+
+
+def _default_tiers() -> dict[str, ModelTier]:
+    return {
+        "cheap": ModelTier(route=ModelRoute(provider="nvidia", model="nvidia/nemotron-3-nano")),
+        "workhorse": ModelTier(
+            route=ModelRoute(provider="nvidia", model="nvidia/nemotron-3-super-120b-a12b")),
+        "heavy": ModelTier(route=ModelRoute(provider="nvidia", model="nvidia/nemotron-3-ultra")),
+        "frontier": ModelTier(
+            route=ModelRoute(provider="anthropic_or_openai", model="frontier-coding")),
+    }
+
+
+def _default_policy() -> dict[str, str]:
+    # safety_judge is intentionally absent — it is a direct specialised route.
+    return {
+        "red_ideation": "workhorse",
+        "red_code_ideation": "frontier",
+        "red_execution": "workhorse",
+        "semantic_judge": "workhorse",
+        "semantic_judge_appeal": "frontier",
+        "mutation": "cheap",
+        "cold_verification": "cheap",
+        "summarization": "cheap",
+        "root_cause": "frontier",
+        "patch_generation": "frontier",
+        "test_generation": "frontier",
+        "cheap_extraction": "cheap",
+        "codex_code_work": "frontier",
+    }
+
+
+def _default_pricing() -> dict[str, PriceRow]:
+    # Approximate public list prices; replace per deployment.
+    return {
+        "nvidia/nemotron-3-nano": PriceRow(input_per_mtok_usd=0.04, output_per_mtok_usd=0.16),
+        "nvidia/nemotron-3-super-120b-a12b": PriceRow(
+            input_per_mtok_usd=0.30, output_per_mtok_usd=0.90),
+        "nvidia/nemotron-3-ultra": PriceRow(input_per_mtok_usd=0.90, output_per_mtok_usd=2.70),
+        "nvidia/nemotron-content-safety-reasoning-4b": PriceRow(
+            input_per_mtok_usd=0.02, output_per_mtok_usd=0.08),
+        "frontier-coding": PriceRow(input_per_mtok_usd=3.00, output_per_mtok_usd=15.00),
+        "gpt-5.3-codex": PriceRow(input_per_mtok_usd=3.00, output_per_mtok_usd=15.00),
     }
 
 
 class ModelsConfig(BaseModel):
     roles: dict[str, ModelRoute] = Field(default_factory=_default_model_roles)
+    tiers: dict[str, ModelTier] = Field(default_factory=_default_tiers)
+    policy: dict[str, str] = Field(default_factory=_default_policy)
+    pricing: dict[str, PriceRow] = Field(default_factory=_default_pricing)
 
 
 class GuardrailsConfig(BaseModel):
