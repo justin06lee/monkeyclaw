@@ -253,6 +253,18 @@ purple:
   full_sweep_every: 10
   self_governance_enabled: true
 
+approvals:
+  posture:
+    critical: require_approval
+    high: require_approval
+    medium: auto_allow
+    low: auto_allow
+  ask_expiry_hours: 72
+  grant_expiry_hours: 0
+  auto_pr: false
+  operator_id: operator
+  pr_base_branch: master
+
 red:
   archive:
     # B5 MAP-Elites — niche_gap exploration multiplier band and seed breadth.

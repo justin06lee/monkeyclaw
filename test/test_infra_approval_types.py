@@ -48,3 +48,19 @@ def test_approval_outcome_kinds():
 def test_pull_request_draft_shape():
     fnames = {f.name for f in fields(PullRequestDraft)}
     assert {"branch", "pr_url", "commit_sha", "created_at"} <= fnames
+
+
+def test_approvals_config_defaults():
+    from interfaces.config_schema import MonkeyClawConfig
+
+    cfg = MonkeyClawConfig()
+    ap = cfg.approvals
+    assert ap.posture.critical == "require_approval"
+    assert ap.posture.high == "require_approval"
+    assert ap.posture.medium == "auto_allow"
+    assert ap.posture.low == "auto_allow"
+    assert ap.ask_expiry_hours == 72
+    assert ap.grant_expiry_hours == 0
+    assert ap.auto_pr is False
+    assert ap.operator_id == "operator"
+    assert ap.pr_base_branch == "master"

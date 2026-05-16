@@ -301,6 +301,26 @@ class RedConfig(BaseModel):
     chains: ChainConfig = Field(default_factory=ChainConfig)
 
 
+class ApprovalPostureConfig(BaseModel):
+    """Per-severity gate posture for the approval service (approval spec §10)."""
+
+    critical: str = "require_approval"
+    high: str = "require_approval"
+    medium: str = "auto_allow"
+    low: str = "auto_allow"
+
+
+class ApprovalsConfig(BaseModel):
+    """Severity-gated approval service tuning (approval spec §10)."""
+
+    posture: ApprovalPostureConfig = Field(default_factory=ApprovalPostureConfig)
+    ask_expiry_hours: int = 72
+    grant_expiry_hours: int = 0  # 0 = no expiry
+    auto_pr: bool = False
+    operator_id: str = "operator"
+    pr_base_branch: str = "master"
+
+
 class MonkeyClawConfig(BaseModel):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     red: RedConfig = Field(default_factory=RedConfig)
@@ -318,3 +338,4 @@ class MonkeyClawConfig(BaseModel):
     guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
     code_context: CodeContextConfig = Field(default_factory=CodeContextConfig)
     purple: PurpleConfig = Field(default_factory=PurpleConfig)
+    approvals: ApprovalsConfig = Field(default_factory=ApprovalsConfig)
