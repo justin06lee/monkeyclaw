@@ -225,29 +225,59 @@ class NemoClawProvisioner(VictimProvisioner):
 
 
 class MockProvisioner(VictimProvisioner):
-    """In-memory provisioner for tests and offline development."""
+    """In-memory provisioner for tests and offline development.
+
+    Each `provision_victim` plants a fresh `red_team.mock_victim.MockVictim`
+    — an OpenClaw-agent-shaped target with deliberately-introduced flaws
+    (system-prompt leak, filesystem escape, PII cloud-routing) — and
+    registers it at the returned `mock://` endpoint. That makes the whole
+    red → judge → repro → blue pipeline runnable end-to-end without a live
+    NemoClaw sandbox: the planted target gives the pipeline something real
+    to find, reproduce, and patch.
+    """
 
     def __init__(self) -> None:
         self._instances: dict[str, VictimInstance] = {}
 
     def provision_victim(self, config: VictimConfig) -> VictimInstance:
+        # Lazy import: this dev/test provisioner is the one place infra is
+        # intentionally coupled to the red-team planted-victim fixture.
+        from red_team import mock_victim  # noqa: PLC0415
+
         iid = f"MOCK-{uuid.uuid4().hex[:10]}"
+        base = tempfile.mkdtemp(prefix=f"mc-mock-{iid}-")
+        allowed = os.path.join(base, "allowed")
+        escape = os.path.join(base, "escape")
+        endpoint, _ = mock_victim.build_and_register(
+            endpoint=f"mock://chat/{iid}",
+            allowed_root=allowed, escape_root=escape,
+        )
         instance = VictimInstance(
             instance_id=iid,
-            chat_endpoint=f"mock://chat/{iid}",
+            chat_endpoint=endpoint,
             shell_endpoint=f"mock://shell/{iid}",
             status="running",
             sandbox_id=iid,
             started_at=_now(),
             metadata={"policy_path": config.policy_path,
-                      "agent_type": config.agent_type},
+                      "agent_type": config.agent_type,
+                      "allowed_root": allowed, "escape_root": escape,
+                      "base_dir": base},
         )
         self._instances[iid] = instance
         return instance
 
     def teardown_victim(self, instance_id: str) -> None:
-        if instance_id in self._instances:
-            self._instances[instance_id].status = "stopped"
+        from red_team import mock_victim  # noqa: PLC0415
+
+        instance = self._instances.get(instance_id)
+        if instance is None:
+            return
+        mock_victim.unregister(instance.chat_endpoint)
+        base = instance.metadata.get("base_dir")
+        if base:
+            shutil.rmtree(base, ignore_errors=True)
+        instance.status = "stopped"
 
     def list_victims(self) -> list[VictimInstance]:
         return list(self._instances.values())
