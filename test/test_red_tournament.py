@@ -7,7 +7,14 @@ tracks per-model performance.
 
 from __future__ import annotations
 
-from interfaces.types import IdeaObject
+from dataclasses import fields
+
+from interfaces.types import (
+    IdeaObject,
+    ModelZoneWinrate,
+    PairwiseIdeaSetResult,
+    TournamentRound,
+)
 from red_team.tournament import (
     Entrant,
     ModelTournament,
@@ -111,3 +118,35 @@ def test_pipeline_constructs_disabled_tournament():
     pipeline = Pipeline(mcp=MockMCP(verbose=False))
     assert pipeline.tournament is not None
     assert pipeline.tournament.enabled is False
+
+
+# ---------------------------------------------------------------------------
+# Model ideation tournament — interface types
+# ---------------------------------------------------------------------------
+
+
+def test_model_zone_winrate_has_h2h_and_execution_fields():
+    fnames = {f.name for f in fields(ModelZoneWinrate)}
+    assert {"zone_id", "model_label", "role", "h2h_wins", "h2h_comparisons",
+            "confirmed", "suspicious", "ideas_executed", "winrate"} <= fnames
+
+
+def test_model_zone_winrate_neutral_prior():
+    w = ModelZoneWinrate(zone_id="SBX-FS", model_label="nemotron")
+    assert w.winrate == 0.5  # neutral prior — no-history entrant
+    assert w.h2h_comparisons == 0
+    assert w.ideas_executed == 0
+
+
+def test_tournament_round_carries_pairwise_records():
+    fnames = {f.name for f in fields(TournamentRound)}
+    assert {"round_id", "cycle_id", "zone_id", "entrants",
+            "pairwise", "winner_label"} <= fnames
+
+
+def test_pairwise_idea_set_result_has_winner_and_margin():
+    r = PairwiseIdeaSetResult(
+        zone_id="SBX-FS", winner_label="frontier", loser_label="nemotron",
+        margin=0.4, reasoning="frontier set is more distinct")
+    assert r.winner_label == "frontier"
+    assert 0.0 <= r.margin <= 1.0

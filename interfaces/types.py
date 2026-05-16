@@ -1148,6 +1148,56 @@ from interfaces.code_graph import (  # noqa: E402
     SymbolKind,
 )
 
+# ---------------------------------------------------------------------------
+# Model ideation tournament — per-zone win-rate + rounds
+# (model-ideation-tournament spec §9)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ModelZoneWinrate:
+    """Per-(zone, model) win-rate: a head-to-head record and an execution
+    record, plus the stored combined win-rate. Mirrors the
+    model_zone_winrate row."""
+
+    zone_id: str
+    model_label: str
+    role: str = ""
+    h2h_wins: int = 0
+    h2h_comparisons: int = 0
+    confirmed: int = 0
+    suspicious: int = 0
+    ideas_executed: int = 0
+    winrate: float = 0.5  # neutral prior so a no-history entrant is optimistic
+    updated_at: str = ""
+
+
+@dataclass
+class PairwiseIdeaSetResult:
+    """One head-to-head comparison of two entrants' idea sets for a zone."""
+
+    zone_id: str
+    winner_label: str
+    loser_label: str
+    margin: float  # 0..1
+    reasoning: str = ""
+
+
+@dataclass
+class TournamentRound:
+    """One head-to-head round (one zone, one cycle). `entrants` and
+    `pairwise` are JSON-serialisable lists. Mirrors the
+    model_tournament_rounds row."""
+
+    round_id: str
+    cycle_id: int
+    zone_id: str
+    entrants: list[str] = field(default_factory=list)
+    pairwise: list[dict[str, Any]] = field(default_factory=list)
+    winner_label: str = ""
+    created_at: str = ""
+
+
 __all__ = [
     "AgentPolicy",
     "AppealVerdict",
@@ -1197,12 +1247,14 @@ __all__ = [
     "Message",
     "ModelRunInput",
     "ModelRunRecord",
+    "ModelZoneWinrate",
     "MutationAttempt",
     "MutationOperatorStat",
     "NearMiss",
     "NearMissInput",
     "NetworkEvent",
     "Observability",
+    "PairwiseIdeaSetResult",
     "PairwiseResult",
     "PatchCandidate",
     "PatchCandidateInput",
@@ -1241,6 +1293,7 @@ __all__ = [
     "TelemetryEvent",
     "TelemetryEventInput",
     "TelemetryEventType",
+    "TournamentRound",
     "Trajectory",
     "TurnScore",
     "VictimTelemetryBundle",
