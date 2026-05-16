@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from infra.telemetry import TelemetryEmitter
 
 from demo.victims.registry import make_victim
+from infra.sandbox_capabilities import probe as probe_capabilities
 from interfaces.provisioning import (
     ProvisioningError,
     VictimConfig,
@@ -85,6 +86,10 @@ class NemoClawProvisioner(VictimProvisioner):
         self.snapshot_restore_timeout_s = snapshot_restore_timeout_s
         self.recover_timeout_s = recover_timeout_s
         self._instances: dict[str, VictimInstance] = {}
+
+        # Probe the local nemoclaw build once. Every lifecycle method
+        # branches on this; an unsupported capability degrades gracefully.
+        self.capabilities = probe_capabilities(self.cli, self.sandbox_name)
 
     # ------------------------------------------------------------------
     def provision_victim(self, config: VictimConfig) -> VictimInstance:
