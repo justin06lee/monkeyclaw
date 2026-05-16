@@ -103,6 +103,28 @@ class NemoClawConfig(BaseModel):
     recover_timeout_s: int = 600
 
 
+class ModelRoute(BaseModel):
+    provider: str
+    model: str
+
+
+def _default_model_roles() -> dict[str, ModelRoute]:
+    return {
+        "cheap_extraction": ModelRoute(provider="nvidia", model="nvidia/nemotron-3-nano"),
+        "red_ideation": ModelRoute(provider="nvidia", model="nvidia/nemotron-3-super-120b-a12b"),
+        "red_execution": ModelRoute(provider="nvidia", model="nvidia/nemotron-3-super-120b-a12b"),
+        "semantic_judge": ModelRoute(provider="nvidia", model="nvidia/nemotron-3-super-120b-a12b"),
+        "safety_judge": ModelRoute(provider="nvidia", model="nvidia/nemotron-content-safety-reasoning-4b"),
+        "root_cause": ModelRoute(provider="anthropic_or_openai", model="frontier-coding"),
+        "patch_generation": ModelRoute(provider="anthropic_or_openai", model="frontier-coding"),
+        "codex_code_work": ModelRoute(provider="openai", model="gpt-5.3-codex"),
+    }
+
+
+class ModelsConfig(BaseModel):
+    roles: dict[str, ModelRoute] = Field(default_factory=_default_model_roles)
+
+
 class MonkeyClawConfig(BaseModel):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     ideation: IdeationConfig = Field(default_factory=IdeationConfig)
@@ -115,3 +137,4 @@ class MonkeyClawConfig(BaseModel):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     nemoclaw: NemoClawConfig = Field(default_factory=NemoClawConfig)
+    models: ModelsConfig = Field(default_factory=ModelsConfig)

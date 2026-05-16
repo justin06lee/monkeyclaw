@@ -75,3 +75,30 @@ nemoclaw:
     - ~/.nemoclaw
   allowed_paths:
     - /tmp/openshell
+
+models:
+  roles:
+    cheap_extraction:
+      provider: nvidia
+      model: nvidia/nemotron-3-nano
+    red_ideation:
+      provider: nvidia
+      model: nvidia/nemotron-3-super-120b-a12b
+    red_execution:
+      provider: nvidia
+      model: nvidia/nemotron-3-super-120b-a12b
+    semantic_judge:
+      provider: nvidia
+      model: nvidia/nemotron-3-super-120b-a12b
+    safety_judge:
+      provider: nvidia
+      model: nvidia/nemotron-content-safety-reasoning-4b
+    root_cause:
+      provider: anthropic_or_openai
+      model: frontier-coding
+    patch_generation:
+      provider: anthropic_or_openai
+      model: frontier-coding
+    codex_code_work:
+      provider: openai
+      model: gpt-5.3-codex
