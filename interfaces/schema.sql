@@ -796,6 +796,31 @@ CREATE INDEX IF NOT EXISTS idx_patch_builds_torn_down
     ON patch_builds(torn_down);
 
 --------------------------------------------------------------------------------
+-- generalization_rounds — patch generalization loop (patch-generalization-loop §11)
+--------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS generalization_rounds (
+    round_id              TEXT PRIMARY KEY,
+    patch_id              TEXT NOT NULL,
+    finding_id            TEXT NOT NULL,
+    vuln_id               TEXT NOT NULL,
+    zone_id               TEXT NOT NULL,
+    round_index           INTEGER NOT NULL,
+    operators_tried       TEXT NOT NULL DEFAULT '[]',   -- JSON list
+    variants_total        INTEGER NOT NULL DEFAULT 0,
+    variants_bypassed     INTEGER NOT NULL DEFAULT 0,
+    variants_inconclusive INTEGER NOT NULL DEFAULT 0,
+    bypass_operators      TEXT NOT NULL DEFAULT '[]',   -- JSON list
+    outcome               TEXT NOT NULL,                -- generalized|bounced|unconverged
+    repatch_patch_id      TEXT,
+    evidence              TEXT NOT NULL DEFAULT '[]',   -- JSON list
+    created_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_generalization_rounds_finding
+    ON generalization_rounds(finding_id, round_index);
+CREATE INDEX IF NOT EXISTS idx_generalization_rounds_patch
+    ON generalization_rounds(patch_id);
+
+--------------------------------------------------------------------------------
 -- schema_meta — track schema version for migrations
 --------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -804,7 +829,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 
 INSERT OR IGNORE INTO schema_meta(key, value) VALUES
-    ('schema_version', '16'),
+    ('schema_version', '17'),
     ('taxonomy_corpus_version', 'atlas-5.4.0+owasp-2025'),
     ('embedding_model', 'sentence-transformers/all-MiniLM-L6-v2'),
     ('embedding_dim',   '384');

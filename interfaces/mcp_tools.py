@@ -35,6 +35,7 @@ from interfaces.types import (
     DupResult,
     FindingInput,
     FindingRecord,
+    GeneralizationRoundInput,
     IdeaComponent,
     IdeaComponentInput,
     IdeaInput,
@@ -509,6 +510,12 @@ class MonkeyClawMCP(Protocol):
         self, zone_id: str | None = None
     ) -> list[dict]:
         """technique_coverage rows, optionally filtered to one zone."""
+        ...
+
+    def log_generalization_round(
+        self, round: GeneralizationRoundInput
+    ) -> str:
+        """Persist one generalization round; return round_id."""
         ...
 
 

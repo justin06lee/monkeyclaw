@@ -602,6 +602,49 @@ def render_patch_hardening(mcp, patch_id: str) -> str:  # noqa: ANN001
     )
 
 
+def render_generalization(db_path: str) -> str:
+    """The patch-generalization-loop panel — one row per patch with round
+    count, the union of operators tried, total bypasses found and the final
+    generalization status (patch-generalization-loop §10)."""
+    import json
+
+    rows = _query(
+        db_path,
+        "SELECT * FROM generalization_rounds ORDER BY created_at")
+    by_patch: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        by_patch.setdefault(r["patch_id"], []).append(r)
+
+    out_rows = []
+    for patch_id, prounds in sorted(by_patch.items()):
+        ordered = sorted(prounds, key=lambda r: r["round_index"])
+        operators: list[str] = []
+        seen: set[str] = set()
+        bypasses = 0
+        for r in ordered:
+            for op in json.loads(r["operators_tried"] or "[]"):
+                if op not in seen:
+                    seen.add(op)
+                    operators.append(op)
+            bypasses += int(r["variants_bypassed"] or 0)
+        last_outcome = ordered[-1]["outcome"]
+        status = ("GENERALIZED" if last_outcome == "generalized"
+                  else "UNCONVERGED")
+        out_rows.append(
+            f"<tr><td>{patch_id}</td><td>{len(ordered)}</td>"
+            f"<td>{', '.join(operators) or '—'}</td>"
+            f"<td>{bypasses}</td><td>{last_outcome} ({status})</td></tr>")
+    body = "".join(out_rows) or (
+        "<tr><td colspan=5>no generalization rounds yet</td></tr>")
+    return (
+        "<section><h2>Patch Generalization</h2>"
+        "<table><thead><tr><th>Patch</th><th>Rounds</th>"
+        "<th>Operators tried</th><th>Bypasses found</th>"
+        "<th>Status</th></tr></thead><tbody>"
+        + body + "</tbody></table></section>"
+    )
+
+
 def _render_executed_path_html(rows: list) -> str:  # noqa: ANN001
     """Build the executed-path HTML fragment from executed_paths rows."""
     if not rows:
@@ -1448,6 +1491,12 @@ def build_dashboard_app(db_path: str):
             return render_technique_coverage(MCPServer(db))
         finally:
             db.close()
+
+    @app.get("/generalization", response_class=HTMLResponse)
+    def generalization() -> str:
+        """The patch-generalization-loop panel — additive read-only view of
+        generalization_rounds (patch-generalization-loop §10)."""
+        return render_generalization(db_path)
 
     # Individual endpoints retained for ad-hoc queries / backward compatibility.
     @app.get("/api/status")
