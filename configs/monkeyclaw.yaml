@@ -79,6 +79,12 @@ blue_team:
   patch_verify_max_attempts: 3
   auto_commit_patches: false
   high_severity_alt_count: 3
+  patch_isolation:
+    enabled: false
+    nemoclaw_repo_path: null
+    base_ref: "HEAD"
+    build_timeout_s: 900
+    worktree_root: "/tmp"
 
 orchestrator:
   red_team_batch_size: 50

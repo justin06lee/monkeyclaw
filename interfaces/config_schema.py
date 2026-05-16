@@ -62,10 +62,19 @@ class ReproConfig(BaseModel):
     code_graph: CodeGraphConfig = Field(default_factory=CodeGraphConfig)
 
 
+class PatchIsolationConfig(BaseModel):
+    enabled: bool = False                       # mock fallback is the default
+    nemoclaw_repo_path: str | None = None
+    base_ref: str = "HEAD"
+    build_timeout_s: int = 900
+    worktree_root: str = "/tmp"
+
+
 class BlueTeamConfig(BaseModel):
     patch_verify_max_attempts: int = 3
     auto_commit_patches: bool = False
     high_severity_alt_count: int = 3
+    patch_isolation: PatchIsolationConfig = PatchIsolationConfig()
 
 
 class OrchestratorConfig(BaseModel):

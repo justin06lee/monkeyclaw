@@ -45,3 +45,15 @@ def test_patch_builds_has_isolation_columns(db):
     assert {"build_id", "patch_id", "base_ref", "worktree_path",
             "diff_applied", "rejected_hunks", "build_status",
             "victim_instance_id", "isolation_mode", "torn_down"} <= cols
+
+
+def test_blue_team_config_has_patch_isolation_block():
+    from interfaces.config_schema import BlueTeamConfig
+
+    c = BlueTeamConfig()
+    pi = c.patch_isolation
+    assert pi.enabled is False                  # mock is the default
+    assert pi.base_ref
+    assert pi.build_timeout_s > 0
+    assert hasattr(pi, "nemoclaw_repo_path")
+    assert hasattr(pi, "worktree_root")
