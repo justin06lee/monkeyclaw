@@ -169,3 +169,61 @@ def test_orchestrator_skips_purple_when_disabled(tmp_path, monkeypatch):
         assert rt.mcp.get_control_validation_runs() == []
     finally:
         rt.shutdown()
+
+
+def test_orchestrator_folds_judgments_into_red_zone_outcomes(tmp_path, monkeypatch):
+    """Runtime cycle must feed post-execution judgments back to red routing."""
+    monkeypatch.setenv("MC_STORAGE__DB_PATH", str(tmp_path / "mcr.db"))
+    monkeypatch.setenv("MC_LOGGING__FILE", str(tmp_path / "mcr.log"))
+    monkeypatch.setenv("MC_LANES__POOL_SIZE", "2")
+    monkeypatch.setenv("MC_LANES__LANE_TIMEOUT_SECONDS", "5")
+
+    from infra.bootstrap import boot
+    from infra.orchestrator import Orchestrator, StubBlue, StubRedTeam
+    from interfaces.types import JudgmentResult
+
+    class TournamentRed(StubRedTeam):
+        def __init__(self):
+            self.zone_outcomes = []
+            self._last_cycle_metrics = {}
+
+        def generate_ideas(self, cycle_id, n_lanes):  # noqa: ANN001
+            ideas = super().generate_ideas(cycle_id, n_lanes)
+            for idea in ideas:
+                idea.zone_id = "SBX-FS"
+                idea.model_label = "entrant-a"
+            return ideas
+
+        def judge(self, lane_result):  # noqa: ANN001
+            return JudgmentResult(
+                lane_id=lane_result.lane_id,
+                idea_id=lane_result.idea_id,
+                zone_id=lane_result.zone_targeted,
+                verdict="confirmed",
+                tier_that_caught="programmatic",
+                failure_class="none",
+                severity="high",
+                confidence=1.0,
+                evidence=[],
+                reasoning="",
+                tokens_used_judgment=0,
+                timestamp="",
+            )
+
+        def record_zone_outcomes(self, zone_id, judged):  # noqa: ANN001
+            self.zone_outcomes.append((zone_id, judged))
+
+    rt = boot(None, use_mock_provisioner=True)
+    red = TournamentRed()
+    orch = Orchestrator(rt, red, StubBlue())
+    orch.scheduler.start()
+    try:
+        orch._run_cycle(1)
+        assert red.zone_outcomes
+        zone_id, judged = red.zone_outcomes[0]
+        assert zone_id == "SBX-FS"
+        assert len(judged) == 2
+        assert all(j.verdict == "confirmed" for _, j in judged)
+    finally:
+        orch.scheduler.shutdown(timeout=5)
+        rt.shutdown()

@@ -36,6 +36,7 @@ from interfaces.provisioning import VictimInstance
 from interfaces.types import (
     CycleSummaryInput,
     IdeaObject,
+    JudgmentResult,
     LaneResult,
 )
 
@@ -53,7 +54,7 @@ class RedTeamPipeline(Protocol):
     def generate_ideas(self, cycle_id: int, n_lanes: int) -> list[IdeaObject]: ...
     def execute_lane(self, idea: IdeaObject, victim: VictimInstance,
                       harness: MonitoringHarness, lane_cfg: LaneConfig) -> None: ...
-    def judge(self, lane_result: LaneResult) -> None: ...
+    def judge(self, lane_result: LaneResult) -> JudgmentResult | None: ...
 
 
 class BluePipeline(Protocol):
@@ -229,15 +230,26 @@ class Orchestrator:
             with self._results_lock:
                 results = list(self._results)
                 self._results.clear()
+            ideas_by_id = {idea.idea_id: idea for idea in ideas}
+            judged_by_zone: dict[str, list[tuple[IdeaObject, JudgmentResult]]] = {}
             for r in results:
                 # One lane's judge failure must not abort the cycle — isolate
                 # each, log it, and continue. Person 2's judge writes findings
                 # via MCP; for the stub path, no findings are produced.
                 try:
-                    self.red.judge(r)
+                    judgment = self.red.judge(r)
                 except Exception as e:  # noqa: BLE001
                     LOG.exception("judge failed for lane %s (zone %s): %s",
                                   r.lane_id, r.zone_targeted, e)
+                    continue
+                if judgment is None:
+                    continue
+                idea = ideas_by_id.get(r.idea_id)
+                if idea is None:
+                    continue
+                judged_by_zone.setdefault(
+                    idea.zone_id, []).append((idea, judgment))
+            self._record_red_zone_outcomes(judged_by_zone)
             # Purple cycle — score executions, validate controls, route
             # feedback. Read-mostly; isolated so it never aborts red/blue.
             if self.purple is not None:
@@ -309,6 +321,20 @@ class Orchestrator:
                  cycle_result.validation_run.kind
                  if cycle_result.validation_run else "none",
                  len(cycle_result.new_rules))
+
+    def _record_red_zone_outcomes(
+        self,
+        judged_by_zone: dict[str, list[tuple[IdeaObject, JudgmentResult]]],
+    ) -> None:
+        recorder = getattr(self.red, "record_zone_outcomes", None)
+        if recorder is None:
+            return
+        for zone_id, judged in judged_by_zone.items():
+            try:
+                recorder(zone_id, judged)
+            except Exception as e:  # noqa: BLE001
+                LOG.exception("red zone outcome fold failed for %s: %s",
+                              zone_id, e)
 
     def _finalize_cycle(self, cycle_id: int, ideas: list[IdeaObject],
                         results: list[LaneResult], start: float) -> None:
