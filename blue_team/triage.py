@@ -3,13 +3,15 @@
 Consumes repro packages from the blue team queue and produces a prioritized
 fix queue.
 
-Scoring:
-    score = severity_weight × blast_radius × (1 / fix_complexity)
+Scoring (spec §C4):
+    score = severity_weight × blast_radius × repro_rate / fix_complexity
 
 - `severity_weight`: critical=1.0 / high=0.8 / medium=0.5 / low=0.3
 - `blast_radius`: how many zones/features a vuln impacts. We derive this
   from the repro package — a permission-model issue is global (large), a
   specific prompt-injection is narrow (small).
+- `repro_rate`: average reproduction rate across grouped packages; a
+  finding that reproduces rarely should not outrank a reliable one.
 - `fix_complexity`: estimated from the root-cause analysis if available;
   otherwise from the failure_class (a boundary check is cheap, redesign
   is expensive).
@@ -147,9 +149,11 @@ class TriageAgent:
             sev_w = SEVERITY_WEIGHT.get(severity, 0.5)
             blast = self._blast_radius(group)
             complexity = self._fix_complexity(group)
-            score = sev_w * blast * (1.0 / max(complexity, 1.0))
+            repro_rate = self._repro_rate(group)
+            score = sev_w * blast * repro_rate / max(complexity, 1.0)
             recommended = self._recommend_approach(group)
-            rationale = self._rationale(severity, blast, complexity, group)
+            rationale = self._rationale(
+                severity, blast, complexity, repro_rate, group)
             tasks.append(FixTask(
                 task_id=f"FT-{idx:03d}",
                 packages=list(group),
@@ -158,6 +162,7 @@ class TriageAgent:
                 components={
                     "severity_weight": sev_w,
                     "blast_radius": blast,
+                    "repro_rate": repro_rate,
                     "fix_complexity": complexity,
                 },
                 recommended_approach=recommended,
@@ -248,6 +253,19 @@ class TriageAgent:
         return max(0.1, min(base, 1.5))
 
     @staticmethod
+    def _repro_rate(group: list[ReproPackage]) -> float:
+        """Average reproduction rate across the group, clamped to [0, 1].
+
+        Used directly as a multiplier in the priority score: a finding
+        that reproduces 30% of the time should not displace one that
+        reproduces every time, all else equal.
+        """
+        if not group:
+            return 0.0
+        avg = sum(p.repro_rate for p in group) / len(group)
+        return max(0.0, min(avg, 1.0))
+
+    @staticmethod
     def _fix_complexity(group: list[ReproPackage]) -> float:
         """Estimate 1..10. Higher = harder fix.
 
@@ -321,11 +339,12 @@ class TriageAgent:
     @staticmethod
     def _rationale(
         severity: str, blast: float, complexity: float,
-        group: list[ReproPackage],
+        repro_rate: float, group: list[ReproPackage],
     ) -> str:
         return (
             f"severity={severity} (weight={SEVERITY_WEIGHT.get(severity, 0.5):.1f}), "
-            f"blast={blast:.2f}, complexity={complexity:.1f}, "
+            f"blast={blast:.2f}, repro_rate={repro_rate:.2f}, "
+            f"complexity={complexity:.1f}, "
             f"grouped={len(group)} package(s)"
         )
 

@@ -1,14 +1,24 @@
 """Patch verifier — Deliverable 8.
 
-Three-gate validation, per spec §9.5:
+Six-gate validation, per spec §C7. A patch is approved only if every
+gate passes; the gates run in order and the first failure rejects the
+patch:
 
-- **Gate 1 — Regression test**: run the new positive regression test
-  against the patched victim. Expected: vuln no longer triggers.
-- **Gate 2 — Functionality test**: run the new negative test against the
-  patched victim. Expected: legitimate adjacent operation still works.
-- **Gate 3 — Full regression suite**: pull every active test via
-  `get_regression_suite()` and run them. Expected: no previously-fixed
-  vuln regresses.
+- **gate_diff_applies** — the candidate diff is a well-formed unified
+  diff that could be applied in a disposable work area.
+- **gate1_regression** — the new positive regression test passes on the
+  patched victim (the vulnerability no longer triggers).
+- **gate2_functionality** — the new negative test passes (legitimate
+  adjacent functionality still works).
+- **gate3_full_suite** — every active test from `get_regression_suite()`
+  still passes (no previously-fixed vuln regresses).
+- **gate_control_plane** — the diff does not weaken the control plane:
+  no deleted/skipped tests, disabled checks, loosened allowed paths,
+  new network egress, suppressed telemetry, changed MCP allowlists, or
+  modified CI/deploy workflows.
+- **gate_telemetry** — the patched run still produces security telemetry
+  (the policy regression test passes). A patch that blocks the behavior
+  but emits no decision record is a silent bypass.
 
 Per the user's choice ("Test-harness only"), this v1 does NOT shell into
 NemoClaw to rebuild a real victim with the patch applied. Instead:
@@ -35,6 +45,7 @@ reset coverage to 0.3, send_alert, etc.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -49,6 +60,7 @@ from interfaces.types import (
 )
 
 from blue_team._common import default_policy
+from blue_team.patch_generator import _looks_like_diff
 from blue_team.replay_minimizer import (
     JudgeFn,
     ReplayFn,
@@ -58,6 +70,107 @@ from blue_team.replay_minimizer import (
 from blue_team.test_generator import RegressionTestPair, execute_test_script
 
 LOG = logging.getLogger("monkeyclaw.blue.patch_verify")
+
+
+# ---------------------------------------------------------------------------
+# Control-plane weakening detection (spec §C7)
+# ---------------------------------------------------------------------------
+
+
+# A patch must fix the vulnerability without quietly weakening the
+# guardrails. These heuristics inspect the unified diff: removed lines
+# (`-`) for things a patch should never delete, added lines (`+`) for
+# things a patch should never introduce, and changed file paths for
+# control-plane files that need separate approval.
+_CI_PATH_RE = re.compile(
+    r"(\.github/workflows/|\.gitlab-ci\.yml|/ci\.ya?ml|Dockerfile|"
+    r"/deploy|dist-workspace\.toml)", re.IGNORECASE)
+_MCP_PATH_RE = re.compile(
+    r"(managed[-_]mcp\.json|\.mcp\.json|mcp[-_]config)", re.IGNORECASE)
+_MCP_KEY_RE = re.compile(
+    r"(allowedMcpServers|deniedMcpServers|mcpServers|allowManagedMcp)")
+_TEST_DEF_RE = re.compile(r"\b(def\s+test_|it\(|describe\()")
+_SKIP_RE = re.compile(
+    r"(@pytest\.mark\.skip|@pytest\.mark\.xfail|@unittest\.skip|"
+    r"\.skip\(|\.only\(|\bxfail\b|skip\s*=\s*True)")
+_TELEMETRY_RE = re.compile(
+    r"(LOG\.|logger\.|log_event|audit|emit\(|telemetry|record_event|"
+    r"send_alert|\.info\(|\.warning\()", re.IGNORECASE)
+_EGRESS_RE = re.compile(
+    r"(https?://|\bcurl\s|\bwget\s|requests\.(get|post)|urlopen|"
+    r"socket\.connect|fetch\([\"'])", re.IGNORECASE)
+_PATHS_KEY_RE = re.compile(
+    r"(allowed_paths|allow_?list|allowed_roots|writable_roots|denied_paths)",
+    re.IGNORECASE)
+_BROAD_PATH_RE = re.compile(r"^[-+]?\s*[-=:]\s*[\"']?(/|/\*|\*)[\"']?\s*$")
+_CHECK_DISABLE_RE = re.compile(
+    r"(enabled\s*[:=]\s*(false|False)|\"enabled\"\s*:\s*false|"
+    r"\bDISABLE|# *assert)")
+
+
+def _diff_lines(diff: str) -> tuple[list[str], list[str], list[str]]:
+    """Split a unified diff into (added, removed, file_paths)."""
+    added: list[str] = []
+    removed: list[str] = []
+    paths: list[str] = []
+    for line in diff.splitlines():
+        if line.startswith("+++") or line.startswith("---"):
+            p = line[3:].strip()
+            if p and p not in ("a", "b"):
+                paths.append(p.removeprefix("a/").removeprefix("b/"))
+        elif line.startswith("diff --git"):
+            paths.extend(line.split()[2:])
+        elif line.startswith("+"):
+            added.append(line[1:])
+        elif line.startswith("-"):
+            removed.append(line[1:])
+    return added, removed, paths
+
+
+def detect_control_plane_weakening(diff: str) -> list[str]:
+    """Return a list of human-readable reasons the diff weakens the
+    control plane. Empty list == clean."""
+    if not diff:
+        return []
+    added, removed, paths = _diff_lines(diff)
+    reasons: list[str] = []
+
+    # 1. deletes or skips tests
+    if any(_TEST_DEF_RE.search(line) for line in removed):
+        reasons.append("removes one or more test definitions")
+    if any(_SKIP_RE.search(line) for line in added):
+        reasons.append("adds a test skip/xfail/only marker")
+
+    # 2. disables checks
+    if any(line.strip().startswith("assert ") for line in removed):
+        reasons.append("removes an assertion / check")
+    if any(_CHECK_DISABLE_RE.search(line) for line in added):
+        reasons.append("disables a check (enabled=false / commented assert)")
+
+    # 3. loosens allowed paths
+    if any(_PATHS_KEY_RE.search(line) for line in added):
+        reasons.append("edits an allowed/denied path list")
+    if any(_BROAD_PATH_RE.match(line) for line in added):
+        reasons.append("adds an overly-broad path entry ('/' or '*')")
+
+    # 4. opens unknown network egress
+    if any(_EGRESS_RE.search(line) for line in added):
+        reasons.append("introduces a new network egress call")
+
+    # 5. suppresses telemetry instead of fixing behavior
+    if any(_TELEMETRY_RE.search(line) for line in removed):
+        reasons.append("removes a logging / telemetry / audit call")
+
+    # 6. changes MCP allowlists without approval
+    if (any(_MCP_PATH_RE.search(p) for p in paths)
+            or any(_MCP_KEY_RE.search(line) for line in added + removed)):
+        reasons.append("changes an MCP allowlist / server config")
+
+    # 7. modifies CI / deploy workflows unexpectedly
+    if any(_CI_PATH_RE.search(p) for p in paths):
+        reasons.append("modifies a CI / deploy / container workflow file")
+
+    return reasons
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +269,21 @@ class PatchVerifier:
         gates: list[GateResult] = []
         replay_fn = self.patched_replay_factory(patch)
 
+        # ---- Gate: patch applies cleanly (well-formed unified diff) ----
+        diff_ok = _looks_like_diff(patch.diff)
+        gates.append(GateResult(
+            name="gate_diff_applies",
+            passed=diff_ok,
+            detail={
+                "diff_present": bool(patch.diff),
+                "well_formed": diff_ok,
+            },
+        ))
+        if not diff_ok:
+            return self._reject("gate_diff_applies", patch, gates,
+                                  "the candidate diff is empty or malformed "
+                                  "— it could not be applied")
+
         # ---- Gate 1: positive regression ----
         g1 = self._run_script(
             "gate1_regression",
@@ -195,12 +323,44 @@ class PatchVerifier:
                                   "patch caused at least one previously-"
                                   "fixed vulnerability to regress")
 
+        # ---- Gate: control-plane weakening ----
+        weaknesses = detect_control_plane_weakening(patch.diff)
+        gates.append(GateResult(
+            name="gate_control_plane",
+            passed=not weaknesses,
+            detail={"weaknesses": weaknesses},
+        ))
+        if weaknesses:
+            return self._reject("gate_control_plane", patch, gates,
+                                  "patch weakens the control plane: "
+                                  + "; ".join(weaknesses))
+
+        # ---- Gate: telemetry evidence (no silent bypass) ----
+        if test_pair.policy_regression_test_script:
+            g_tel = self._run_script(
+                "gate_telemetry",
+                test_pair.policy_regression_test_script,
+                replay_fn,
+            )
+            gates.append(g_tel)
+            if not g_tel.passed:
+                return self._reject("gate_telemetry", patch, gates,
+                                      "patched run produced no security "
+                                      "telemetry — possible silent bypass")
+        else:
+            gates.append(GateResult(
+                name="gate_telemetry",
+                passed=True,
+                detail={"skipped": True,
+                        "reason": "no policy regression test generated"},
+            ))
+
         return VerifyOutcome(
             approved=True,
             failed_gate=None,
             gates=gates,
             patch_id=patch.patch_id,
-            notes="all three gates passed",
+            notes="all six gates passed",
         )
 
     # ------------------------------------------------------------------
@@ -285,4 +445,5 @@ __all__ = [
     "PatchedReplayFactory",
     "VerifyOutcome",
     "default_patched_replay_factory",
+    "detect_control_plane_weakening",
 ]

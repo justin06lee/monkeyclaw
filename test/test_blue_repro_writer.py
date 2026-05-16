@@ -55,9 +55,41 @@ def test_repro_doc_has_all_required_sections():
         "## Root Cause Analysis",
         "## Ideas Used",
         "## Suggested Mitigations",
+        "## Confidence and Caveats",
         "## Raw Artifacts",
     ]:
         assert heading in doc.markdown, f"missing section: {heading!r}"
+
+
+def test_repro_doc_confidence_section_reports_repro_reliability():
+    doc = ReproWriter().write(_writer_input(
+        repro_rate=1.0, replays_total=5, replays_successful=5))
+    section = doc.markdown.split("## Confidence and Caveats", 1)[1]
+    section = section.split("## Raw Artifacts", 1)[0]
+    assert "Reproduction" in section
+    assert "5/5" in section
+
+
+def test_repro_doc_confidence_section_labels_speculative_root_cause():
+    rc = RootCauseResult(
+        root_cause_confidence=0.4,
+        candidate_fix_sites=[FixSite(
+            file="src/x.ts", function="f", line_range="L1-L2",
+            explanation="maybe", confidence=0.4,
+        )],
+        execution_trace="", notes="speculative",
+    )
+    doc = ReproWriter().write(_writer_input(root_cause=rc))
+    section = doc.markdown.split("## Confidence and Caveats", 1)[1]
+    section = section.split("## Raw Artifacts", 1)[0]
+    assert "speculative" in section.lower()
+
+
+def test_repro_doc_confidence_section_flags_semantic_only_finding():
+    doc = ReproWriter().write(_writer_input(evidence=[]))
+    section = doc.markdown.split("## Confidence and Caveats", 1)[1]
+    section = section.split("## Raw Artifacts", 1)[0]
+    assert "semantic" in section.lower()
 
 
 def test_repro_doc_steps_carry_attacker_input():
