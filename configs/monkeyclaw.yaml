@@ -199,3 +199,8 @@ guardrails:
 code_context:
   backend: python   # set to 'argyph' to use the Argyph binary
   argyph_binary: null
+
+purple:
+  enabled: true
+  full_sweep_every: 10
+  self_governance_enabled: true
