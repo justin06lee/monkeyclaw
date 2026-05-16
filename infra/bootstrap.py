@@ -16,6 +16,7 @@ from infra.mcp_server import MCPServer
 from infra.notifications import AlertDispatcher
 from infra.provisioning_nemoclaw import MockProvisioner, NemoClawProvisioner
 from interfaces.config_schema import MonkeyClawConfig
+from interfaces.model_router import ModelRouter
 from interfaces.provisioning import VictimProvisioner, set_provisioner
 
 LOG = logging.getLogger("monkeyclaw.bootstrap")
@@ -30,6 +31,7 @@ class Runtime:
     provisioner: VictimProvisioner
     alert_dispatcher: AlertDispatcher
     enforcer: PolicyEnforcer
+    router: ModelRouter
 
     def shutdown(self) -> None:
         self.alert_dispatcher.close()
@@ -85,5 +87,9 @@ def boot(config_path: str | Path | None = None,
     # A8 — one PolicyEnforcer per run; the orchestrator/CLI threads it into
     # the lane scheduler and per-lane harnesses.
     enforcer = PolicyEnforcer(cfg.guardrails)
+    # The single LLM construction point — every pipeline component routes
+    # through this instead of bare make_llm(). Shares the mcp handle so each
+    # complete() writes a model_runs row.
+    router = ModelRouter(cfg, mcp=mcp)
     return Runtime(cfg=cfg, db=db, mcp=mcp, provisioner=provisioner,
-                    alert_dispatcher=dispatcher, enforcer=enforcer)
+                    alert_dispatcher=dispatcher, enforcer=enforcer, router=router)

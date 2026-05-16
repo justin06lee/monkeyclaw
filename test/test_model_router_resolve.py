@@ -79,3 +79,18 @@ def test_resolve_unknown_role_raises():
     router = ModelRouter(load_config())
     with pytest.raises(ValueError, match="unknown model role"):
         router.resolve("not_a_real_role")
+
+
+def test_boot_exposes_router_on_runtime():
+    from infra.bootstrap import boot
+    from interfaces.model_router import ModelRouter
+    rt = boot(use_mock_provisioner=True)
+    try:
+        assert isinstance(rt.router, ModelRouter)
+        # The router shares the runtime's mcp handle for accounting.
+        assert rt.router.mcp is rt.mcp
+        # It resolves a role end to end.
+        chain = rt.router.resolve("patch_generation")
+        assert len(chain) >= 2
+    finally:
+        rt.shutdown()
