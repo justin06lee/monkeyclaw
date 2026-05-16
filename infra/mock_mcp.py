@@ -632,6 +632,7 @@ class MockMCP(MonkeyClawMCP):
                 response_movement=update.response_movement,
                 best_idea_id=update.idea_id, best_score=update.score,
                 occupancy=1, updated_at=_now(),
+                niche_descriptors=dict(update.niche_descriptors),
             )
         else:
             promote = update.score > existing.best_score
@@ -642,6 +643,8 @@ class MockMCP(MonkeyClawMCP):
                 best_idea_id=update.idea_id if promote else existing.best_idea_id,
                 best_score=update.score if promote else existing.best_score,
                 occupancy=existing.occupancy + 1, updated_at=_now(),
+                niche_descriptors=(dict(update.niche_descriptors) if promote
+                                   else dict(existing.niche_descriptors)),
             )
         self._archive_cells[cell_id] = cell
         self._log("update_archive_cell", {"cell_id": cell_id,

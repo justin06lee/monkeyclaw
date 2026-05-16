@@ -126,3 +126,20 @@ def test_route_judgment_without_archive_skips_persistence():
     mcp = MockMCP(verbose=False)
     route_judgment(_judgment("confirmed", "critical"), _idea(), mcp)
     assert mcp.get_archive_cells(None) == []
+
+
+def test_mock_mcp_round_trips_niche_descriptors():
+    from infra.mock_mcp import MockMCP
+    from interfaces.types import ArchiveUpdateInput
+
+    mcp = MockMCP()
+    desc = {"turn_bucket": "3-7", "transfer_score": 0.6,
+            "tactic_tags": ["roleplay"], "model": "nemotron"}
+    mcp.update_archive_cell(ArchiveUpdateInput(
+        zone_id="SBX-FS", interaction_style="direct",
+        response_movement="refusal", idea_id="I1", score=4.0,
+        niche_descriptors=desc,
+    ))
+    cells = mcp.get_archive_cells(zone="SBX-FS")
+    assert len(cells) == 1
+    assert cells[0].niche_descriptors == desc

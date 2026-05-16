@@ -717,27 +717,31 @@ class MCPServer(MonkeyClawMCP):
         now = _now()
         with self.db.lock():
             row = self.db.fetchone(
-                "SELECT best_idea_id, best_score, occupancy "
+                "SELECT best_idea_id, best_score, occupancy, niche_descriptors "
                 "FROM idea_archive_cells WHERE cell_id = ?",
                 (cell_id,),
             )
+            nd_json = json.dumps(update.niche_descriptors or {})
             if row is None:
                 self.db.execute(
                     "INSERT INTO idea_archive_cells(cell_id, zone_id, "
                     "interaction_style, response_movement, best_idea_id, "
-                    "best_score, occupancy, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+                    "best_score, occupancy, niche_descriptors, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
                     (cell_id, update.zone_id, update.interaction_style,
-                     update.response_movement, update.idea_id, update.score, now),
+                     update.response_movement, update.idea_id, update.score,
+                     nd_json, now),
                 )
             else:
                 promote = update.score > row["best_score"]
                 self.db.execute(
                     "UPDATE idea_archive_cells SET best_idea_id = ?, "
-                    "best_score = ?, occupancy = occupancy + 1, updated_at = ? "
+                    "best_score = ?, occupancy = occupancy + 1, "
+                    "niche_descriptors = ?, updated_at = ? "
                     "WHERE cell_id = ?",
                     (update.idea_id if promote else row["best_idea_id"],
                      update.score if promote else row["best_score"],
+                     nd_json if promote else row["niche_descriptors"],
                      now, cell_id),
                 )
             out = self.db.fetchone(
@@ -821,6 +825,7 @@ def _archive_row_to_cell(r) -> ArchiveCell:
         response_movement=r["response_movement"],
         best_idea_id=r["best_idea_id"], best_score=r["best_score"],
         occupancy=r["occupancy"], updated_at=r["updated_at"],
+        niche_descriptors=json.loads(r["niche_descriptors"] or "{}"),
     )
 
 
