@@ -30,6 +30,11 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from infra.guardrails import PolicyEnforcer
+    from infra.telemetry import TelemetryEmitter
 
 from interfaces.types import (
     FsDiff,
@@ -286,11 +291,19 @@ class MonitoringHarness:
     """Per-lane monitoring. Use as a context manager; produces a LaneResult."""
 
     def __init__(self, cfg: HarnessConfig, lane_id: str, idea_id: str,
-                 zone_id: str) -> None:
+                 zone_id: str, telemetry: TelemetryEmitter | None = None,
+                 enforcer: PolicyEnforcer | None = None) -> None:
         self.cfg = cfg
         self.lane_id = lane_id
         self.idea_id = idea_id
         self.zone_id = zone_id
+        # Optional TelemetryEmitter. When set, network/file events are
+        # mirrored as A5 telemetry. Unset -> behavior is identical to before.
+        self._telemetry = telemetry
+        # Optional PolicyEnforcer (A8). When set, host-path reads and network
+        # destinations are checked against policy. Unset -> behavior is
+        # identical to before.
+        self._enforcer = enforcer
         self.network_log: list[NetworkEvent] = []
         self.inference_log: list[InferenceEvent] = []
         self.transcript: list[Message] = []
@@ -361,8 +374,48 @@ class MonitoringHarness:
         self.transcript.append(msg)
         self._turns += 1
 
+    def guard_path_read(self, path: str):
+        """Consult the PolicyEnforcer for a host-path read; emit telemetry.
+
+        Returns the PolicyDecision, or None when no enforcer is attached.
+        """
+        if self._enforcer is None:
+            return None
+        decision = self._enforcer.check_path_read(path)
+        if self._telemetry is not None:
+            self._telemetry.tool_decision(
+                "harness", target=path, decision=decision.decision,
+                reason_code=decision.reason_code)
+        return decision
+
+    def guard_network(self, destination: str, phase: str = "default"):
+        """Consult the PolicyEnforcer for a network destination; emit telemetry.
+
+        Returns the PolicyDecision, or None when no enforcer is attached.
+        """
+        if self._enforcer is None:
+            return None
+        decision = self._enforcer.check_network(destination, phase)
+        if self._telemetry is not None:
+            self._telemetry.network_request(
+                "harness", destination=destination,
+                decision=decision.decision, reason_code=decision.reason_code)
+        return decision
+
     def record_network(self, event: NetworkEvent) -> None:
         self.network_log.append(event)
+        if self._enforcer is not None:
+            decision = self.guard_network(event.destination_domain,
+                                          phase="default")
+            if decision is not None and decision.decision == "deny":
+                # Only escalate toward blocked — never un-block an event the
+                # network proxy already flagged.
+                event.blocked = True
+        elif self._telemetry is not None:
+            self._telemetry.network_request(
+                "harness",
+                destination=event.destination_domain,
+                decision="deny" if event.blocked else "allow")
 
     def record_inference(self, event: InferenceEvent) -> None:
         self.inference_log.append(event)
@@ -387,6 +440,11 @@ class MonitoringHarness:
         if self._fs_before is None or self._fs_after is None:
             raise RuntimeError("MonitoringHarness.stop() must be called before result()")
         fs_diff = diff_snapshots(self._fs_before, self._fs_after, self.cfg.allowed_paths)
+        if self._telemetry is not None:
+            for path in fs_diff.files_outside_allowed_paths:
+                self._telemetry.file_write(
+                    "harness", path=path, decision="deny",
+                    reason_code="outside_allowed_path")
         mem_diff = diff_memory(self._mem_before or {}, self._mem_after or {})
         end_iso = _now()
         wall_ms = int((time.time() - self._started_at) * 1000)

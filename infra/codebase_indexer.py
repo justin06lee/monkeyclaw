@@ -280,6 +280,27 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     db = Database(args.db)
 
+    # Optional Argyph backend: when configured AND a binary is available, let
+    # Argyph build its own index instead of the Python tree-sitter walk. The
+    # Python indexer remains the default and the fallback.
+    from infra.config import load_config  # noqa: PLC0415
+    cfg = load_config()
+    if cfg.code_context.backend == "argyph":
+        from infra.argyph_index import ArgyphIndex  # noqa: PLC0415
+        argyph = ArgyphIndex(binary=cfg.code_context.argyph_binary)
+        if argyph.available:
+            LOG.info("code-context backend: argyph (%s)", argyph.binary)
+            try:
+                argyph.index(str(root))
+                return 0
+            except Exception as exc:
+                LOG.warning("argyph indexing failed (%s); falling back to python indexer", exc)
+        else:
+            LOG.info("code-context backend: argyph configured but binary "
+                     "unavailable; falling back to python indexer")
+    else:
+        LOG.info("code-context backend: python tree-sitter indexer")
+
     if args.limit_files > 0:
         global _iter_files  # noqa: PLW0603
         _original_iter = _iter_files

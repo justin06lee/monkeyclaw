@@ -27,10 +27,17 @@ from interfaces.types import (
     FindingInput,
     FindingRecord,
     IdeaInput,
+    JudgeVoteInput,
+    ModelRunInput,
+    PatchCandidateInput,
+    PolicyCorpusResult,
+    PolicyCorpusResultInput,
     RegressionTest,
     RegressionTestInput,
     ReproPackage,
     ReproPackageInput,
+    TelemetryEvent,
+    TelemetryEventInput,
 )
 
 LOG = logging.getLogger("monkeyclaw.mcp")
@@ -55,11 +62,40 @@ class MCPServer(MonkeyClawMCP):
         self.db = db
         self.embedder = embedder or EmbeddingModel.shared()
         self.alert_sink = alert_sink  # Callable[[str, str], None] | None
+        self._telemetry = None
+        self._code_backend = "python"
+        self._argyph = None
+        self._repo_path = "."
+
+    def set_code_context(self, backend: str = "python",
+                         argyph_binary: str | None = None,
+                         repo_path: str = ".") -> None:
+        """Configure the code-context backend (called by bootstrap)."""
+        self._code_backend = backend
+        self._repo_path = repo_path
+        if backend == "argyph":
+            from infra.argyph_index import ArgyphIndex  # noqa: PLC0415
+            self._argyph = ArgyphIndex(binary=argyph_binary)
+        else:
+            self._argyph = None
+
+    def attach_telemetry(self, emitter) -> None:
+        """Attach a TelemetryEmitter so MCP calls emit agent.mcp.invoked.
+
+        Attached lazily by the orchestrator/scheduler so contract tests that
+        construct a bare MCPServer are unaffected.
+        """
+        self._telemetry = emitter
+
+    def _emit_invoked(self, tool: str) -> None:
+        if self._telemetry is not None:
+            self._telemetry.mcp_invoked("mcp-client", tool=tool)
 
     # ------------------------------------------------------------------
     # Coverage / surface map
     # ------------------------------------------------------------------
     def get_coverage_gaps(self, top_n: int) -> list[CoverageGap]:
+        self._emit_invoked("get_coverage_gaps")
         rows = self.db.fetchall(
             "SELECT zone_id, name, description, severity_weight, coverage_score, "
             "vulns_open, last_tested_at "
@@ -107,6 +143,7 @@ class MCPServer(MonkeyClawMCP):
     # Findings
     # ------------------------------------------------------------------
     def log_finding(self, finding: FindingInput) -> str:
+        self._emit_invoked("log_finding")
         fid = _new_id("FND")
         with self.db.lock():
             self.db.execute(
@@ -221,6 +258,7 @@ class MCPServer(MonkeyClawMCP):
         return DupResult(False, 0.0, None)
 
     def log_idea(self, idea: IdeaInput) -> str:
+        self._emit_invoked("log_idea")
         iid = _new_id("IDEA")
         emb = idea.embedding or self.embedder.encode_one(f"{idea.title}\n{idea.approach}").tolist()
         with self.db.lock():
@@ -294,6 +332,7 @@ class MCPServer(MonkeyClawMCP):
     # Repro packages
     # ------------------------------------------------------------------
     def push_repro_package(self, package: ReproPackageInput) -> str:
+        self._emit_invoked("push_repro_package")
         pid = _new_id("PKG")
         vuln_id = package.vuln_id or _vuln_id()
         # `mint_vuln_id` on the blue side is a process-local counter, so
@@ -369,6 +408,13 @@ class MCPServer(MonkeyClawMCP):
     # Codebase search
     # ------------------------------------------------------------------
     def search_codebase(self, query: str, top_k: int) -> list[CodeChunk]:
+        self._emit_invoked("search_codebase")
+        if self._code_backend == "argyph" and self._argyph is not None \
+                and self._argyph.available:
+            chunks = self._argyph.search(query, top_k, self._repo_path)
+            if chunks:
+                return chunks
+            # fall through to the Python indexer on empty/failed Argyph search
         emb = self.embedder.encode_one(query)
         candidates = self.db.vector_search("code_chunks_vec", "chunk_id", emb, top_k)
         if not candidates:
@@ -395,6 +441,152 @@ class MCPServer(MonkeyClawMCP):
                 score=similarity,
             ))
         return out
+
+    # ------------------------------------------------------------------
+    # Telemetry & policy events
+    # ------------------------------------------------------------------
+    def log_telemetry_event(self, event: TelemetryEventInput) -> str:
+        eid = _new_id("EVT")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO telemetry_events(event_id, session_id, event_type, "
+                "timestamp, actor, action_class, target, decision, reason_code, "
+                "data_class, content_hash, excerpt, metadata) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (eid, event.session_id, event.event_type, _now(), event.actor,
+                 event.action_class, event.target, event.decision,
+                 event.reason_code, event.data_class, event.content_hash,
+                 event.excerpt, json.dumps(event.metadata)),
+            )
+        return eid
+
+    def get_session_timeline(self, session_id: str) -> list[TelemetryEvent]:
+        rows = self.db.fetchall(
+            "SELECT * FROM telemetry_events WHERE session_id=? "
+            "ORDER BY timestamp, event_id",
+            (session_id,),
+        )
+        return [TelemetryEvent(
+            event_id=r["event_id"], session_id=r["session_id"],
+            event_type=r["event_type"], timestamp=r["timestamp"],
+            actor=r["actor"], action_class=r["action_class"],
+            target=r["target"], decision=r["decision"],
+            reason_code=r["reason_code"], data_class=r["data_class"],
+            content_hash=r["content_hash"], excerpt=r["excerpt"],
+            metadata=json.loads(r["metadata"]),
+        ) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Model run accounting
+    # ------------------------------------------------------------------
+    def log_model_run(self, run: ModelRunInput) -> str:
+        rid = _new_id("RUN")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO model_runs(run_id, role, model, provider, "
+                "input_tokens, output_tokens, latency_ms, cost_usd, success, "
+                "error, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (rid, run.role, run.model, run.provider, run.input_tokens,
+                 run.output_tokens, run.latency_ms, run.cost_usd,
+                 1 if run.success else 0, run.error, _now()),
+            )
+        return rid
+
+    # ------------------------------------------------------------------
+    # Judge votes
+    # ------------------------------------------------------------------
+    def log_judge_vote(self, vote: JudgeVoteInput) -> str:
+        vid = _new_id("VOTE")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO judge_votes(vote_id, lane_id, judge_role, verdict, "
+                "score, confidence, reasoning, evidence_turns, created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (vid, vote.lane_id, vote.judge_role, vote.verdict, vote.score,
+                 vote.confidence, vote.reasoning,
+                 json.dumps(list(vote.evidence_turns)), _now()),
+            )
+        return vid
+
+    # ------------------------------------------------------------------
+    # Policy corpus
+    # ------------------------------------------------------------------
+    def log_policy_corpus_result(self, result: PolicyCorpusResultInput) -> str:
+        rid = _new_id("PCR")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO policy_corpus_results(result_id, run_id, case_id, "
+                "observed_decision, expected_decision, passed, evidence, notes, "
+                "created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (rid, result.run_id, result.case_id, result.observed_decision,
+                 result.expected_decision, 1 if result.passed else 0,
+                 result.evidence, result.notes, _now()),
+            )
+        return rid
+
+    def get_policy_corpus_results(self, run_id: str) -> list[PolicyCorpusResult]:
+        rows = self.db.fetchall(
+            "SELECT * FROM policy_corpus_results WHERE run_id=? "
+            "ORDER BY created_at, result_id",
+            (run_id,),
+        )
+        return [PolicyCorpusResult(
+            result_id=r["result_id"], run_id=r["run_id"], case_id=r["case_id"],
+            observed_decision=r["observed_decision"],
+            expected_decision=r["expected_decision"],
+            passed=bool(r["passed"]), evidence=r["evidence"],
+            notes=r["notes"], created_at=r["created_at"],
+        ) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Queue / package / patch status transitions
+    # ------------------------------------------------------------------
+    def mark_repro_queue_status(
+        self, finding_id: str, status: str, worker_id: str | None = None
+    ) -> None:
+        with self.db.lock():
+            # Silent no-op if the row is absent — callers transition rows they already own.
+            self.db.execute(
+                "UPDATE repro_queue SET status=?, worker_id=COALESCE(?, worker_id) "
+                "WHERE finding_id=?",
+                (status, worker_id, finding_id),
+            )
+
+    def mark_repro_package_status(
+        self, package_id: str, blue_team_status: str
+    ) -> None:
+        with self.db.lock():
+            # Silent no-op if the row is absent — callers transition rows they already own.
+            self.db.execute(
+                "UPDATE repro_packages SET blue_team_status=? WHERE package_id=?",
+                (blue_team_status, package_id),
+            )
+
+    def log_patch_candidate(self, patch: PatchCandidateInput) -> str:
+        pid = _new_id("PATCH")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO patches(patch_id, vuln_ids, zone_id, approach, "
+                "invasiveness, diff, explanation, side_effects, status, "
+                "created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (pid, json.dumps(patch.vuln_ids), patch.zone_id, patch.approach,
+                 patch.invasiveness, patch.diff, patch.explanation,
+                 patch.side_effects, "proposed", _now()),
+            )
+        return pid
+
+    def mark_patch_status(
+        self, patch_id: str, status: str,
+        verification_results: dict | None = None,
+    ) -> None:
+        with self.db.lock():
+            # Silent no-op if the row is absent — callers transition rows they already own.
+            vr = json.dumps(verification_results) if verification_results is not None else None
+            self.db.execute(
+                "UPDATE patches SET status=?, verification_results=? "
+                "WHERE patch_id=?",
+                (status, vr, patch_id),
+            )
 
     # ------------------------------------------------------------------
     # Notifications

@@ -119,3 +119,138 @@ def test_send_alert_persists(real_mcp, tmp_db):
     row = tmp_db.fetchone("SELECT message, severity FROM alerts ORDER BY alert_id DESC LIMIT 1")
     assert row["message"] == "hello"
     assert row["severity"] == "high"
+
+
+def test_real_server_telemetry_roundtrip(server):
+    from interfaces.types import TelemetryEventInput
+    eid = server.log_telemetry_event(TelemetryEventInput(
+        session_id="S1", event_type="agent.tool.requested",
+        actor="attacker", action_class="tool", target="Bash"))
+    assert eid
+    tl = server.get_session_timeline("S1")
+    assert len(tl) == 1 and tl[0].event_type == "agent.tool.requested"
+
+
+def test_real_server_model_run_and_judge_vote(server):
+    from interfaces.types import ModelRunInput, JudgeVoteInput
+    rid = server.log_model_run(ModelRunInput(
+        role="red_ideation", model="m", provider="nvidia",
+        input_tokens=5, output_tokens=7, latency_ms=42))
+    assert rid
+    vid = server.log_judge_vote(JudgeVoteInput(
+        lane_id="L1", judge_role="semantic", verdict="confirmed",
+        score=0.9, confidence=0.8, reasoning="r", evidence_turns=[3]))
+    assert vid
+
+
+def test_real_server_policy_corpus_roundtrip(server):
+    from interfaces.types import PolicyCorpusResultInput
+    server.log_policy_corpus_result(PolicyCorpusResultInput(
+        run_id="RUN1", case_id="T01", observed_decision="deny",
+        expected_decision="deny", passed=True, evidence="hook denial"))
+    results = server.get_policy_corpus_results("RUN1")
+    assert len(results) == 1 and results[0].passed is True
+
+
+def test_real_server_conforms_to_protocol_v2(server):
+    from interfaces.mcp_tools import MonkeyClawMCP
+    assert isinstance(server, MonkeyClawMCP)
+
+
+def test_a3_tables_exist(db):
+    names = {r[0] for r in db.fetchall(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    for t in ("telemetry_events", "model_runs", "judge_votes",
+              "policy_corpus_results", "idea_components",
+              "idea_archive_cells", "mutation_operator_stats"):
+        assert t in names, f"missing table {t}"
+
+
+def test_a3_schema_version_is_2(db):
+    row = db.fetchone(
+        "SELECT value FROM schema_meta WHERE key='schema_version'")
+    assert row[0] == "2"
+
+
+def _sample_finding_input() -> FindingInput:
+    return FindingInput(
+        cycle_id=1, idea_id="IDEA-test", zone_id="SBX-FS", source_mode="creative",
+        idea_summary="sample finding for tests", verdict="suspicious",
+        tier_caught="programmatic", failure_class="sandbox_escape",
+        severity="high", evidence=json.dumps([]),
+    )
+
+
+def _sample_repro_package_input(finding_id: str) -> ReproPackageInput:
+    return ReproPackageInput(
+        finding_id=finding_id, vuln_id="MC-2026-0001", title="sample pkg",
+        severity="high", repro_rate=0.9, minimal_steps=[{"do": "x"}],
+        affected_zone="SBX-FS", affected_paths=None, ideas_used=["IDEA-test"],
+        transcripts={"original": [], "minimal": []},
+        suggested_mitigations=["sanitize input"], repro_document_md="# test",
+        cold_verified=True, ready_for_blue=True,
+    )
+
+
+def test_real_server_patch_candidate_lifecycle(server):
+    from interfaces.types import PatchCandidateInput
+    pid = server.log_patch_candidate(PatchCandidateInput(
+        vuln_ids=["MC-2026-0001"], zone_id="SBX-FS", approach="bounds check",
+        invasiveness="low", diff="--- a\n+++ b", explanation="why",
+        side_effects="none"))
+    assert pid
+    row = server.db.fetchone("SELECT * FROM patches WHERE patch_id=?", (pid,))
+    assert row is not None and row["status"] == "proposed"
+    server.mark_patch_status(pid, "verified", {"regression": "pass"})
+    row = server.db.fetchone("SELECT * FROM patches WHERE patch_id=?", (pid,))
+    assert row["status"] == "verified"
+    assert json.loads(row["verification_results"]) == {"regression": "pass"}
+
+
+def test_real_server_patch_status_null_verification(server):
+    from interfaces.types import PatchCandidateInput
+    pid = server.log_patch_candidate(PatchCandidateInput(
+        vuln_ids=["MC-2026-0002"], zone_id="SBX-FS", approach="null check",
+        invasiveness="low", diff="--- a\n+++ b", explanation="why",
+        side_effects="none"))
+    server.mark_patch_status(pid, "testing")
+    row = server.db.fetchone("SELECT verification_results FROM patches WHERE patch_id=?", (pid,))
+    assert row["verification_results"] is None
+
+
+def test_real_server_mark_repro_queue_status(server):
+    fid = server.log_finding(_sample_finding_input())
+    server.push_to_repro_queue(fid, "high")
+    server.mark_repro_queue_status(fid, "processing", worker_id="W1")
+    row = server.db.fetchone(
+        "SELECT status, worker_id FROM repro_queue WHERE finding_id=?", (fid,))
+    assert row["status"] == "processing" and row["worker_id"] == "W1"
+
+
+def test_real_server_mark_repro_package_status(server):
+    fid = server.log_finding(_sample_finding_input())
+    pkg_id = server.push_repro_package(_sample_repro_package_input(fid))
+    server.mark_repro_package_status(pkg_id, "triaged")
+    row = server.db.fetchone(
+        "SELECT blue_team_status FROM repro_packages WHERE package_id=?", (pkg_id,))
+    assert row["blue_team_status"] == "triaged"
+
+
+def test_migration_upgrades_legacy_v1_db(tmp_path):
+    """A DB that predates A3 tables gets upgraded on open."""
+    import sqlite3
+    from infra.database import Database
+    p = tmp_path / "legacy.db"
+    # Simulate a v1 DB: schema_meta exists, version=1, no A3 tables.
+    raw = sqlite3.connect(p.as_posix())
+    raw.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    raw.execute("INSERT INTO schema_meta VALUES('schema_version','1')")
+    raw.commit()
+    raw.close()
+    db = Database(p)  # opening must migrate it
+    names = {r[0] for r in db.fetchall(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "telemetry_events" in names
+    row = db.fetchone("SELECT value FROM schema_meta WHERE key='schema_version'")
+    assert row[0] == "2"
+    db.close()

@@ -21,9 +21,20 @@ blue-team loop that triages, patches, tests, and verifies the fix.
 
 ## Quick Start
 
+Full setup instructions are in [docs/dev_setup.md](docs/dev_setup.md).
+The verified sequence is:
+
 ```bash
 uv sync
+./scripts/check_env.sh          # must end with "== environment OK =="
+uv run pytest                   # 137 tests — all must pass
+uv run monkeyclaw run --cycles 1 --target planted-filesystem --mock
+```
 
+Once you have the environment working, set your credentials and run against a
+live sandbox:
+
+```bash
 # Nemotron credentials (host run); inside a sandbox use the managed route:
 #   export MC_NEMOTRON_BASE_URL=https://inference.local/v1
 export NVIDIA_API_KEY=<your nvidia api key>

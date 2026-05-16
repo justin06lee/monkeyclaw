@@ -36,6 +36,16 @@ BlueTeamStatus = Literal["queued", "triaged", "patching", "verified"]
 QueuePriority = Literal["high", "low"]
 LaneTermination = Literal["idea_completed", "timeout", "error", "max_turns"]
 InferenceRoute = Literal["local_nemotron", "cloud"]
+TelemetryEventType = Literal[
+    "agent.session.started", "agent.policy.loaded", "agent.tool.requested",
+    "agent.tool.decision", "agent.file.read", "agent.file.write",
+    "agent.shell.started", "agent.shell.finished", "agent.network.request",
+    "agent.mcp.invoked", "agent.approval.requested", "agent.approval.resolved",
+    "agent.session.finished",
+]
+PolicyDecisionType = Literal["allow", "deny", "ask"]
+ReproQueueStatus = Literal["queued", "processing", "completed", "failed"]
+JudgeRole = Literal["semantic", "safety", "programmatic"]
 
 # ---------------------------------------------------------------------------
 # Message + observability primitives
@@ -437,8 +447,227 @@ class PolicyConfig:
     expected_churn_paths: list[str] = field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# Telemetry & policy events (Person A — deliverable A5)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TelemetryEvent:
+    """A single recorded event in a session timeline. Bounded excerpts and
+    hashes only — never raw secrets."""
+
+    event_id: str
+    session_id: str
+    event_type: str
+    timestamp: str  # ISO-8601
+    actor: str
+    action_class: str
+    target: str | None
+    decision: str | None
+    reason_code: str | None
+    data_class: str | None
+    content_hash: str | None
+    excerpt: str | None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class TelemetryEventInput:
+    """Write-side of TelemetryEvent. The server assigns event_id + timestamp."""
+
+    session_id: str
+    event_type: str
+    actor: str
+    action_class: str
+    target: str | None = None
+    decision: str | None = None
+    reason_code: str | None = None
+    data_class: str | None = None
+    content_hash: str | None = None
+    excerpt: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PolicyDecision:
+    """A guardrail / policy decision about a proposed action."""
+
+    decision_id: str
+    session_id: str
+    action_class: str
+    target: str | None
+    decision: str  # PolicyDecisionType
+    reason_code: str
+    policy_rule: str | None
+    approver: str | None
+    latency_ms: int
+    created_at: str
+
+
+# ---------------------------------------------------------------------------
+# Model run accounting (Person A — deliverable A2/A4)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ModelRunRecord:
+    run_id: str
+    role: str
+    model: str
+    provider: str
+    input_tokens: int
+    output_tokens: int
+    latency_ms: int
+    cost_usd: float | None
+    success: bool
+    error: str | None
+    created_at: str
+
+
+@dataclass
+class ModelRunInput:
+    role: str
+    model: str
+    provider: str
+    input_tokens: int
+    output_tokens: int
+    latency_ms: int
+    cost_usd: float | None = None
+    success: bool = True
+    error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Queue state snapshot
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class QueueState:
+    queue_name: str
+    depth: int
+    processing: int
+    completed: int
+    failed: int
+    high_priority: int
+    low_priority: int
+    updated_at: str
+
+
+# ---------------------------------------------------------------------------
+# Idea archive (MAP-Elites style — Person B consumes, Person A stores)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class IdeaComponent:
+    component_id: str
+    idea_id: str
+    component_type: str  # e.g. "interaction_style", "response_movement", "vector"
+    content: str
+    created_at: str
+
+
+@dataclass
+class ArchiveCell:
+    cell_id: str
+    zone_id: str
+    interaction_style: str
+    response_movement: str
+    best_idea_id: str | None
+    best_score: float
+    occupancy: int
+    updated_at: str
+
+
+# ---------------------------------------------------------------------------
+# Judge votes (Person B — multi-judge ensemble)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class JudgeVote:
+    vote_id: str
+    lane_id: str
+    judge_role: str
+    verdict: str  # Verdict
+    score: float
+    confidence: float
+    reasoning: str
+    evidence_turns: list[int] = field(default_factory=list)
+
+
+@dataclass
+class JudgeVoteInput:
+    lane_id: str
+    judge_role: str
+    verdict: str
+    score: float
+    confidence: float
+    reasoning: str
+    evidence_turns: list[int] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Policy corpus — adversarial evaluation cases (PDF Appendix E)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PolicyCorpusCase:
+    case_id: str
+    stimulus: str
+    expected_decision: str  # PolicyDecisionType
+    zone_id: str | None
+    failure_class: str  # FailureClass
+    evidence: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PolicyCorpusResult:
+    result_id: str
+    run_id: str
+    case_id: str
+    observed_decision: str
+    expected_decision: str
+    passed: bool
+    evidence: str
+    notes: str
+    created_at: str
+
+
+@dataclass
+class PolicyCorpusResultInput:
+    run_id: str
+    case_id: str
+    observed_decision: str
+    expected_decision: str
+    passed: bool
+    evidence: str = ""
+    notes: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Patch candidate write-side (Person C — deliverable A2)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PatchCandidateInput:
+    vuln_ids: list[str]
+    zone_id: str
+    approach: str
+    invasiveness: str
+    diff: str
+    explanation: str
+    side_effects: str = ""
+
+
 __all__ = [
     "AgentPolicy",
+    "ArchiveCell",
     "CheckResult",
     "CodeChunk",
     "CoverageGap",
@@ -449,21 +678,38 @@ __all__ = [
     "FindingRecord",
     "FixSite",
     "FsDiff",
+    "IdeaComponent",
     "IdeaInput",
     "IdeaObject",
     "InferenceEvent",
+    "JudgeRole",
+    "JudgeVote",
+    "JudgeVoteInput",
     "JudgmentResult",
     "LaneResult",
     "MemoryDiff",
     "Message",
+    "ModelRunInput",
+    "ModelRunRecord",
     "NetworkEvent",
     "PatchCandidate",
+    "PatchCandidateInput",
     "PolicyConfig",
+    "PolicyCorpusCase",
+    "PolicyCorpusResult",
+    "PolicyCorpusResultInput",
+    "PolicyDecision",
+    "PolicyDecisionType",
     "ProcessEvent",
+    "QueueState",
     "RegressionRunResult",
     "RegressionTest",
     "RegressionTestInput",
     "ReproPackage",
     "ReproPackageInput",
+    "ReproQueueStatus",
     "SeccompProfile",
+    "TelemetryEvent",
+    "TelemetryEventInput",
+    "TelemetryEventType",
 ]

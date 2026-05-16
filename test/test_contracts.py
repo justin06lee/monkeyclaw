@@ -56,3 +56,65 @@ def test_provisioner_protocol():
     from infra.provisioning_nemoclaw import MockProvisioner
     p = MockProvisioner()
     assert isinstance(p, VictimProvisioner)
+
+
+def test_new_dataclasses_importable_and_constructible():
+    from interfaces.types import (
+        ArchiveCell, IdeaComponent, JudgeVote, JudgeVoteInput, ModelRunInput,
+        ModelRunRecord, PatchCandidateInput, PolicyCorpusCase, PolicyCorpusResult,
+        PolicyCorpusResultInput, PolicyDecision, QueueState, TelemetryEvent,
+        TelemetryEventInput,
+    )
+    ev = TelemetryEventInput(
+        session_id="S1", event_type="agent.session.started", actor="orchestrator",
+        action_class="session", target=None, decision=None, reason_code=None,
+        data_class=None, content_hash=None, excerpt=None, metadata={},
+    )
+    assert ev.session_id == "S1"
+    vote = JudgeVoteInput(
+        lane_id="L1", judge_role="semantic", verdict="confirmed", score=0.9,
+        confidence=0.8, reasoning="r", evidence_turns=[1, 2],
+    )
+    assert vote.evidence_turns == [1, 2]
+    run = ModelRunInput(
+        role="red_ideation", model="m", provider="nvidia", input_tokens=10,
+        output_tokens=20, latency_ms=100, cost_usd=None, success=True, error=None,
+    )
+    assert run.success is True
+
+
+def test_protocol_declares_new_methods():
+    from interfaces.mcp_tools import MonkeyClawMCP
+    for name in (
+        "log_telemetry_event", "get_session_timeline", "log_model_run",
+        "log_judge_vote", "log_policy_corpus_result", "get_policy_corpus_results",
+        "mark_repro_queue_status", "mark_repro_package_status",
+        "log_patch_candidate", "mark_patch_status",
+    ):
+        assert hasattr(MonkeyClawMCP, name), f"protocol missing {name}"
+
+
+def test_mock_mcp_model_run_and_judge_vote_roundtrip():
+    from infra.mock_mcp import MockMCP
+    from interfaces.types import JudgeVoteInput, ModelRunInput
+    m = MockMCP(verbose=False)
+    rid = m.log_model_run(ModelRunInput(
+        role="red_ideation", model="m", provider="nvidia",
+        input_tokens=5, output_tokens=7, latency_ms=42))
+    assert isinstance(rid, str) and rid
+    vid = m.log_judge_vote(JudgeVoteInput(
+        lane_id="L1", judge_role="semantic", verdict="confirmed",
+        score=0.9, confidence=0.8, reasoning="r", evidence_turns=[3]))
+    assert isinstance(vid, str) and vid
+
+
+def test_mock_mcp_telemetry_roundtrip():
+    from infra.mock_mcp import MockMCP
+    from interfaces.types import TelemetryEventInput
+    m = MockMCP(verbose=False)
+    eid = m.log_telemetry_event(TelemetryEventInput(
+        session_id="S1", event_type="agent.session.started",
+        actor="orchestrator", action_class="session"))
+    assert isinstance(eid, str) and eid
+    timeline = m.get_session_timeline("S1")
+    assert len(timeline) == 1 and timeline[0].event_id == eid

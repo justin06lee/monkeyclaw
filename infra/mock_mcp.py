@@ -14,6 +14,7 @@ Design rules:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import random
 import sys
@@ -32,10 +33,19 @@ from interfaces.types import (
     FindingInput,
     FindingRecord,
     IdeaInput,
+    JudgeVote,
+    JudgeVoteInput,
+    ModelRunInput,
+    ModelRunRecord,
+    PatchCandidateInput,
+    PolicyCorpusResult,
+    PolicyCorpusResultInput,
     RegressionTest,
     RegressionTestInput,
     ReproPackage,
     ReproPackageInput,
+    TelemetryEvent,
+    TelemetryEventInput,
 )
 
 # Hard-coded zones mirror schema.sql seed. Keep these in sync.
@@ -96,6 +106,13 @@ class MockMCP(MonkeyClawMCP):
         self._repro_packages: dict[str, ReproPackage] = {}
         self._regression_tests: dict[str, RegressionTest] = {}
         self._alerts: list[dict] = []
+        # New stores for A5 / A2 / A4 deliverables
+        self._telemetry: list[TelemetryEvent] = []
+        self._model_runs: list[ModelRunRecord] = []
+        self._judge_votes: list[JudgeVote] = []
+        self._corpus_results: list[PolicyCorpusResult] = []
+        self._patch_candidates: dict[str, PatchCandidateInput] = {}
+        self._patch_statuses: dict[str, dict] = {}
         self._seed_history()
 
     def _seed_history(self) -> None:
@@ -418,6 +435,144 @@ class MockMCP(MonkeyClawMCP):
         self._log("send_alert", entry)
 
     # ------------------------------------------------------------------
+    # Telemetry & policy events
+    # ------------------------------------------------------------------
+    def log_telemetry_event(self, event: TelemetryEventInput) -> str:
+        eid = _new_id("EVT")
+        self._telemetry.append(TelemetryEvent(
+            event_id=eid,
+            session_id=event.session_id,
+            event_type=event.event_type,
+            timestamp=_now(),
+            actor=event.actor,
+            action_class=event.action_class,
+            target=event.target,
+            decision=event.decision,
+            reason_code=event.reason_code,
+            data_class=event.data_class,
+            content_hash=event.content_hash,
+            excerpt=event.excerpt,
+            metadata=dict(event.metadata),
+        ))
+        self._log("log_telemetry_event", {"event_id": eid, "session_id": event.session_id})
+        return eid
+
+    def get_session_timeline(self, session_id: str) -> list[TelemetryEvent]:
+        return [e for e in self._telemetry if e.session_id == session_id]
+
+    # ------------------------------------------------------------------
+    # Model run accounting
+    # ------------------------------------------------------------------
+    def log_model_run(self, run: ModelRunInput) -> str:
+        rid = _new_id("RUN")
+        self._model_runs.append(ModelRunRecord(
+            run_id=rid,
+            role=run.role,
+            model=run.model,
+            provider=run.provider,
+            input_tokens=run.input_tokens,
+            output_tokens=run.output_tokens,
+            latency_ms=run.latency_ms,
+            cost_usd=run.cost_usd,
+            success=run.success,
+            error=run.error,
+            created_at=_now(),
+        ))
+        self._log("log_model_run", {"run_id": rid, "role": run.role})
+        return rid
+
+    # ------------------------------------------------------------------
+    # Judge votes
+    # ------------------------------------------------------------------
+    def log_judge_vote(self, vote: JudgeVoteInput) -> str:
+        vid = _new_id("VOTE")
+        self._judge_votes.append(JudgeVote(
+            vote_id=vid,
+            lane_id=vote.lane_id,
+            judge_role=vote.judge_role,
+            verdict=vote.verdict,
+            score=vote.score,
+            confidence=vote.confidence,
+            reasoning=vote.reasoning,
+            evidence_turns=list(vote.evidence_turns),
+        ))
+        self._log("log_judge_vote", {"vote_id": vid, "lane_id": vote.lane_id})
+        return vid
+
+    # ------------------------------------------------------------------
+    # Policy corpus
+    # ------------------------------------------------------------------
+    def log_policy_corpus_result(self, result: PolicyCorpusResultInput) -> str:
+        rid = _new_id("PCR")
+        self._corpus_results.append(PolicyCorpusResult(
+            result_id=rid,
+            run_id=result.run_id,
+            case_id=result.case_id,
+            observed_decision=result.observed_decision,
+            expected_decision=result.expected_decision,
+            passed=result.passed,
+            evidence=result.evidence,
+            notes=result.notes,
+            created_at=_now(),
+        ))
+        self._log("log_policy_corpus_result", {"result_id": rid, "run_id": result.run_id})
+        return rid
+
+    def get_policy_corpus_results(self, run_id: str) -> list[PolicyCorpusResult]:
+        return [r for r in self._corpus_results if r.run_id == run_id]
+
+    # ------------------------------------------------------------------
+    # Queue / package / patch status transitions
+    # ------------------------------------------------------------------
+    def mark_repro_queue_status(
+        self, finding_id: str, status: str, worker_id: str | None = None
+    ) -> None:
+        """Transition a repro-queue item's effective status.
+
+        _repro_queue holds (finding_id, priority) tuples for pending items;
+        _repro_processing holds finding_ids currently being worked on.
+        We update those collections to reflect the new status.
+        """
+        if status == "processing":
+            # Remove from queue, add to processing set
+            self._repro_queue = [(fid, p) for fid, p in self._repro_queue if fid != finding_id]
+            self._repro_processing.add(finding_id)
+        elif status in ("completed", "failed"):
+            self._repro_processing.discard(finding_id)
+        elif status == "queued":
+            self._repro_processing.discard(finding_id)
+            if not any(fid == finding_id for fid, _ in self._repro_queue):
+                self._repro_queue.append((finding_id, "normal"))
+        self._log("mark_repro_queue_status", {"finding_id": finding_id, "status": status,
+                                               "worker_id": worker_id})
+
+    def mark_repro_package_status(
+        self, package_id: str, blue_team_status: str
+    ) -> None:
+        """Transition a repro package's blue_team_status."""
+        if package_id in self._repro_packages:
+            self._repro_packages[package_id].blue_team_status = blue_team_status
+        self._log("mark_repro_package_status", {"package_id": package_id,
+                                                 "blue_team_status": blue_team_status})
+
+    def log_patch_candidate(self, patch: PatchCandidateInput) -> str:
+        pid = _new_id("PATCH")
+        self._patch_candidates[pid] = dataclasses.replace(patch, vuln_ids=list(patch.vuln_ids))
+        self._patch_statuses[pid] = {"status": "proposed", "verification_results": None}
+        self._log("log_patch_candidate", {"patch_id": pid, "zone_id": patch.zone_id})
+        return pid
+
+    def mark_patch_status(
+        self, patch_id: str, status: str,
+        verification_results: dict | None = None,
+    ) -> None:
+        if patch_id in self._patch_statuses:
+            self._patch_statuses[patch_id]["status"] = status
+            if verification_results is not None:
+                self._patch_statuses[patch_id]["verification_results"] = verification_results
+        self._log("mark_patch_status", {"patch_id": patch_id, "status": status})
+
+    # ------------------------------------------------------------------
     # Inspection helpers (mock-only — not part of the Protocol)
     # ------------------------------------------------------------------
     def dump_state(self) -> dict:
@@ -430,6 +585,11 @@ class MockMCP(MonkeyClawMCP):
             "regression_tests": len(self._regression_tests),
             "cycles": len(self._cycles),
             "alerts": len(self._alerts),
+            "telemetry_events": len(self._telemetry),
+            "model_runs": len(self._model_runs),
+            "judge_votes": len(self._judge_votes),
+            "policy_corpus_results": len(self._corpus_results),
+            "patch_candidates": len(self._patch_candidates),
         }
 
 
@@ -527,6 +687,44 @@ def _smoke_test(mcp: MockMCP) -> None:
     print("recent_summaries:", [c.cycle_id for c in mcp.get_recent_summaries(3)])
     print("codebase:", [c.file_path for c in mcp.search_codebase("router", 2)])
     mcp.send_alert("smoke", "info")
+    # Exercise the 10 new methods
+    eid = mcp.log_telemetry_event(TelemetryEventInput(
+        session_id="smoke-session", event_type="agent.session.started",
+        actor="orchestrator", action_class="session",
+    ))
+    print("log_telemetry_event:", eid)
+    timeline = mcp.get_session_timeline("smoke-session")
+    assert len(timeline) == 1 and timeline[0].event_id == eid
+    print("get_session_timeline:", len(timeline), "events")
+    rid = mcp.log_model_run(ModelRunInput(
+        role="red_ideation", model="nemotron-70b", provider="nvidia",
+        input_tokens=100, output_tokens=200, latency_ms=500,
+    ))
+    print("log_model_run:", rid)
+    vid = mcp.log_judge_vote(JudgeVoteInput(
+        lane_id="L1", judge_role="semantic", verdict="confirmed",
+        score=0.9, confidence=0.8, reasoning="smoke", evidence_turns=[1, 2],
+    ))
+    print("log_judge_vote:", vid)
+    pcr_id = mcp.log_policy_corpus_result(PolicyCorpusResultInput(
+        run_id="R1", case_id="C1", observed_decision="allow",
+        expected_decision="allow", passed=True,
+    ))
+    print("log_policy_corpus_result:", pcr_id)
+    corpus = mcp.get_policy_corpus_results("R1")
+    assert len(corpus) == 1 and corpus[0].result_id == pcr_id
+    print("get_policy_corpus_results:", len(corpus), "results")
+    pid = mcp.log_patch_candidate(PatchCandidateInput(
+        vuln_ids=[fid], zone_id=gaps[0].zone_id, approach="restrict",
+        invasiveness="low", diff="--- a\n+++ b", explanation="smoke patch",
+    ))
+    print("log_patch_candidate:", pid)
+    mcp.mark_patch_status(pid, "verified", {"passed": True})
+    print("mark_patch_status: ok")
+    mcp.mark_repro_queue_status(fid, "queued")
+    print("mark_repro_queue_status(queued): ok")
+    mcp.mark_repro_package_status("nonexistent-pkg", "reviewed")
+    print("mark_repro_package_status: ok")
     print("state:", mcp.dump_state())
 
 
