@@ -41,6 +41,8 @@ from interfaces.types import (
     JudgeVoteInput,
     ModelRunInput,
     ModelRunRecord,
+    NearMiss,
+    NearMissInput,
     PatchCandidateInput,
     PolicyCorpusResult,
     PolicyCorpusResultInput,
@@ -50,6 +52,7 @@ from interfaces.types import (
     ReproPackageInput,
     TelemetryEvent,
     TelemetryEventInput,
+    Trajectory,
 )
 
 # Hard-coded zones mirror schema.sql seed. Keep these in sync.
@@ -121,6 +124,8 @@ class MockMCP(MonkeyClawMCP):
         self._patch_statuses: dict[str, dict] = {}
         self._archive_cells: dict[str, ArchiveCell] = {}
         self._idea_components: dict[str, list[IdeaComponent]] = {}
+        self._trajectories: list[Trajectory] = []
+        self._near_misses: list[NearMiss] = []
         self._seed_history()
 
     def _seed_history(self) -> None:
@@ -674,6 +679,63 @@ class MockMCP(MonkeyClawMCP):
         return list(self._idea_components.get(idea_id, []))
 
     # ------------------------------------------------------------------
+    # Trajectory & near-miss scoring (trajectory spec §8)
+    # ------------------------------------------------------------------
+    def log_trajectory(self, trajectory: Trajectory) -> str:
+        tid = _new_id("TRJ")
+        # Store a copy keyed implicitly by insertion order (newest last).
+        self._trajectories.append(Trajectory(
+            lane_id=trajectory.lane_id, idea_id=trajectory.idea_id,
+            zone_id=trajectory.zone_id,
+            turn_scores=list(trajectory.turn_scores),
+            max_stage=trajectory.max_stage,
+            final_stage=trajectory.final_stage,
+            erosion_slope=trajectory.erosion_slope,
+            stalled_at_turn=trajectory.stalled_at_turn,
+            monotonic=trajectory.monotonic,
+        ))
+        self._log("log_trajectory", {"trajectory_id": tid})
+        return tid
+
+    def get_trajectories(
+        self, zone_id: str | None = None
+    ) -> list[Trajectory]:
+        rows = list(reversed(self._trajectories))  # newest-first
+        if zone_id is not None:
+            rows = [t for t in rows if t.zone_id == zone_id]
+        return rows
+
+    def log_near_miss(self, near_miss: NearMissInput) -> str:
+        nid = _new_id("NMS")
+        self._near_misses.append(NearMiss(
+            near_miss_id=nid, idea_id=near_miss.idea_id,
+            lane_id=near_miss.lane_id, zone_id=near_miss.zone_id,
+            max_stage=near_miss.max_stage,
+            stalled_at_turn=near_miss.stalled_at_turn,
+            erosion_excerpt=near_miss.erosion_excerpt,
+            useful_components=list(near_miss.useful_components),
+            mutation_seeds=list(near_miss.mutation_seeds),
+            consumed=False, created_at=_now(),
+        ))
+        self._log("log_near_miss", {"near_miss_id": nid})
+        return nid
+
+    def search_near_misses(
+        self, zone: str | None, *, only_unconsumed: bool, top_k: int
+    ) -> list[NearMiss]:
+        rows = list(reversed(self._near_misses))  # newest-first
+        if zone is not None:
+            rows = [nm for nm in rows if nm.zone_id == zone]
+        if only_unconsumed:
+            rows = [nm for nm in rows if not nm.consumed]
+        return rows[:max(0, top_k)]
+
+    def mark_near_miss_consumed(self, near_miss_id: str) -> None:
+        for nm in self._near_misses:
+            if nm.near_miss_id == near_miss_id:
+                nm.consumed = True
+
+    # ------------------------------------------------------------------
     # Inspection helpers (mock-only — not part of the Protocol)
     # ------------------------------------------------------------------
     def dump_state(self) -> dict:
@@ -691,6 +753,8 @@ class MockMCP(MonkeyClawMCP):
             "judge_votes": len(self._judge_votes),
             "policy_corpus_results": len(self._corpus_results),
             "patch_candidates": len(self._patch_candidates),
+            "trajectories": len(self._trajectories),
+            "near_misses": len(self._near_misses),
         }
 
 
