@@ -10,10 +10,14 @@ optional MCP handle for `log_model_run`). `client_for(role)` returns a
 A role resolves to an ordered chain of `ModelRoute`s:
 
     [ override-or-tier route ] -> [ explicit fallback... ] ->
-    [ tier-default route ] -> [ guaranteed-local route ]
+    [ tier-default route ] -> [ local route ] -> [ mock route ]
 
-The guaranteed-local route always succeeds in a credential-free environment,
-so a model outage degrades quality but never halts the cycle.
+A model outage degrades quality but never halts the cycle: the chain falls
+through to the local backend (`claude_cli` when its binary is on PATH, else
+`mock`). The local backend can still fail — `ClaudeCLILLM.complete` raises on
+timeout or a non-zero exit — so `mock` is appended as a final, unconditional
+terminal link. `mock` needs no credentials and never fails, so the chain is
+genuinely guaranteed to terminate with a response.
 """
 
 from __future__ import annotations
@@ -28,9 +32,10 @@ from interfaces.types import ModelRunInput
 
 LOG = logging.getLogger("monkeyclaw.model_router")
 
-# Routes whose provider is one of these never go to make_llm's nemotron path —
-# the router maps them to the local backend (the placeholder frontier provider
-# resolves to whatever local model is available; see spec §14 open question 1).
+# The synthetic provider string marking a route as a local-backend link
+# rather than a real frontier/NVIDIA route. A route with this provider is
+# constructed via an explicit `make_llm(backend=...)` call instead of going
+# through make_llm's model-based auto-detect.
 _LOCAL_PROVIDER = "local"
 
 
@@ -43,11 +48,15 @@ class ModelRouter:
         self._warned_models: set[str] = set()
 
     def _local_route(self) -> ModelRoute:
-        """The guaranteed-available last link of every chain."""
+        """The local-backend link of every chain.
+
+        `claude_cli` -> model name "claude_cli"; `mock` -> "mock". The provider
+        is the synthetic "local" marker so accounting/allowlist logic can
+        recognise the fallback link. This link can still fail (the claude CLI
+        raises on timeout / non-zero exit), so `resolve()` appends a `mock`
+        route after it as the unconditional terminal link.
+        """
         backend = local_backend_name()
-        # `claude_cli` -> model name "claude_cli"; `mock` -> "mock". The
-        # provider is the synthetic "local" marker so accounting/allowlist
-        # logic can recognise the fallback link.
         return ModelRoute(provider=_LOCAL_PROVIDER, model=backend)
 
     def resolve(self, role: str) -> list[ModelRoute]:
@@ -84,22 +93,47 @@ class ModelRouter:
                 for fb in tier.fallback:
                     _add(fb)
 
-        # 3) guaranteed-local last link.
+        # 3) local-backend link (claude_cli when available, else mock).
         _add(self._local_route())
+        # 4) unconditional terminal link. The local link above can still fail
+        #    (the claude CLI raises on timeout / non-zero exit), so `mock` —
+        #    which needs no credentials and never fails — guarantees the chain
+        #    always terminates with a response. Deduped away when the local
+        #    link already resolved to `mock`.
+        _add(ModelRoute(provider=_LOCAL_PROVIDER, model="mock"))
         return chain
 
-    def _client_for_route(self, route: ModelRoute) -> LLMClient:
+    # Backend names that are local/auto-detected, not real frontier providers.
+    # When a non-local route's constructed client reports one of these, the
+    # run was served by a local backend that ignores the requested model — so
+    # accounting must log it under the backend that actually served it.
+    _LOCAL_BACKENDS = frozenset({"claude_cli", "mock"})
+
+    def _client_for_route(self, route: ModelRoute) -> tuple[LLMClient, ModelRoute]:
         """Construct the low-level LLMClient for one route.
 
-        The synthetic `local` provider maps to the auto-detected local
-        backend; every other provider goes through make_llm with an explicit
-        model. make_llm's own auto-detect picks the nemotron/claude_cli/mock
-        backend, so a credential-free run still resolves real-provider routes
-        to the local backend.
+        Returns the client and the *effective* route — the route that
+        accounting should log and price. The synthetic `local` provider maps
+        to the auto-detected local backend; every other provider goes through
+        make_llm with an explicit model. make_llm's own auto-detect picks the
+        nemotron/claude_cli/mock backend, so a credential-free run still
+        resolves real-provider routes to a local backend.
+
+        When a non-local route is served by an auto-detected local backend
+        (`claude_cli`/`mock`), the constructed client ignores the requested
+        frontier model entirely. Logging/pricing under `route.model` would be
+        fictional, so the effective route is rewritten to the synthetic
+        `local` provider and the actual backend name as the model (an unpriced
+        model -> null cost, which `_price` already handles).
         """
         if route.provider == _LOCAL_PROVIDER:
-            return make_llm(backend=route.model)
-        return make_llm(model=route.model)
+            return make_llm(backend=route.model), route
+        client = make_llm(model=route.model)
+        if client.name in self._LOCAL_BACKENDS:
+            # The frontier route fell back to a local backend; log/price under
+            # what actually served the request, not the requested model.
+            return client, ModelRoute(provider=_LOCAL_PROVIDER, model=client.name)
+        return client, route
 
     def _price(self, model: str, resp: LLMResponse) -> float | None:
         """Compute USD cost from the pricing table; None for an unknown model."""
@@ -170,7 +204,10 @@ class RoutedClient(LLMClient):
     ) -> LLMResponse:
         last_error: Exception | None = None
         for i, route in enumerate(self.chain):
-            client = self._router._client_for_route(route)
+            # `effective` is the route accounting logs/prices — it differs
+            # from `route` when a frontier route is served by an auto-detected
+            # local backend (see `_client_for_route`).
+            client, effective = self._router._client_for_route(route)
             t0 = time.monotonic()
             try:
                 resp = client.complete(
@@ -179,16 +216,16 @@ class RoutedClient(LLMClient):
                 )
             except Exception as e:  # noqa: BLE001 - fall through to next link
                 latency = int((time.monotonic() - t0) * 1000)
-                self._log(route, None, latency, error=str(e)[:500])
+                self._log(effective, None, latency, error=str(e)[:500])
                 last_error = e
                 LOG.warning(
                     "route %s/%s failed for role %s (%d/%d): %s",
-                    route.provider, route.model, self.role,
+                    effective.provider, effective.model, self.role,
                     i + 1, len(self.chain), e,
                 )
                 continue
             latency = int((time.monotonic() - t0) * 1000)
-            self._log(route, resp, latency, error=None)
+            self._log(effective, resp, latency, error=None)
             return resp
         # Chain exhausted — even the local link failed.
         assert last_error is not None

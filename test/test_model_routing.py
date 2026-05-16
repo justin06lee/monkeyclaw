@@ -17,11 +17,14 @@ def test_models_config_has_all_roles():
         assert roles[role].model
 
 
-def test_make_llm_resolves_role(monkeypatch):
+def test_router_resolves_role_to_client(monkeypatch):
+    # Role-aware construction belongs to ModelRouter, not make_llm.
     monkeypatch.setenv("MC_LLM_BACKEND", "mock")
-    from interfaces.llm import make_llm
-    client = make_llm(role="red_ideation")
-    assert client.name == "mock"
+    from interfaces.model_router import ModelRouter, RoutedClient
+    router = ModelRouter(load_config())
+    client = router.client_for("red_ideation")
+    assert isinstance(client, RoutedClient)
+    assert client.role == "red_ideation"
 
 
 def test_tiers_declared():

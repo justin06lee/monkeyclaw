@@ -133,6 +133,13 @@ class PriceRow(BaseModel):
 
 
 def _default_model_roles() -> dict[str, ModelRoute]:
+    # Forward-provisioned roles: `safety_judge`, `cheap_extraction`, and
+    # `semantic_judge_appeal` are configured here but have no `client_for(...)`
+    # caller yet. They are consumed by imminent Wave 1 plans — the
+    # judge-ensemble plan wires `safety_judge` and the appeal path
+    # (`semantic_judge_appeal`), and other Wave 1 plans use `cheap_extraction`.
+    # They are intentionally NOT yet routed; this comment exists so the config
+    # does not silently mislead.
     return {
         "cheap_extraction": ModelRoute(provider="nvidia", model="nvidia/nemotron-3-nano"),
         "red_ideation": ModelRoute(provider="nvidia", model="nvidia/nemotron-3-super-120b-a12b"),
@@ -156,6 +163,8 @@ def _default_tiers() -> dict[str, ModelTier]:
         "cheap": ModelTier(route=ModelRoute(provider="nvidia", model="nvidia/nemotron-3-nano")),
         "workhorse": ModelTier(
             route=ModelRoute(provider="nvidia", model="nvidia/nemotron-3-super-120b-a12b")),
+        # `heavy` is forward-provisioned (Nemotron Ultra) for future
+        # heavy-reasoning roles — no role maps to it in `_default_policy()` yet.
         "heavy": ModelTier(route=ModelRoute(provider="nvidia", model="nvidia/nemotron-3-ultra")),
         "frontier": ModelTier(
             route=ModelRoute(provider="anthropic_or_openai", model="frontier-coding")),
