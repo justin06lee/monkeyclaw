@@ -998,6 +998,44 @@ class NearMiss:
     created_at: str
 
 
+# ---------------------------------------------------------------------------
+# Mutation operator learning (mutation-operator-learning spec §8)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class MutationOperatorStat:
+    """Durable per-operator improvement stats. `zone_id == ""` is the global
+    rollup; a non-empty zone_id is one row of the per-zone breakdown."""
+
+    operator: str
+    zone_id: str
+    uses: int
+    successes: int
+    avg_score: float
+    squared_score: float
+    last_lift: float
+
+
+@dataclass
+class MutationAttempt:
+    """One mutated execution — the offline-analysis / future-ranker dataset.
+    The server fills attempt_id and created_at when they are empty."""
+
+    attempt_id: str
+    cycle_id: int
+    zone_id: str
+    operator: str
+    parent_idea_id: str
+    child_idea_id: str
+    parent_score: float
+    child_score: float
+    lift: float
+    improved: bool
+    child_verdict: str
+    created_at: str
+
+
 __all__ = [
     "AgentPolicy",
     "ArchiveCell",
@@ -1039,6 +1077,8 @@ __all__ = [
     "Message",
     "ModelRunInput",
     "ModelRunRecord",
+    "MutationAttempt",
+    "MutationOperatorStat",
     "NearMiss",
     "NearMissInput",
     "NetworkEvent",

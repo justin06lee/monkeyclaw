@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from infra.bootstrap import Runtime
@@ -39,6 +40,7 @@ from interfaces.types import (
     CycleSummaryInput,
     IdeaInput,
     IdeaObject,
+    JudgmentResult,
     LaneResult,
     PolicyConfig,
 )
@@ -49,6 +51,13 @@ from red_team.dedup import deduplicate_and_log
 from red_team.execution_agent import ExecutionAgent, ExecutionConfig
 from red_team.ideation import IdeationConfig, IdeationEngine, tournament_ideas
 from red_team.judge import Judge, JudgeConfig
+from red_team.mutation_engine import (
+    MutationConfig,
+    MutationEngine,
+    load_mutation_config,
+)
+from red_team.mutation_policy import MutationPolicy
+from red_team.mutations import MutationStats
 from red_team.priority import score_ideas
 from red_team.progress import score_progress, search_score
 from red_team.near_miss import extract_near_misses
@@ -99,6 +108,7 @@ class Pipeline:
         execution_cfg: ExecutionConfig | None = None,
         judge_cfg: JudgeConfig | None = None,
         alert_severity_floor: str = "high",
+        mutation_cfg: MutationConfig | None = None,
     ) -> None:
         if runtime is not None:
             self.mcp = runtime.mcp
@@ -179,6 +189,25 @@ class Pipeline:
         # call (orchestrator updates the summary itself, but Person 2 owns
         # the deduplicated/executed counts).
         self._last_cycle_metrics: dict[str, int] = {}
+
+        # Optional mutation stage (mutation-operator-learning spec §7.4).
+        # A strict no-op when disabled — `mutation_engine` stays None and no
+        # mutation code path is reachable.
+        self.mutation_cfg = mutation_cfg or load_mutation_config()
+        self.mutation_engine: MutationEngine | None = None
+        if self.mutation_cfg.enabled:
+            global_stats = MutationStats()
+            try:
+                global_stats.load_from(self.mcp.get_mutation_operator_stats())
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("could not load persisted mutation stats: %s — "
+                            "starting from the neutral prior", e)
+            policy = MutationPolicy(
+                global_stats, kind=self.mutation_cfg.policy,
+                epsilon=self.mutation_cfg.epsilon)
+            self.mutation_engine = MutationEngine(
+                policy=policy, stats_by_zone={}, global_stats=global_stats,
+                mcp=self.mcp, cfg=self.mutation_cfg)
 
     # ------------------------------------------------------------------
     def _llm_for_entrant(self, entrant) -> object:
@@ -365,7 +394,7 @@ class Pipeline:
     # ------------------------------------------------------------------
     # judge
     # ------------------------------------------------------------------
-    def judge(self, lane_result: LaneResult) -> None:
+    def judge(self, lane_result: LaneResult) -> JudgmentResult:
         with self._book_lock:
             idea = self._idea_book.get(lane_result.idea_id)
         if idea is None:
@@ -424,6 +453,44 @@ class Pipeline:
             judgment.verdict, judgment.tier_that_caught, judgment.severity,
             search_score(progress), finding_id,
         )
+        return judgment
+
+    # ------------------------------------------------------------------
+    # Optional mutation stage (mutation-operator-learning spec §7.4)
+    # ------------------------------------------------------------------
+    def mutate_judged(
+        self,
+        judged: list[tuple[IdeaObject, JudgmentResult]],
+        *,
+        execute_child: Callable[[IdeaObject], LaneResult | None] | None = None,
+    ) -> list[IdeaObject]:
+        """Run the optional mutation stage over a batch of judged attempts.
+
+        A strict no-op when the mutation engine is disabled (returns []).
+        For each near-miss parent, mutated children are produced via the
+        learned policy. When `execute_child` is supplied it re-runs each
+        child through the existing execute+judge path so a real lift signal
+        is recorded; otherwise only the candidate children are returned (the
+        caller owns lane budget / dedup). Children also re-enter the
+        existing `judge` -> `route_judgment` path through `execute_child`.
+        """
+        if self.mutation_engine is None:
+            return []
+        engine = self.mutation_engine
+        judged_by_idea = {idea.idea_id: j for idea, j in judged}
+        all_children: list[IdeaObject] = []
+        for parent in engine.mutation_candidates(judged):
+            parent_judgment = judged_by_idea[parent.idea_id]
+            for child in engine.mutate(parent):
+                all_children.append(child)
+                if execute_child is None:
+                    continue
+                child_lane = execute_child(child)
+                if child_lane is None:
+                    continue  # execution failed — no stats recorded
+                child_judgment = self.judge(child_lane)
+                engine.record_outcome(child, child_judgment, parent_judgment)
+        return all_children
 
 
 __all__ = ["Pipeline", "policy_from_config"]

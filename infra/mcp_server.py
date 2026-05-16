@@ -42,6 +42,8 @@ from interfaces.types import (
     IdeaInput,
     JudgeVoteInput,
     ModelRunInput,
+    MutationAttempt,
+    MutationOperatorStat,
     NearMiss,
     NearMissInput,
     PatchCandidateInput,
@@ -1053,6 +1055,80 @@ class MCPServer(MonkeyClawMCP):
                 LOG.exception("alert delivery failed: %s", e)
         else:
             sys.stderr.write(f"[ALERT {severity.upper()}] {message}\n")
+
+    # ------------------------------------------------------------------
+    # Mutation operator learning (mutation-operator-learning spec §8)
+    # ------------------------------------------------------------------
+    def get_mutation_operator_stats(
+        self, zone_id: str | None = None
+    ) -> list[MutationOperatorStat]:
+        if zone_id is None:
+            rows = self.db.fetchall(
+                "SELECT operator, uses, successes, avg_score, "
+                "squared_score, last_lift FROM mutation_operator_stats")
+            return [MutationOperatorStat(
+                operator=r["operator"], zone_id="", uses=r["uses"],
+                successes=r["successes"], avg_score=r["avg_score"],
+                squared_score=r["squared_score"], last_lift=r["last_lift"])
+                for r in rows]
+        rows = self.db.fetchall(
+            "SELECT operator, uses, successes, avg_score, squared_score, "
+            "last_lift FROM mutation_operator_stats_by_zone WHERE zone_id=?",
+            (zone_id,))
+        return [MutationOperatorStat(
+            operator=r["operator"], zone_id=zone_id, uses=r["uses"],
+            successes=r["successes"], avg_score=r["avg_score"],
+            squared_score=r["squared_score"], last_lift=r["last_lift"])
+            for r in rows]
+
+    def update_mutation_operator_stats(
+        self, stat: MutationOperatorStat
+    ) -> None:
+        with self.db.lock():
+            if stat.zone_id:
+                self.db.execute(
+                    "INSERT INTO mutation_operator_stats_by_zone("
+                    "operator, zone_id, uses, successes, avg_score, "
+                    "squared_score, last_lift, updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(operator, zone_id) DO UPDATE SET "
+                    "uses=excluded.uses, successes=excluded.successes, "
+                    "avg_score=excluded.avg_score, "
+                    "squared_score=excluded.squared_score, "
+                    "last_lift=excluded.last_lift, "
+                    "updated_at=excluded.updated_at",
+                    (stat.operator, stat.zone_id, stat.uses, stat.successes,
+                     stat.avg_score, stat.squared_score, stat.last_lift,
+                     _now()))
+            else:
+                self.db.execute(
+                    "INSERT INTO mutation_operator_stats("
+                    "operator, uses, successes, avg_score, squared_score, "
+                    "last_lift, updated_at) VALUES(?,?,?,?,?,?,?) "
+                    "ON CONFLICT(operator) DO UPDATE SET "
+                    "uses=excluded.uses, successes=excluded.successes, "
+                    "avg_score=excluded.avg_score, "
+                    "squared_score=excluded.squared_score, "
+                    "last_lift=excluded.last_lift, "
+                    "updated_at=excluded.updated_at",
+                    (stat.operator, stat.uses, stat.successes,
+                     stat.avg_score, stat.squared_score, stat.last_lift,
+                     _now()))
+
+    def log_mutation_attempt(self, attempt: MutationAttempt) -> str:
+        aid = attempt.attempt_id or _new_id("MUT")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO mutation_attempts(attempt_id, cycle_id, "
+                "zone_id, operator, parent_idea_id, child_idea_id, "
+                "parent_score, child_score, lift, improved, child_verdict, "
+                "created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (aid, attempt.cycle_id, attempt.zone_id, attempt.operator,
+                 attempt.parent_idea_id, attempt.child_idea_id,
+                 attempt.parent_score, attempt.child_score, attempt.lift,
+                 1 if attempt.improved else 0, attempt.child_verdict,
+                 attempt.created_at or _now()))
+        return aid
 
 
 # ---------------------------------------------------------------------------

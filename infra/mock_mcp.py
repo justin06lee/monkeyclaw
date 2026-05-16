@@ -19,7 +19,7 @@ import json
 import random
 import sys
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 
 from interfaces.mcp_tools import MonkeyClawMCP
@@ -46,6 +46,8 @@ from interfaces.types import (
     JudgeVoteInput,
     ModelRunInput,
     ModelRunRecord,
+    MutationAttempt,
+    MutationOperatorStat,
     NearMiss,
     NearMissInput,
     PatchCandidateInput,
@@ -138,6 +140,11 @@ class MockMCP(MonkeyClawMCP):
         self._report_cards: list[ReportCard] = []
         self._trajectories: list[Trajectory] = []
         self._near_misses: list[NearMiss] = []
+        # Mutation operator learning (mutation-operator-learning spec §8)
+        self._mutation_stats: dict[str, MutationOperatorStat] = {}
+        self._mutation_stats_by_zone: dict[
+            tuple[str, str], MutationOperatorStat] = {}
+        self._mutation_attempts: list[MutationAttempt] = []
         self._seed_history()
 
     def _seed_history(self) -> None:
@@ -771,6 +778,30 @@ class MockMCP(MonkeyClawMCP):
 
     def get_idea_components(self, idea_id: str) -> list[IdeaComponent]:
         return list(self._idea_components.get(idea_id, []))
+
+    # --- mutation operator learning ------------------------------------
+    def get_mutation_operator_stats(
+        self, zone_id: str | None = None
+    ) -> list[MutationOperatorStat]:
+        if zone_id is None:
+            return list(self._mutation_stats.values())
+        return [s for (op, z), s in self._mutation_stats_by_zone.items()
+                if z == zone_id]
+
+    def update_mutation_operator_stats(
+        self, stat: MutationOperatorStat
+    ) -> None:
+        if stat.zone_id:
+            self._mutation_stats_by_zone[(stat.operator, stat.zone_id)] = stat
+        else:
+            self._mutation_stats[stat.operator] = stat
+
+    def log_mutation_attempt(self, attempt: MutationAttempt) -> str:
+        aid = attempt.attempt_id or f"MUT-{len(self._mutation_attempts) + 1:04d}"
+        stored = replace(attempt, attempt_id=aid,
+                         created_at=attempt.created_at or "2026-05-15T00:00:00Z")
+        self._mutation_attempts.append(stored)
+        return aid
 
     # ------------------------------------------------------------------
     # Trajectory & near-miss scoring (trajectory spec §8)

@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from collections.abc import Callable
 
-from interfaces.types import NearMiss
+from interfaces.types import MutationOperatorStat, NearMiss
 
 # ---------------------------------------------------------------------------
 # Operator catalogue
@@ -252,10 +252,16 @@ class _OpRecord:
     uses: int = 0
     successes: int = 0
     avg_score: float = 0.0
+    squared_score: float = 0.0
+    last_lift: float = 0.0
 
-    def observe(self, *, improved: bool, score: float) -> None:
+    def observe(
+        self, *, improved: bool, score: float, lift: float = 0.0
+    ) -> None:
         # Running mean of score over all uses.
         self.avg_score = (self.avg_score * self.uses + score) / (self.uses + 1)
+        self.squared_score += score * score
+        self.last_lift = lift
         self.uses += 1
         if improved:
             self.successes += 1
@@ -285,23 +291,33 @@ class MutationStats:
     with a stronger track record while still exploring unused ones.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, zone_id: str = "") -> None:
+        self._zone_id = zone_id
         self._records: dict[str, _OpRecord] = {
             name: _OpRecord() for name in MUTATION_OPERATORS
         }
 
+    @property
+    def zone_id(self) -> str:
+        """The zone this instance is scoped to; "" for the global rollup."""
+        return self._zone_id
+
     # -- updates ------------------------------------------------------------
 
-    def record(self, operator: str, *, improved: bool, score: float) -> None:
+    def record(
+        self, operator: str, *, improved: bool, score: float, lift: float = 0.0
+    ) -> None:
         """Update stats for `operator` after one attempt.
 
         `improved` — did this mutation improve the attack? (counts a success)
-        `score`    — the attempt's quality/effectiveness score (folded into a
-                     running mean). Raises ValueError on an unknown operator.
+        `score`    — the child attempt's [0,1] attack score (running mean).
+        `lift`     — child_score - parent_score for this attempt (§5).
+        Raises ValueError on an unknown operator.
         """
         if operator not in self._records:
             raise ValueError(f"unknown mutation operator: {operator!r}")
-        self._records[operator].observe(improved=improved, score=float(score))
+        self._records[operator].observe(
+            improved=improved, score=float(score), lift=float(lift))
 
     # -- queries ------------------------------------------------------------
 
@@ -314,6 +330,8 @@ class MutationStats:
             "uses": r.uses,
             "successes": r.successes,
             "avg_score": r.avg_score,
+            "squared_score": r.squared_score,
+            "last_lift": r.last_lift,
             "success_rate": r.success_rate,
             "improvement": r.improvement,
         }
@@ -339,6 +357,45 @@ class MutationStats:
         if k < 0:
             raise ValueError("k must be >= 0")
         return self.rank()[:k]
+
+    # -- durability ---------------------------------------------------------
+
+    def to_rows(self) -> list[MutationOperatorStat]:
+        """Serialize current records for persistence via the MCP."""
+        return [
+            MutationOperatorStat(
+                operator=name,
+                zone_id=self._zone_id,
+                uses=r.uses,
+                successes=r.successes,
+                avg_score=r.avg_score,
+                squared_score=r.squared_score,
+                last_lift=r.last_lift,
+            )
+            for name, r in self._records.items()
+        ]
+
+    def load_from(self, rows: list[MutationOperatorStat]) -> None:
+        """Seed in-memory records from persisted rows. Unknown operators are
+        skipped so a stale DB row never crashes the pipeline."""
+        for row in rows:
+            if row.operator not in self._records:
+                continue
+            self._records[row.operator] = _OpRecord(
+                uses=row.uses,
+                successes=row.successes,
+                avg_score=row.avg_score,
+                squared_score=row.squared_score,
+                last_lift=row.last_lift,
+            )
+
+    def posterior(self, operator: str) -> tuple[float, float]:
+        """Beta(alpha, beta) posterior for `operator`: a uniform Beta(1,1)
+        prior plus observed successes / failures. Used by MutationPolicy."""
+        if operator not in self._records:
+            raise ValueError(f"unknown mutation operator: {operator!r}")
+        r = self._records[operator]
+        return (1.0 + r.successes, 1.0 + (r.uses - r.successes))
 
 
 __all__ = [

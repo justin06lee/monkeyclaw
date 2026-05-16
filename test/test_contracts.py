@@ -158,3 +158,19 @@ def test_mock_mcp_telemetry_roundtrip():
     assert isinstance(eid, str) and eid
     timeline = m.get_session_timeline("S1")
     assert len(timeline) == 1 and timeline[0].event_id == eid
+
+
+def test_both_mcps_expose_mutation_learning_methods():
+    """The real and mock MCP both satisfy the three new method signatures."""
+    import inspect
+
+    from infra.mcp_server import MCPServer
+    from infra.mock_mcp import MockMCP
+
+    for impl in (MCPServer, MockMCP):
+        for name in ("get_mutation_operator_stats",
+                     "update_mutation_operator_stats",
+                     "log_mutation_attempt"):
+            assert callable(getattr(impl, name)), f"{impl.__name__}.{name}"
+        sig = inspect.signature(impl.get_mutation_operator_stats)
+        assert "zone_id" in sig.parameters
