@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import logging
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -128,6 +129,75 @@ def _extract_name(node, src: bytes) -> str | None:
         if c.type in ("identifier", "property_identifier", "type_identifier", "field_identifier"):
             return src[c.start_byte:c.end_byte].decode("utf-8", errors="ignore")
     return None
+
+
+# ---------------------------------------------------------------------------
+# Symbol/call-graph extraction — real-root-cause spec §7
+#
+# Uses tree_sitter_language_pack's structure analysis (`process`) to recover
+# functions/methods/classes with their spans. Call edges are extracted with a
+# language-agnostic identifier-before-paren scan over each symbol body — robust
+# and dependency-free. No Argyph dependency.
+# ---------------------------------------------------------------------------
+
+# Identifier immediately followed by an opening paren — a call site.
+_CALL_RE = re.compile(r"(?<![\w.])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
+# Keywords that look like calls but are not.
+_CALL_KEYWORDS = {
+    "if", "for", "while", "return", "with", "switch", "catch", "print",
+    "and", "or", "not", "in", "is", "elif", "else", "def", "class",
+    "lambda", "yield", "await", "assert", "del", "raise", "except",
+    "function", "new", "typeof", "instanceof", "len", "range", "str",
+    "int", "float", "list", "dict", "set", "tuple", "bool",
+}
+
+# Span kinds that count as a definable symbol.
+_SYMBOL_KINDS = {"Function", "Method", "Class"}
+
+
+def _structure_symbols(text: str, lang: str):
+    """Yield (name, kind, line_start, line_end, body_text) for each top-level
+    and nested function/method/class in `text`. Empty when the parser declines.
+    """
+    try:
+        from tree_sitter_language_pack import ProcessConfig, process
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        result = process(
+            source=text,
+            config=ProcessConfig(language=lang, structure=True),
+        )
+    except Exception:  # noqa: BLE001
+        return
+    src = text.encode("utf-8", errors="ignore")
+
+    def _emit(items):
+        for it in items:
+            kind = str(getattr(it, "kind", ""))
+            name = getattr(it, "name", None)
+            span = getattr(it, "span", None)
+            if name and kind in _SYMBOL_KINDS and span is not None:
+                body_span = getattr(it, "body_span", None) or span
+                body = src[body_span.start_byte:body_span.end_byte].decode(
+                    "utf-8", errors="ignore")
+                yield (name, kind.lower(), span.start_line, span.end_line,
+                       body)
+            yield from _emit(getattr(it, "children", []) or [])
+
+    yield from _emit(result.structure)
+
+
+def _extract_call_names(body: str) -> list[str]:
+    """Best-effort callee names referenced inside a symbol body."""
+    names: list[str] = []
+    for m in _CALL_RE.finditer(body):
+        name = m.group(1)
+        if name in _CALL_KEYWORDS:
+            continue
+        names.append(name)
+    return names
 
 
 def _treesitter_chunks(text: str, lang: str, file_path: str) -> list[Chunk]:
@@ -265,6 +335,78 @@ def index_codebase(db: Database, root: Path, embedder: EmbeddingModel | None = N
     return {"files": len(files), "new_chunks": total_chunks, "seconds": elapsed}
 
 
+def index_symbol_graph(db: Database, *, root: Path) -> dict:
+    """Second pass: extract a symbol/call graph from the indexed source.
+
+    Runs after `index_codebase`. Re-parses each tree-sitter-supported source
+    file under `root`, records every function/method/class in `code_symbols`
+    (joined to the `code_chunks` row covering its file), and writes one
+    `code_edges` row per referenced name (resolved name-based within the
+    indexed repo, else kept unresolved). Gated on file_path so a re-index is
+    a no-op.
+    """
+    # One representative chunk_id per file, so code_symbols.chunk_id is set.
+    chunk_for_file: dict[str, str] = {}
+    for r in db.fetchall(
+            "SELECT chunk_id, file_path FROM code_chunks "
+            "ORDER BY line_start ASC"):
+        chunk_for_file.setdefault(r["file_path"], r["chunk_id"])
+
+    # Files already in the symbol graph — skip them (re-index no-op).
+    done_files = {r["file_path"] for r in db.fetchall(
+        "SELECT DISTINCT file_path FROM code_symbols")}
+
+    new_symbols = 0
+    new_edges = 0
+    name_index: dict[str, str] = {}  # symbol_name -> symbol_id (first wins)
+    pending: list[tuple[str, str, list[str]]] = []  # (symbol_id, name, refs)
+
+    with db.lock():
+        for path in _iter_files(root):
+            lang = SUPPORTED_EXTS.get(path.suffix.lower(), "text")
+            if lang not in _FN_NODE_TYPES:
+                continue
+            rel = path.relative_to(root).as_posix()
+            if rel in done_files:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            chunk_id = chunk_for_file.get(rel, f"FILE:{rel}")
+            for name, kind, ls, le, body in _structure_symbols(text, lang):
+                sid = f"SYM-{uuid.uuid4().hex[:14]}"
+                db.execute(
+                    "INSERT OR REPLACE INTO code_symbols(symbol_id, chunk_id, "
+                    "file_path, symbol_name, symbol_kind, line_start, "
+                    "line_end, language, indexed_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,datetime('now'))",
+                    (sid, chunk_id, rel, name, kind, ls, le, lang),
+                )
+                new_symbols += 1
+                name_index.setdefault(name, sid)
+                refs = _extract_call_names(body)
+                if refs:
+                    pending.append((sid, name, refs))
+
+        for sid, owner_name, refs in pending:
+            for name in refs:
+                if name == owner_name:
+                    continue  # skip self-recursion noise
+                dst = name_index.get(name)
+                eid = f"EDG-{uuid.uuid4().hex[:14]}"
+                db.execute(
+                    "INSERT INTO code_edges(edge_id, src_symbol_id, "
+                    "dst_symbol_id, dst_name, edge_kind, resolved, indexed_at) "
+                    "VALUES (?,?,?,?,?,?,datetime('now'))",
+                    (eid, sid, dst, name, "call", 1 if dst else 0),
+                )
+                new_edges += 1
+
+    LOG.info("symbol graph: %d new symbols, %d new edges", new_symbols, new_edges)
+    return {"new_symbols": new_symbols, "new_edges": new_edges}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Index NemoClaw source into MonkeyClaw DB")
     parser.add_argument("--root", default=os.path.expanduser("~/NemoClaw"))
@@ -310,6 +452,8 @@ def main(argv: list[str] | None = None) -> int:
             return _o(r)[:_n]
 
     summary = index_codebase(db, root)
+    graph_summary = index_symbol_graph(db, root=root)
+    summary["symbol_graph"] = graph_summary
     print(summary)
     return 0
 
