@@ -171,3 +171,26 @@ def test_unconverged_when_generator_returns_no_candidates():
     result = loop.run(_Patch(), _Package(), test_pair=None, task=_Task())
     assert result.status == "unconverged"
     assert result.reason == "repatch_failed_gates"
+
+
+def test_load_generalization_config_reads_the_purple_block(tmp_path):
+    from purple_team.generalization_loop import load_generalization_config
+
+    cfg_path = tmp_path / "mc.yaml"
+    cfg_path.write_text(
+        "purple:\n"
+        "  generalization:\n"
+        "    enabled: true\n"
+        "    max_rounds: 5\n")
+    cfg = load_generalization_config(cfg_path)
+    assert cfg.enabled is True
+    assert cfg.max_rounds == 5
+
+
+def test_load_generalization_config_missing_block_yields_defaults(tmp_path):
+    from purple_team.generalization_loop import load_generalization_config
+
+    cfg_path = tmp_path / "empty.yaml"
+    cfg_path.write_text("purple: {}\n")
+    cfg = load_generalization_config(cfg_path)
+    assert cfg.max_rounds == 3  # the default

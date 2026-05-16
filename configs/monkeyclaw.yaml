@@ -252,6 +252,11 @@ purple:
   enabled: true
   full_sweep_every: 10
   self_governance_enabled: true
+  generalization:
+    # After blue verifies a patch, mutate the original attack and re-test
+    # the patched victim against every variant. A no-op when disabled.
+    enabled: true
+    max_rounds: 3   # round 0 (initial) + this many re-patch rounds
 
 red:
   archive:

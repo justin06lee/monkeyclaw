@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
+
+import yaml
 
 from interfaces.types import (
     BypassResult,
@@ -203,4 +206,36 @@ class GeneralizationLoop:
         return None
 
 
-__all__ = ["GeneralizationConfig", "GeneralizationLoop"]
+def load_generalization_config(
+    source: dict | str | Path | None = None,
+) -> GeneralizationConfig:
+    """Load the `purple.generalization` block. `source` may be a parsed dict,
+    a YAML path, or None (the main monkeyclaw.yaml). A missing block yields
+    the safe defaults."""
+    data: object = source
+    if source is None or isinstance(source, (str, Path)):
+        path = Path(source) if source else (
+            Path(__file__).resolve().parents[1] / "configs"
+            / "monkeyclaw.yaml")
+        if not path.is_file():
+            return GeneralizationConfig()
+        data = yaml.safe_load(path.read_text()) or {}
+    if not isinstance(data, dict):
+        return GeneralizationConfig()
+    block = data.get("generalization")
+    if block is None and isinstance(data.get("purple"), dict):
+        block = data["purple"].get("generalization")
+    if not isinstance(block, dict):
+        return GeneralizationConfig()
+    defaults = GeneralizationConfig()
+    return GeneralizationConfig(
+        enabled=bool(block.get("enabled", defaults.enabled)),
+        max_rounds=int(block.get("max_rounds", defaults.max_rounds)),
+    )
+
+
+__all__ = [
+    "GeneralizationConfig",
+    "GeneralizationLoop",
+    "load_generalization_config",
+]
