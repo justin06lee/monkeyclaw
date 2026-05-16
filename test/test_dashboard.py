@@ -203,3 +203,35 @@ def test_technique_coverage_view_renders(server):
     assert "Technique Coverage" in html
     assert "PROMPT-INJ" in html
     assert "AML.T0051" in html
+
+
+def test_dashboard_exposes_model_winrate_panel(tmp_path: Path):
+    """The dashboard surfaces per-zone model win-rate + recent rounds
+    (model-ideation-tournament spec §9)."""
+    from infra.dashboard import _all
+    from infra.database import Database
+    from infra.mcp_server import MCPServer
+    from interfaces.types import ModelZoneWinrate, TournamentRound
+
+    db_path = tmp_path / "tourney.db"
+    db = Database(db_path)
+    server = MCPServer(db)
+    server.update_model_zone_winrate(ModelZoneWinrate(
+        zone_id="SBX-FS", model_label="nemotron", role="red_ideation",
+        h2h_wins=3, h2h_comparisons=4, confirmed=2, suspicious=1,
+        ideas_executed=5, winrate=0.74))
+    server.log_tournament_round(TournamentRound(
+        round_id="", cycle_id=1, zone_id="SBX-FS",
+        entrants=["nemotron", "frontier"],
+        pairwise=[{"a": "nemotron", "b": "frontier",
+                   "winner": "nemotron", "margin": 0.4}],
+        winner_label="nemotron"))
+    db.close()
+
+    snap = _all(str(db_path))
+    assert "model_tournament" in snap
+    panel = snap["model_tournament"]
+    assert panel["winrates"]
+    assert panel["winrates"][0]["model_label"] == "nemotron"
+    assert panel["recent_rounds"]
+    assert panel["recent_rounds"][0]["winner"] == "nemotron"

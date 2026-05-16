@@ -299,6 +299,30 @@ def _operators_by_zone(db_path: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _model_tournament(db_path: str) -> dict[str, Any]:
+    """Per-zone model win-rate + recent head-to-head rounds
+    (model-ideation-tournament spec §9). Additive, read-only."""
+    winrates = _query(
+        db_path,
+        "SELECT zone_id, model_label, role, winrate, h2h_wins, "
+        "h2h_comparisons, confirmed, suspicious, ideas_executed "
+        "FROM model_zone_winrate ORDER BY winrate DESC",
+    )
+    rounds = _query(
+        db_path,
+        "SELECT zone_id, cycle_id, winner_label, created_at "
+        "FROM model_tournament_rounds ORDER BY created_at DESC LIMIT 10",
+    )
+    return {
+        "winrates": winrates,
+        "recent_rounds": [
+            {"zone_id": r["zone_id"], "cycle_id": r["cycle_id"],
+             "winner": r["winner_label"]}
+            for r in rounds
+        ],
+    }
+
+
 def _purple_heatmap(db_path: str) -> list[dict[str, Any]]:
     """Joint attack-coverage x detection-coverage, one cell per zone."""
     return _query(db_path,
@@ -501,6 +525,7 @@ def _all(db_path: str) -> dict[str, Any]:
         "models": _model_usage(db_path),
         "archive": _archive(db_path),
         "operators": _operators(db_path),
+        "model_tournament": _model_tournament(db_path),
         "telemetry": _telemetry(db_path),
         "judges": _judges(db_path),
         "judge_appeals": _judge_appeals(db_path),
