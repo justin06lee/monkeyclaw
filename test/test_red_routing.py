@@ -164,3 +164,58 @@ def test_persist_archive_carries_niche_descriptors():
     assert cell.niche_descriptors["tactic_tags"] == ["roleplay", "escalation"]
     assert cell.niche_descriptors["transfer_score"] == 0.4
     assert cell.niche_descriptors["model"] == "nemotron"
+
+
+def test_route_judgment_persists_the_trajectory():
+    from interfaces.types import Trajectory, TurnScore
+
+    mcp = MockMCP(verbose=False)
+    judgment = _judgment("clean", "low")
+    idea = _idea()
+    trj = Trajectory(
+        lane_id=judgment.lane_id, idea_id=judgment.idea_id,
+        zone_id=judgment.zone_id,
+        turn_scores=[TurnScore(turn_index=0, stage=2, stage_delta=2)],
+        max_stage=2, final_stage=2, erosion_slope=0.0,
+        stalled_at_turn=0, monotonic=True)
+    route_judgment(judgment, idea, mcp, trajectory=trj)
+    rows = mcp.get_trajectories(zone_id=judgment.zone_id)
+    assert len(rows) == 1 and rows[0].max_stage == 2
+
+
+def test_route_judgment_swallows_trajectory_persistence_failure():
+    from interfaces.types import Trajectory
+
+    base = MockMCP(verbose=False)
+
+    class BoomServer:
+        def __getattr__(self, name):
+            return getattr(base, name)
+
+        def log_trajectory(self, trajectory):
+            raise RuntimeError("db down")
+
+    judgment = _judgment("clean", "low")
+    idea = _idea()
+    trj = Trajectory(lane_id="LANE-1", idea_id=idea.idea_id,
+                     zone_id=judgment.zone_id)
+    # Must not raise — persistence failure is best-effort (spec §10).
+    fid = route_judgment(judgment, idea, BoomServer(), trajectory=trj)
+    assert fid  # routing still produced a finding
+
+
+def test_route_judgment_persists_each_near_miss():
+    from interfaces.types import NearMissInput
+
+    mcp = MockMCP(verbose=False)
+    judgment = _judgment("clean", "low")
+    idea = _idea()
+    nm = NearMissInput(
+        idea_id=idea.idea_id, lane_id=judgment.lane_id,
+        zone_id=judgment.zone_id, max_stage=3, stalled_at_turn=2,
+        erosion_excerpt="here's how", useful_components=["partial_lead"],
+        mutation_seeds=["concretize_final_request"])
+    route_judgment(judgment, idea, mcp, near_misses=[nm])
+    misses = mcp.search_near_misses(
+        zone=judgment.zone_id, only_unconsumed=True, top_k=10)
+    assert len(misses) == 1 and misses[0].max_stage == 3

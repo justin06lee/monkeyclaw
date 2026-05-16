@@ -42,6 +42,8 @@ from interfaces.types import (
     IdeaInput,
     JudgeVoteInput,
     ModelRunInput,
+    NearMiss,
+    NearMissInput,
     PatchCandidateInput,
     PolicyCorpusResult,
     PolicyCorpusResultInput,
@@ -52,6 +54,8 @@ from interfaces.types import (
     ReproPackageInput,
     TelemetryEvent,
     TelemetryEventInput,
+    Trajectory,
+    TurnScore,
 )
 
 LOG = logging.getLogger("monkeyclaw.mcp")
@@ -935,6 +939,99 @@ class MCPServer(MonkeyClawMCP):
             )
             for r in rows
         ]
+
+    # ------------------------------------------------------------------
+    # Trajectory & near-miss scoring (trajectory spec §8)
+    # ------------------------------------------------------------------
+    def log_trajectory(self, trajectory: Trajectory) -> str:
+        tid = _new_id("TRJ")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO trajectory_scores(trajectory_id, lane_id, "
+                "idea_id, zone_id, max_stage, final_stage, erosion_slope, "
+                "stalled_at_turn, monotonic, turn_scores, created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (tid, trajectory.lane_id, trajectory.idea_id,
+                 trajectory.zone_id, trajectory.max_stage,
+                 trajectory.final_stage, trajectory.erosion_slope,
+                 trajectory.stalled_at_turn, int(trajectory.monotonic),
+                 json.dumps([asdict(t) for t in trajectory.turn_scores]),
+                 _now()),
+            )
+        return tid
+
+    def get_trajectories(
+        self, zone_id: str | None = None
+    ) -> list[Trajectory]:
+        if zone_id is None:
+            rows = self.db.fetchall(
+                "SELECT * FROM trajectory_scores ORDER BY created_at DESC")
+        else:
+            rows = self.db.fetchall(
+                "SELECT * FROM trajectory_scores WHERE zone_id=? "
+                "ORDER BY created_at DESC", (zone_id,))
+        return [
+            Trajectory(
+                lane_id=r["lane_id"], idea_id=r["idea_id"],
+                zone_id=r["zone_id"], max_stage=r["max_stage"],
+                final_stage=r["final_stage"],
+                erosion_slope=r["erosion_slope"],
+                stalled_at_turn=r["stalled_at_turn"],
+                monotonic=bool(r["monotonic"]),
+                turn_scores=[TurnScore(**ts)
+                             for ts in json.loads(r["turn_scores"])],
+            )
+            for r in rows
+        ]
+
+    def log_near_miss(self, near_miss: NearMissInput) -> str:
+        nid = _new_id("NMS")
+        with self.db.lock():
+            self.db.execute(
+                "INSERT INTO near_misses(near_miss_id, idea_id, lane_id, "
+                "zone_id, max_stage, stalled_at_turn, erosion_excerpt, "
+                "useful_components, mutation_seeds, consumed, created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,0,?)",
+                (nid, near_miss.idea_id, near_miss.lane_id,
+                 near_miss.zone_id, near_miss.max_stage,
+                 near_miss.stalled_at_turn, near_miss.erosion_excerpt,
+                 json.dumps(near_miss.useful_components),
+                 json.dumps(near_miss.mutation_seeds), _now()),
+            )
+        return nid
+
+    def search_near_misses(
+        self, zone: str | None, *, only_unconsumed: bool, top_k: int
+    ) -> list[NearMiss]:
+        clauses, params = [], []
+        if zone is not None:
+            clauses.append("zone_id=?")
+            params.append(zone)
+        if only_unconsumed:
+            clauses.append("consumed=0")
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self.db.fetchall(
+            f"SELECT * FROM near_misses{where} "
+            f"ORDER BY created_at DESC LIMIT ?", (*params, max(0, top_k)))
+        return [
+            NearMiss(
+                near_miss_id=r["near_miss_id"], idea_id=r["idea_id"],
+                lane_id=r["lane_id"], zone_id=r["zone_id"],
+                max_stage=r["max_stage"],
+                stalled_at_turn=r["stalled_at_turn"],
+                erosion_excerpt=r["erosion_excerpt"],
+                useful_components=json.loads(r["useful_components"]),
+                mutation_seeds=json.loads(r["mutation_seeds"]),
+                consumed=bool(r["consumed"]), created_at=r["created_at"],
+            )
+            for r in rows
+        ]
+
+    def mark_near_miss_consumed(self, near_miss_id: str) -> None:
+        with self.db.lock():
+            self.db.execute(
+                "UPDATE near_misses SET consumed=1 WHERE near_miss_id=?",
+                (near_miss_id,))
 
     # ------------------------------------------------------------------
     # Notifications

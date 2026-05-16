@@ -35,6 +35,8 @@ from interfaces.types import (
     IdeaInput,
     JudgeVoteInput,
     ModelRunInput,
+    NearMiss,
+    NearMissInput,
     PatchCandidateInput,
     PolicyCorpusResult,
     PolicyCorpusResultInput,
@@ -45,6 +47,7 @@ from interfaces.types import (
     ReproPackageInput,
     TelemetryEvent,
     TelemetryEventInput,
+    Trajectory,
 )
 
 
@@ -323,6 +326,34 @@ class MonkeyClawMCP(Protocol):
 
     def get_idea_components(self, idea_id: str) -> list[IdeaComponent]:
         """All component rows for an idea, oldest first."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Trajectory & near-miss scoring (trajectory spec §8)
+    # ------------------------------------------------------------------
+    def log_trajectory(self, trajectory: Trajectory) -> str:
+        """Persist a Trajectory into trajectory_scores; return trajectory_id."""
+        ...
+
+    def get_trajectories(
+        self, zone_id: str | None = None
+    ) -> list[Trajectory]:
+        """Trajectories newest-first, optionally filtered to one zone."""
+        ...
+
+    def log_near_miss(self, near_miss: NearMissInput) -> str:
+        """Persist a near miss into near_misses; return near_miss_id."""
+        ...
+
+    def search_near_misses(
+        self, zone: str | None, *, only_unconsumed: bool, top_k: int
+    ) -> list[NearMiss]:
+        """Near misses, newest-first, optionally filtered to a zone and to
+        unconsumed rows, capped at top_k."""
+        ...
+
+    def mark_near_miss_consumed(self, near_miss_id: str) -> None:
+        """Set consumed=1 on a near miss once a mutation has been seeded."""
         ...
 
 

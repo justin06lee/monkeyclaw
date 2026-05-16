@@ -214,3 +214,20 @@ def test_generate_for_zone_without_seed_is_unchanged():
     gap = _gap()
     eng.generate_for_zone(gap, cycle_id=1)
     assert not any("# Archive — Diverse Elites" in p for p in sent)
+
+
+def test_mode_c_prompt_includes_persisted_near_misses():
+    from interfaces.types import NearMissInput
+    from red_team.ideation import build_mode_c_prompt
+
+    mcp = MockMCP(seed=0, verbose=False)
+    mcp.log_near_miss(NearMissInput(
+        idea_id="IDEA1", lane_id="L1", zone_id="PROMPT-INJ",
+        max_stage=3, stalled_at_turn=2,
+        erosion_excerpt="the victim started disclosing on turn 3",
+        useful_components=["multi_turn_drift"],
+        mutation_seeds=["concretize_final_request"]))
+    prompt = build_mode_c_prompt(mcp, zone_id="PROMPT-INJ")
+    assert "Near Misses" in prompt
+    assert "the victim started disclosing on turn 3" in prompt
+    assert "concretize_final_request" in prompt
