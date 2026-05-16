@@ -98,6 +98,11 @@ from blue_team.repro_writer import ReproWriter, ReproWriterInput
 from blue_team.root_cause import RootCauseConfig, RootCauseLocator, RootCauseResult
 from blue_team.test_generator import RegressionTestPair, TestGenerator
 from blue_team.triage import FixTask, TriageAgent, TriageConfig
+from purple_team.generalization_loop import (
+    GeneralizationConfig,
+    GeneralizationLoop,
+    load_generalization_config,
+)
 
 LOG = logging.getLogger("monkeyclaw.blue.pipeline")
 
@@ -132,6 +137,7 @@ class Pipeline:
         test_generator: TestGenerator | None = None,
         repro_writer: ReproWriter | None = None,
         alert_severity_floor: str = "high",
+        generalization_cfg: GeneralizationConfig | None = None,
     ) -> None:
         # ---- Runtime resolution ----
         if runtime is not None:
@@ -263,6 +269,11 @@ class Pipeline:
         # Track patches per task so we don't retry the same patch_id
         # forever. Bounded by config.blue_team.patch_verify_max_attempts.
         self._task_attempt_count: dict[str, int] = {}
+
+        # Patch generalization loop (patch-generalization-loop spec §10).
+        self.generalization_cfg = (
+            generalization_cfg or load_generalization_config())
+        self.generalization_enabled = self.generalization_cfg.enabled
 
     # ==================================================================
     # process_repro_queue
@@ -443,7 +454,18 @@ class Pipeline:
                 patch=cand, package=task.primary_package, test_pair=pair,
             )
             if outcome.approved:
-                self._on_patch_approved(task, cand, pair, outcome)
+                gen = None
+                try:
+                    gen = self._run_generalization(
+                        cand, task.primary_package, pair, task)
+                except Exception as e:  # noqa: BLE001
+                    LOG.warning("generalization loop crashed for task %s: "
+                                "%s — finalizing the verified patch",
+                                task.task_id, e)
+                if gen is None or gen.status == "generalized":
+                    self._on_patch_approved(task, cand, pair, outcome)
+                else:  # unconverged
+                    self._on_patch_unconverged(task, cand, pair, gen)
                 return outcome
             LOG.info(
                 "task %s: patch %s rejected at %s — %s",
@@ -501,6 +523,84 @@ class Pipeline:
         except Exception as e:  # noqa: BLE001
             LOG.warning("finding %s verify transition failed: %s",
                         pkg.finding_id, e)
+
+    # ==================================================================
+    # Patch generalization loop (patch-generalization-loop spec §10)
+    # ==================================================================
+    def _run_generalization(self, patch, package, test_pair, task):
+        """Run the purple generalization loop on a verified patch. Returns a
+        GeneralizationResult, or None if the loop is disabled.
+
+        The verifier's replay function is `(transcript, victim) -> LaneResult`
+        and its judge is `(lane, zone, policy) -> (checks, semantic)`; the
+        loop's MutationReplayer/BypassDetector use the simpler `(transcript)`
+        and `(lane) -> (verdict, checks)` contracts. We bridge them here with
+        adapters so the loop replays against exactly the patched surface the
+        verifier proved, with the same oracle gate1_regression uses."""
+        if not self.generalization_enabled:
+            return None
+
+        verifier = self.patch_verifier
+        zone = getattr(package, "affected_zone", "")
+        base_replay = verifier.patched_replay_factory(patch)
+
+        # Provision one victim for the whole loop's replays.
+        from interfaces.provisioning import VictimConfig
+
+        victim = self.provisioner.provision_victim(VictimConfig(
+            nemoclaw_version="alpha",
+            policy_path="configs/default_policy.yaml",
+            agent_type="coding_assistant",
+            agent_config_path="configs/default_agent.yaml",
+            enable_monitoring=False,
+        ))
+
+        def _replay_fn(transcript):
+            return base_replay(transcript, victim)
+
+        def _judge_fn(lane):
+            checks, semantic = verifier.judge_fn(lane, zone, self.policy)
+            triggered = semantic or any(c.triggered for c in checks)
+            return ("confirmed" if triggered else "clean", checks)
+
+        try:
+            loop = GeneralizationLoop(
+                mcp=self.mcp,
+                replay_fn=_replay_fn,
+                judge_fn=_judge_fn,
+                patch_generator=self.patch_generator,
+                patch_verifier=verifier,
+                cfg=self.generalization_cfg)
+            return loop.run(patch, package, test_pair, task)
+        finally:
+            try:
+                self.provisioner.teardown_victim(victim.instance_id)
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("generalization victim teardown failed: %s", e)
+
+    def _on_patch_unconverged(self, task, patch, pair, gen):
+        """An UNCONVERGED generalization result: the last verified patch is
+        retained (it still blocks the original finding) but the zone is NOT
+        proven fixed. No coverage reset; route to the approval service for
+        mandatory human review, per spec §10."""
+        # The positive regression test for the literal finding is still
+        # committed — the original transcript is blocked.
+        try:
+            self.mcp.add_regression_test(pair.positive_test)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("add_regression_test failed: %s", e)
+        ops = sorted({r.operator for r in gen.open_bypasses})
+        self.mcp.send_alert(
+            f"[PATCH UNCONVERGED / {task.severity}] task={task.task_id} "
+            f"patch={patch.patch_id} reason={gen.reason} "
+            f"open-bypass-operators={','.join(ops) or 'none'} — "
+            f"generalization=unconverged, human review required; "
+            f"coverage NOT reset for zone {patch.zone_id}",
+            severity=task.severity,
+        )
+        LOG.warning("patch UNCONVERGED: task=%s patch=%s reason=%s "
+                    "open_bypasses=%d", task.task_id, patch.patch_id,
+                    gen.reason, len(gen.open_bypasses))
 
     def _reset_zone_coverage(self, zone_id: str) -> None:
         """Snap the zone's coverage score to 0.3.
