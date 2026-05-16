@@ -118,6 +118,7 @@ def test_real_provisioner_runs_snapshot_restore_and_recover(monkeypatch):
     monkeypatch.setattr(pn.subprocess, "run", fake_run)
 
     prov = pn.NemoClawProvisioner(cli_binary="nemoclaw")
+    calls.clear()  # discard the construction-time capability probe calls
     inst = prov.provision_victim(_real_cfg())
 
     assert inst.chat_endpoint.startswith("ws://")
@@ -144,7 +145,11 @@ def test_real_provisioner_raises_on_restore_failure(monkeypatch):
         returncode = 1
 
     def fake_run(cmd, **kwargs):
-        kwargs["stderr"].write("snapshot not found")
+        # The construction-time capability probe passes subprocess.DEVNULL
+        # (an int) for stderr; only write when handed a real file object.
+        err = kwargs.get("stderr")
+        if hasattr(err, "write"):
+            err.write("snapshot not found")
         return FailProc()
 
     monkeypatch.setattr(pn.shutil, "which", lambda _: "/usr/bin/nemoclaw")
@@ -214,3 +219,20 @@ def test_victim_telemetry_bundle_carries_five_observable_lists():
     fnames = {f.name for f in fields(VictimTelemetryBundle)}
     assert {"fs_diff", "network_events", "process_events",
             "inference_events", "memory_diff"} <= fnames
+
+
+def test_mock_provisioner_satisfies_extended_protocol():
+    from interfaces.provisioning import VictimConfig, VictimProvisioner
+    from infra.provisioning_nemoclaw import MockProvisioner
+
+    p = MockProvisioner()
+    assert isinstance(p, VictimProvisioner)  # runtime_checkable structural
+    inst = p.provision_victim(VictimConfig(
+        nemoclaw_version="v0", policy_path="p", agent_type="coding_assistant",
+        agent_config_path="c"))
+    recovered = p.recover_victim(inst.instance_id)
+    assert recovered.instance_id == inst.instance_id
+    snap = p.snapshot_victim(inst.instance_id, "snap-1")
+    assert snap.deterministic is True   # mock victim replanted fresh per provision
+    assert snap.name == "snap-1"
+    p.teardown_victim(inst.instance_id)

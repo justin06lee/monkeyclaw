@@ -36,6 +36,7 @@ from interfaces.provisioning import (
     VictimConfig,
     VictimInstance,
     VictimProvisioner,
+    VictimSnapshot,
 )
 from interfaces.victim_client import register, unregister
 
@@ -340,6 +341,24 @@ class MockProvisioner(VictimProvisioner):
         if base:
             shutil.rmtree(base, ignore_errors=True)
         instance.status = "stopped"
+
+    def recover_victim(self, instance_id: str) -> VictimInstance:
+        """The mock victim is replanted fresh per provision, so recover is a
+        no-op that returns the existing instance."""
+        instance = self._instances.get(instance_id)
+        if instance is None:
+            raise ProvisioningError(f"unknown instance {instance_id}")
+        return instance
+
+    def snapshot_victim(self, instance_id: str, name: str) -> VictimSnapshot:
+        """The mock victim's state is deterministic by construction."""
+        instance = self._instances.get(instance_id)
+        if instance is None:
+            raise ProvisioningError(f"unknown instance {instance_id}")
+        return VictimSnapshot(
+            name=name, sandbox_id=instance.sandbox_id or instance_id,
+            created_at=_now(), deterministic=True, patched=False,
+            base_snapshot=None)
 
     def list_victims(self) -> list[VictimInstance]:
         return list(self._instances.values())
