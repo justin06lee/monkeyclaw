@@ -11,6 +11,7 @@ from pathlib import Path
 
 from infra.config import load_config, setup_logging
 from infra.database import Database
+from infra.guardrails import PolicyEnforcer
 from infra.mcp_server import MCPServer
 from infra.notifications import AlertDispatcher
 from infra.provisioning_nemoclaw import MockProvisioner, NemoClawProvisioner
@@ -28,6 +29,7 @@ class Runtime:
     mcp: MCPServer
     provisioner: VictimProvisioner
     alert_dispatcher: AlertDispatcher
+    enforcer: PolicyEnforcer
 
     def shutdown(self) -> None:
         self.alert_dispatcher.close()
@@ -68,5 +70,8 @@ def boot(config_path: str | Path | None = None,
             recover_timeout_s=cfg.nemoclaw.recover_timeout_s,
         )
     set_provisioner(provisioner)
+    # A8 — one PolicyEnforcer per run; the orchestrator/CLI threads it into
+    # the lane scheduler and per-lane harnesses.
+    enforcer = PolicyEnforcer(cfg.guardrails)
     return Runtime(cfg=cfg, db=db, mcp=mcp, provisioner=provisioner,
-                    alert_dispatcher=dispatcher)
+                    alert_dispatcher=dispatcher, enforcer=enforcer)

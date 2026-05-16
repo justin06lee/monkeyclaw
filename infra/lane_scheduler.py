@@ -32,6 +32,7 @@ from queue import Empty, PriorityQueue
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from infra.guardrails import PolicyEnforcer
     from interfaces.mcp_tools import MonkeyClawMCP
 
 from infra.monitoring_harness import HarnessConfig, MonitoringHarness
@@ -76,6 +77,7 @@ class LaneScheduler:
         on_error: Callable[[Exception, IdeaObject], None] | None = None,
         serial: bool = True,
         mcp: MonkeyClawMCP | None = None,
+        enforcer: PolicyEnforcer | None = None,
     ) -> None:
         self.lane_cfg = lane_cfg
         self.nemoclaw_cfg = nemoclaw_cfg
@@ -83,6 +85,11 @@ class LaneScheduler:
         # Optional MonkeyClawMCP. When set, each lane emits A5 session
         # telemetry. Unset -> behavior is identical to before.
         self._mcp = mcp
+        # Optional PolicyEnforcer (A8). When set, the dispatch loop honours
+        # emergency stop and the per-cycle lane budget. Unset -> behavior is
+        # identical to before.
+        self._enforcer = enforcer
+        self._lanes_dispatched = 0
         self.executor = executor
         self.on_result = on_result
         self.on_error = on_error or (lambda e, idea: LOG.exception(
@@ -142,6 +149,18 @@ class LaneScheduler:
                 job = self._queue.get(timeout=0.5)
             except Empty:
                 continue
+            if self._enforcer is not None:
+                if self._enforcer.emergency_stopped():
+                    LOG.warning("emergency stop active — halting lane dispatch "
+                                "(idea %s left undispatched)", job.idea.idea_id)
+                    break
+                budget = self._enforcer.check_lane_budget(self._lanes_dispatched)
+                if budget.decision == "deny":
+                    LOG.warning("lane budget exhausted (%s) — halting lane "
+                                "dispatch (idea %s left undispatched)",
+                                budget.reason_code, job.idea.idea_id)
+                    break
+            self._lanes_dispatched += 1
             fut = self._pool.submit(self._run_lane, job.idea)
             self._inflight[job.idea.idea_id] = fut
             fut.add_done_callback(lambda f, iid=job.idea.idea_id: self._inflight.pop(iid, None))

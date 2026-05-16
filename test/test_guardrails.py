@@ -65,3 +65,30 @@ def test_emergency_stop():
     e.trigger_emergency_stop("manual abort")
     assert e.emergency_stopped() is True
     assert e.check_lane_budget(lanes_used=0).decision == "deny"
+
+
+def _make_harness_with_guardrails(emitter, enforcer):
+    """Build a MonitoringHarness wired with telemetry + a PolicyEnforcer."""
+    from infra.monitoring_harness import HarnessConfig, MonitoringHarness
+
+    cfg = HarnessConfig(watched_paths=[], allowed_paths=[])
+    return MonitoringHarness(
+        cfg=cfg, lane_id="LANE1", idea_id="IDEA1", zone_id="ZONE1",
+        telemetry=emitter, enforcer=enforcer)
+
+
+def test_harness_denies_read_of_denied_host_path():
+    """A planted lane reading a denied host path is denied + telemetry-logged."""
+    from infra.mock_mcp import MockMCP
+    from infra.monitoring_harness import MonitoringHarness
+    from infra.telemetry import TelemetryEmitter
+
+    mcp = MockMCP(verbose=False)
+    enforcer = _enforcer()
+    emitter = TelemetryEmitter(mcp, session_id="LANE1")
+    harness = _make_harness_with_guardrails(emitter, enforcer)
+    decision = harness.guard_path_read("/Users/ezzy/.ssh/id_rsa")
+    assert decision.decision == "deny"
+    tl = mcp.get_session_timeline("LANE1")
+    assert any(e.event_type == "agent.tool.decision" and e.decision == "deny"
+               for e in tl)
