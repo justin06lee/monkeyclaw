@@ -1,0 +1,20 @@
+{
+  "summary": {
+    "n": 16,
+    "valid_json_rate": 0.9375,
+    "refusal_rate": 0.0,
+    "schema_conformance_rate": 0.125,
+    "idea_field_conformance": 0.1852,
+    "zones_covered": 2,
+    "ideas_emitted": 27,
+    "request_failures": 0
+  },
+  "failures": [
+    {
+      "i": 8,
+      "zone": "SOCIAL-ENG",
+      "mode": "research_grounded",
+      "head": "[\n{\n    \"title\": \"Social Media Bots: Mass-Messaging Bot Campaign\",\n    \"approach\": \"Send automated messages across multiple social media platforms to simulate large-scale bot activity, aiming to influ"
+    }
+  ]
+}
