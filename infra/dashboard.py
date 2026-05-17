@@ -952,6 +952,8 @@ _PAGE = r"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MonkeyClaw — autonomous red-team console</title>
+<link rel="icon" type="image/png" href="/logo.png">
+<link rel="apple-touch-icon" href="/logo.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
@@ -1031,6 +1033,12 @@ _PAGE = r"""<!doctype html>
     font:700 11.5px/1.4 var(--mono); letter-spacing:.04em;}
   .stale.show{display:block;}
 
+  /* ---- new-row flash — a fresh row glows briefly then settles ---- */
+  @keyframes flashin{
+    0%{box-shadow:inset 0 0 0 999px rgba(245,166,35,.15);}
+    100%{box-shadow:inset 0 0 0 999px rgba(245,166,35,0);}}
+  .flash{animation:flashin 1.7s ease-out;}
+
   @keyframes pulse{
     0%{box-shadow:0 0 0 0 rgba(54,211,147,.55);}
     70%{box-shadow:0 0 0 12px rgba(54,211,147,0);}
@@ -1078,16 +1086,22 @@ _PAGE = r"""<!doctype html>
   .flow .node{
     flex:1; min-width:128px; border:1px solid var(--line);
     background:var(--panel); border-radius:12px; padding:16px 18px;
+    transition:transform .2s,border-color .2s;
   }
-  .flow .node .n{font:700 30px/1 var(--mono); color:var(--txt);}
+  .flow .node:hover{transform:translateY(-2px); border-color:var(--line-2);}
+  .flow .node .n{font:700 32px/1 var(--mono); color:var(--txt);
+    font-variant-numeric:tabular-nums;}
   .flow .node .k{font-size:11px; letter-spacing:.13em; text-transform:uppercase;
     color:var(--dim); margin-top:7px;}
   .flow .node .s{font-size:11px; color:var(--faint); margin-top:3px;}
-  .flow .arrow{display:flex; align-items:center; color:var(--faint);
-    font:700 18px/1 var(--mono); padding:0 6px;}
-  .flow .node.red{border-top:2px solid var(--high);}
-  .flow .node.blue{border-top:2px solid var(--low);}
-  .flow .node.win{border-top:2px solid var(--ok);}
+  .flow .arrow{display:flex; align-items:center; color:var(--line-2);
+    font:700 21px/1 var(--mono); padding:0 7px;}
+  .flow .node.red{border-top:2px solid var(--high);
+    background:linear-gradient(165deg,rgba(255,159,67,.06),var(--panel));}
+  .flow .node.blue{border-top:2px solid var(--low);
+    background:linear-gradient(165deg,rgba(84,184,255,.06),var(--panel));}
+  .flow .node.win{border-top:2px solid var(--ok);
+    background:linear-gradient(165deg,rgba(54,211,147,.09),var(--panel));}
 
   /* metric strip */
   .metrics{display:grid; gap:12px; margin-top:14px;
@@ -1108,8 +1122,8 @@ _PAGE = r"""<!doctype html>
     border-radius:12px; padding:18px;}
   .card > h3{font:600 12px/1 var(--mono); letter-spacing:.12em;
     text-transform:uppercase; color:var(--dim); margin-bottom:14px;}
-  .scroll{max-height:392px; overflow-y:auto; margin-right:-6px;
-    padding-right:6px;}
+  .scroll{max-height:392px; min-height:208px; overflow-y:auto;
+    margin-right:-6px; padding-right:6px;}
   .scroll::-webkit-scrollbar{width:7px;}
   .scroll::-webkit-scrollbar-thumb{background:var(--line-2); border-radius:4px;}
   .empty{color:var(--faint); font:400 13px/1.5 var(--mono);
@@ -1482,18 +1496,41 @@ function badge(txt,col){return `<span class="badge" style="background:${col};`
 // Diff-render: skip the DOM write when a section's markup is unchanged, and
 // preserve scroll position when it is not — kills the 5s flicker / jump.
 // HTML is parsed into a fragment (scripts inert) rather than assigned raw.
-const _LAST={}, _RANGE=document.createRange();
+const _LAST={}, _KEYS={}, _RANGE=document.createRange();
 function paint(el,html){
   el.replaceChildren(_RANGE.createContextualFragment(html));
 }
 function set(id,html){
   const el=document.getElementById(id);
   if(!el||_LAST[id]===html)return;
+  const first=!(id in _LAST);
   _LAST[id]=html;
   const sc=el.closest('.scroll');
   const top=sc?sc.scrollTop:0;
   paint(el,html);
   if(sc&&sc.scrollTop!==top)sc.scrollTop=top;
+  // flash any row carrying a data-rk key not seen on the previous render
+  const keyed=el.querySelectorAll('[data-rk]');
+  if(keyed.length){
+    const seen=_KEYS[id]||new Set(), now=new Set();
+    keyed.forEach(n=>{
+      const k=n.getAttribute('data-rk'); now.add(k);
+      if(!first&&k&&!seen.has(k))n.classList.add('flash');
+    });
+    _KEYS[id]=now;
+  }
+}
+
+// one-shot count-up — eases a number from 0 to its value (rec #3)
+function countUp(el,to){
+  to=+to||0;
+  if(to<=0){el.textContent='0';return;}
+  const dur=680,t0=performance.now();
+  (function step(now){
+    const p=Math.min(1,(now-t0)/dur);
+    el.textContent=Math.round(to*(1-Math.pow(1-p,3))).toLocaleString();
+    if(p<1)requestAnimationFrame(step);
+  })(performance.now());
 }
 async function j(u){try{return await (await fetch(u)).json();}catch(e){return null;}}
 
@@ -1542,6 +1579,7 @@ function renderLive(s){
   }
 }
 
+let FIRST_FLOW=true;
 function renderFlow(s){
   if(!s){set('flow','');return;}
   const findings=(s.confirmed||0)+(s.suspicious||0);
@@ -1554,9 +1592,15 @@ function renderFlow(s){
     ["win",s.patches_verified||0,"Verified","fixes approved"],
   ];
   set('flow',nodes.map((n,i)=>
-    `<div class="node ${n[0]}"><div class="n">${num(n[1])}</div>`
+    `<div class="node ${n[0]}"><div class="n" data-v="${n[1]||0}">`
+    +`${num(n[1])}</div>`
     +`<div class="k">${n[2]}</div><div class="s">${esc(n[3])}</div></div>`
     +(i<nodes.length-1?'<div class="arrow">→</div>':'')).join(''));
+  if(FIRST_FLOW){
+    FIRST_FLOW=false;
+    document.querySelectorAll('#flow .n').forEach((el,i)=>
+      setTimeout(()=>countUp(el,+el.dataset.v||0),140+i*100));
+  }
 }
 
 function renderMetrics(s,cycles){
@@ -1857,7 +1901,8 @@ function renderFindings(f){
     const patch=`<span class="chip">patch <b style="color:`
       +`${STATUS_C[x.patch_status]||'var(--faint)'}">`
       +`${esc(x.patch_status||'open')}</b></span>`;
-    return `<div class="row" style="border-left-color:${col}">
+    return `<div class="row" data-rk="${esc(x.finding_id||'')}" `
+      +`style="border-left-color:${col}">
       <div class="hd">${badge(x.severity,col)}
         <span class="ti">${esc(x.zone_id)} · ${esc(x.failure_class)}</span></div>
       <div class="ap">${trunc(x.idea_summary,148)}</div>
@@ -1875,7 +1920,7 @@ function renderIdeas(items){
     const skill=x.derived_from_skill
       ?`<span class="chip mono">${esc(x.derived_from_skill)}</span>`:"";
     return `<div class="row ${x.deduplicated?'dedup':''}" `
-      +`style="border-left-color:${col}">
+      +`data-rk="${esc(x.idea_id||'')}" style="border-left-color:${col}">
       <div class="hd">${badge((x.source_mode||'').replace(/_/g,' '),col)}
         <span class="dim mono" style="font-size:11px">${esc(x.zone_id)} · `
         +`c${x.cycle_id} · p=${(x.priority_score||0).toFixed(2)}`
@@ -1890,7 +1935,8 @@ function renderRepro(r){
     '<div class="empty">repro queue empty</div>');return;}
   set('repro',r.map(x=>{
     const col=SEV[x.severity]||"var(--line)";
-    return `<div class="row" style="border-left-color:${col}">
+    return `<div class="row" data-rk="${esc(x.finding_id||'')}" `
+      +`style="border-left-color:${col}">
       <div class="hd">${badge(x.status,STATUS_C[x.status]||'var(--dim)')}
         <span class="ti mono" style="font-size:12px">${esc(x.finding_id)}</span>
         <span class="chip">${esc(x.priority||'')} priority</span></div>
@@ -1904,7 +1950,8 @@ function renderPackages(p){
     '<div class="empty">no repro packages ready for blue team</div>');return;}
   set('packages',p.map(x=>{
     const col=SEV[x.severity]||"var(--line)";
-    return `<div class="row" style="border-left-color:${col}">
+    return `<div class="row" data-rk="${esc(x.package_id||x.vuln_id||'')}" `
+      +`style="border-left-color:${col}">
       <div class="hd">${badge(x.blue_team_status,
         STATUS_C[x.blue_team_status]||'var(--dim)')}
         <span class="ti mono" style="font-size:12px">${esc(x.vuln_id)}</span></div>
@@ -1922,7 +1969,8 @@ function renderPatches(p){
     '<div class="empty">no patch candidates yet</div>');return;}
   set('patches',p.map(x=>{
     const col=STATUS_C[x.status]||"var(--line)";
-    return `<div class="row" style="border-left-color:${col}">
+    return `<div class="row" data-rk="${esc(x.patch_id||'')}" `
+      +`style="border-left-color:${col}">
       <div class="hd">${badge(x.status,col)}
         <span class="ti mono" style="font-size:12px">${esc(x.zone_id)}</span>
         <span class="chip">${esc(x.invasiveness||'')} invasiveness</span></div>
@@ -1970,7 +2018,8 @@ function renderArchive(a){
 
 function renderOperators(o){
   if(!o||!o.length){set('operators',
-    '<div class="empty">no mutation-operator stats yet</div>');return;}
+    '<div class="empty">Mutation-operator stats build up once the '
+    +'evolutionary search runs across multiple cycles.</div>');return;}
   set('operators',o.map(x=>{
     const r=x.uses?x.successes/x.uses:0;
     return `<div style="margin-bottom:13px">
@@ -1999,7 +2048,8 @@ function renderJudges(jd){
 
 function renderJudgeAppeals(a){
   if(!a||!a.appeal_count){set('judgeAppeals',
-    '<div class="empty">no judge appeals yet</div>');return;}
+    '<div class="empty">No appeals — the judge ensemble reached '
+    +'consensus on every lane this cycle.</div>');return;}
   const rate=Math.round((a.override_rate||0)*100);
   const head=`<div class="row" style="border-left-color:var(--accent)">
     <div class="hd"><span class="ti">${a.appeal_count||0} appeals</span>
@@ -2018,7 +2068,8 @@ function renderJudgeAppeals(a){
 
 function renderAttackElo(rows){
   if(!rows||!rows.length){set('attackElo',
-    '<div class="empty">no attack Elo ratings yet</div>');return;}
+    '<div class="empty">Attack Elo accrues from repeated pairwise '
+    +'comparisons — none in a single-cycle run.</div>');return;}
   set('attackElo',rows.map(x=>{
     const rating=x.rating||1000;
     const c=heat(Math.max(0,Math.min(1,(rating-900)/300)));
@@ -2066,7 +2117,8 @@ function renderCycles(c){
   if(!c||!c.length){set('cycles',
     '<div class="empty">no cycles completed yet</div>');return;}
   set('cycles',c.map(x=>
-    `<div class="row" style="border-left-color:var(--accent)">
+    `<div class="row" data-rk="cy${x.cycle_id}" `
+      +`style="border-left-color:var(--accent)">
       <div class="hd"><span class="ti">Cycle ${x.cycle_id}</span>
         <span class="chip"><b style="color:var(--crit)">`
         +`${x.vulns_confirmed||0}</b> confirmed</span>
