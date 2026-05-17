@@ -75,7 +75,9 @@ from blue_team.cold_verifier import (
 from blue_team.patch_generator import PatchGenerator, PatchGeneratorConfig
 from blue_team.patch_isolation import (
     PatchIsolation,
+    build_demo_patched_replay_factory,
     build_patched_replay_factory,
+    make_demo_patched_regression_replay_fn,
     sweep_orphaned_worktrees,
 )
 from blue_team.patch_isolation import (
@@ -255,18 +257,42 @@ class Pipeline:
             except Exception as e:  # noqa: BLE001
                 LOG.warning("purple detection oracle unavailable: %s", e)
                 detection_oracle = None
+        # Patched-replay factory selection:
+        #   1. Real disposable-worktree isolation when a NemoClaw checkout is
+        #      wired (isolation_mode="live").
+        #   2. Demo / zero-credential mode (`red.demo_playbooks`): no checkout,
+        #      so verify against a PATCHED mock victim — the provisioner honors
+        #      `patch_diff` by fixing the planted flaws, so a generated patch
+        #      genuinely blocks the recorded attack (isolation_mode="mock").
+        #   3. Otherwise None → the unpatched in-process mock replay default.
+        if self.patch_isolation is not None:
+            patched_replay_factory = build_patched_replay_factory(
+                self.patch_isolation)
+        elif getattr(self.cfg.red, "demo_playbooks", False):
+            patched_replay_factory = build_demo_patched_replay_factory(
+                self.provisioner)
+        else:
+            patched_replay_factory = None
         self.patch_verifier = patch_verifier or PatchVerifier(
             mcp=self.mcp, provisioner=self.provisioner,
             cfg=PatchVerifierConfig.from_blue_team_cfg(self.cfg.blue_team),
             policy=self.policy,
             detection_oracle=detection_oracle,
             isolation=self.patch_isolation,
-            patched_replay_factory=(
-                build_patched_replay_factory(self.patch_isolation)
-                if self.patch_isolation is not None else None),
+            patched_replay_factory=patched_replay_factory,
         )
+        # The permanent regression suite records FIXED vulnerabilities. In
+        # demo / zero-credential mode there is no real patched build, so the
+        # runner replays against a patched mock victim — otherwise every
+        # fixed-vuln test would re-trigger on the unpatched mock surface.
+        regression_replay_fn = None
+        if (self.patch_isolation is None
+                and getattr(self.cfg.red, "demo_playbooks", False)):
+            regression_replay_fn = make_demo_patched_regression_replay_fn(
+                self.provisioner)
         self.regression_runner = regression_runner or RegressionRunner(
             mcp=self.mcp, provisioner=self.provisioner, policy=self.policy,
+            replay_fn=regression_replay_fn,
         )
 
         # Track patches per task so we don't retry the same patch_id
@@ -292,6 +318,12 @@ class Pipeline:
         self._pending_test_pairs: dict[str, RegressionTestPair] = {}
         self._pending_tasks: dict[str, FixTask] = {}
         self._pending_outcomes: dict[str, VerifyOutcome] = {}
+        # patch_id -> committed regression test_id. A patch's positive
+        # regression test is committed once, the moment verification proves
+        # the patch blocks the finding — independent of the ship/approval
+        # decision (the test guards "this finding is reproducibly blocked").
+        # Tracked so finalize / unconverged paths don't double-insert it.
+        self._committed_regression_tests: dict[str, str] = {}
 
         # Optional post-approval PR drafting (approval spec §6.3).
         self.pr_generator = PRGenerator(
@@ -508,6 +540,11 @@ class Pipeline:
             if outcome.failed_gate != "gate_diff_applies":
                 self._task_attempt_count[task.task_id] = attempts_used + 1
             if outcome.approved:
+                # The patch passed every gate — commit its positive
+                # regression test now. The test asserts the finding stays
+                # blocked; it is a permanent guard regardless of whether the
+                # patch is auto-allowed or held pending human approval.
+                self._commit_regression_test(cand.patch_id, pair.positive_test)
                 gen = None
                 try:
                     gen = self._run_generalization(
@@ -579,6 +616,24 @@ class Pipeline:
         self._on_task_exhausted(task)
         return False
 
+    def _commit_regression_test(self, patch_id: str, positive_test) -> str:  # noqa: ANN001
+        """Persist a patch's positive regression test to the permanent suite,
+        exactly once per patch. Returns the test_id (or a sentinel on failure).
+
+        A verified patch commits its test the moment the gates pass; later
+        finalize / unconverged paths call this again and get the same id back
+        rather than inserting a duplicate row."""
+        existing = self._committed_regression_tests.get(patch_id)
+        if existing is not None:
+            return existing
+        try:
+            test_id = self.mcp.add_regression_test(positive_test)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("add_regression_test failed: %s", e)
+            return "(uncommitted)"
+        self._committed_regression_tests[patch_id] = test_id
+        return test_id
+
     def _safe_mark_patch(self, patch_id: str, status: str) -> None:
         """mark_patch_status, swallowing FSM/transition errors — used for the
         approval-gate statuses which the patch may not have an FSM edge for."""
@@ -602,11 +657,9 @@ class Pipeline:
         """Commit an approved patch: regression test, coverage reset, alert,
         lifecycle close. The original _on_patch_approved body."""
         # 1. Add the positive regression test to the permanent suite.
-        try:
-            test_id = self.mcp.add_regression_test(positive_test)
-        except Exception as e:  # noqa: BLE001
-            LOG.warning("add_regression_test failed: %s", e)
-            test_id = "(uncommitted)"
+        #    Idempotent: a verified patch already committed its test at
+        #    verification time, so this just reuses that test_id.
+        test_id = self._commit_regression_test(patch.patch_id, positive_test)
 
         # 2. Reset zone coverage to 0.3 per spec §4.4.
         try:
@@ -820,11 +873,9 @@ class Pipeline:
         proven fixed. No coverage reset; route to the approval service for
         mandatory human review, per spec §10."""
         # The positive regression test for the literal finding is still
-        # committed — the original transcript is blocked.
-        try:
-            self.mcp.add_regression_test(pair.positive_test)
-        except Exception as e:  # noqa: BLE001
-            LOG.warning("add_regression_test failed: %s", e)
+        # committed — the original transcript is blocked. Idempotent: the
+        # verified patch already committed it at verification time.
+        self._commit_regression_test(patch.patch_id, pair.positive_test)
         ops = sorted({r.operator for r in gen.open_bypasses})
         self.mcp.send_alert(
             f"[PATCH UNCONVERGED / {task.severity}] task={task.task_id} "

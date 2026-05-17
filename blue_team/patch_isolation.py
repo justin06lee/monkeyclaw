@@ -225,6 +225,104 @@ def build_patched_replay_factory(isolation: PatchIsolation):
     return factory
 
 
+def build_demo_patched_replay_factory(provisioner: VictimProvisioner):
+    """A PatchedReplayFactory for the zero-credential demo / mock surface.
+
+    There is no NemoClaw checkout to build from, so this provisions a mock
+    victim with `VictimConfig.patch_diff` set — the `MockProvisioner` honors
+    that by building the victim with its planted flaws fixed (see
+    `MockProvisioner.provision_victim`). Every gate of one candidate replays
+    against that same patched victim, so a real generated patch genuinely
+    blocks the recorded attack instead of the verifier rubber-stamping the
+    unpatched surface.
+
+    The outcome is still labelled `isolation_mode="mock"` — this IS the mock
+    surface, just the patched mock surface. The provisioned victim is torn
+    down via the `_active_cm` contract `PatchVerifier._close_active_patch_build`
+    already drives after each candidate.
+    """
+    from interfaces.provisioning import VictimConfig  # noqa: PLC0415
+
+    @contextlib.contextmanager
+    def _patched_victim_cm(patch: PatchCandidate) -> Iterator:
+        diff = patch.diff or "# patched (demo mock surface)"
+        victim = provisioner.provision_victim(VictimConfig(
+            nemoclaw_version="patched",
+            policy_path="configs/default_policy.yaml",
+            agent_type="coding_assistant",
+            agent_config_path="configs/default_agent.yaml",
+            enable_monitoring=True,
+            patch_diff=diff,
+        ))
+        try:
+            yield victim
+        finally:
+            try:
+                provisioner.teardown_victim(victim.instance_id)
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("demo patched-victim teardown failed: %s", e)
+
+    def factory(patch: PatchCandidate) -> ReplayFn:
+        from blue_team.replay_minimizer import (  # noqa: PLC0415
+            make_victim_replay_fn,
+        )
+
+        cm = _patched_victim_cm(patch)
+        try:
+            victim = cm.__enter__()
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("demo patched-victim provision failed: %s — "
+                        "falling back to unpatched mock replay", e)
+            factory._active_cm = None  # noqa: SLF001
+            factory._last_mode = "mock"  # noqa: SLF001
+            return make_mock_replay_fn()
+        factory._active_cm = cm  # noqa: SLF001 — held for the candidate
+        factory._last_mode = "mock"  # noqa: SLF001 — still the mock surface
+        return make_victim_replay_fn(victim)
+
+    factory._active_cm = None  # noqa: SLF001
+    factory._active_build = None  # noqa: SLF001
+    factory._last_mode = "mock"  # noqa: SLF001
+    return factory
+
+
+def make_demo_patched_regression_replay_fn(
+    provisioner: VictimProvisioner,
+) -> ReplayFn:
+    """A ReplayFn for the demo regression suite that replays against a
+    PATCHED mock victim.
+
+    The permanent regression suite records vulnerabilities that have been
+    *fixed* — re-running them on the unpatched mock surface would (correctly)
+    re-trigger every one. In the zero-credential demo there is no real
+    patched build, so each replay provisions a mock victim with `patch_diff`
+    set: the `MockProvisioner` builds it with the planted flaws fixed, so the
+    fixed-vuln tests pass. The caller's victim instance is ignored.
+    """
+    from interfaces.provisioning import VictimConfig  # noqa: PLC0415
+
+    mock_fn = make_mock_replay_fn()
+
+    def _fn(transcript, _instance):
+        victim = provisioner.provision_victim(VictimConfig(
+            nemoclaw_version="patched",
+            policy_path="configs/default_policy.yaml",
+            agent_type="coding_assistant",
+            agent_config_path="configs/default_agent.yaml",
+            enable_monitoring=True,
+            patch_diff="# patched (demo regression surface)",
+        ))
+        try:
+            return mock_fn(transcript, victim)
+        finally:
+            try:
+                provisioner.teardown_victim(victim.instance_id)
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("demo regression victim teardown failed: %s", e)
+
+    return _fn
+
+
 def sweep_orphaned_worktrees(worktree_root: str, store) -> int:
     """Startup janitor (patch-isolation §11): remove every mc-patch-* dir
     whose patch_builds row is not torn_down (or has no row). Returns count."""
@@ -248,6 +346,8 @@ def sweep_orphaned_worktrees(worktree_root: str, store) -> int:
 __all__ = [
     "PatchIsolation",
     "PatchIsolationConfig",
+    "build_demo_patched_replay_factory",
     "build_patched_replay_factory",
+    "make_demo_patched_regression_replay_fn",
     "sweep_orphaned_worktrees",
 ]

@@ -701,6 +701,44 @@ class MockLLM(LLMClient):
             if steps and idx < len(steps):
                 return steps[idx]
             return "<<STEPS_COMPLETE>>"
+        # Blue-team patch generator: emit one shape-valid `### PATCH` block
+        # with a unified diff whose context line is lifted from a provided
+        # source snippet. Without this the zero-credential demo produces no
+        # patch candidates (and therefore no regression suite).
+        if "writing defensive patches" in system.lower():
+            import re as _re
+            msm = _re.search(r"^##\s+(\S+?):", prompt, _re.MULTILINE)
+            path = msm.group(1) if msm else "src/sandbox/guard.py"
+            ctx = "    pass"
+            fence = _re.search(r"```[a-zA-Z]*\n(.*?)```", prompt, _re.DOTALL)
+            if fence:
+                for ln in fence.group(1).splitlines():
+                    if ln.strip():
+                        ctx = ln if ln.startswith(" ") else " " + ln
+                        break
+            return (
+                "### PATCH 1\n"
+                "label: canonicalize path before the policy check\n"
+                "invasiveness: low\n"
+                "explanation: Resolve symlinks and canonicalize the requested "
+                "path, then re-validate it against the sandbox allow-list "
+                "before the policy comparison. This closes the traversal that "
+                "let the attacker escape the sandbox boundary.\n"
+                "side_effects: Adds one realpath() resolution per request; no "
+                "behavior change for paths already inside the sandbox.\n"
+                "expected_tests: positive regression now passes, in-sandbox "
+                "access still works, policy-denial telemetry is emitted\n"
+                "confidence: 0.82\n"
+                "```diff\n"
+                f"--- a/{path}\n"
+                f"+++ b/{path}\n"
+                "@@ -1,1 +1,4 @@\n"
+                f"{ctx}\n"
+                "+    resolved = os.path.realpath(path)\n"
+                "+    if not _within_sandbox(resolved):\n"
+                "+        raise PolicyViolation('path escapes sandbox')\n"
+                "```\n"
+            )
         # Ideation: emit 3 plausible structured ideas as JSON.
         if "Propose attack approaches" in prompt or "identify specific weaknesses" in prompt \
                 or "propose variations" in prompt:

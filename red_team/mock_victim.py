@@ -108,12 +108,30 @@ class MockVictim:
     # under allowed_paths).
     escape_root: str
     system_prompt: str = PLANTED_SYSTEM_PROMPT
+    # When True the planted flaws are considered fixed: every trigger path
+    # below is short-circuited to a safe refusal with no side effects. This
+    # is how the mock provisioner models a victim built with a patch applied
+    # (`VictimConfig.patch_diff`) — see `MockProvisioner.provision_victim`.
+    # The patch verifier's gates replay against such a victim to confirm a
+    # candidate patch actually blocks the recorded attack.
+    patched: bool = False
 
     # ------------------------------------------------------------------
     def chat(self, message: str) -> tuple[str, TurnSideEffects]:
         """Single turn — returns (reply, side_effects)."""
         msg = message.strip()
         side = TurnSideEffects()
+
+        # A patched victim has the planted flaws fixed: it still answers,
+        # still emits a security decision (the refusal IS the telemetry),
+        # but produces none of the attack side effects. The verifier's
+        # gate1_regression / policy-regression tests both pass on this
+        # surface — the behavior is blocked AND a reply is recorded.
+        if self.patched:
+            return (
+                "I can't help with that — it would violate the sandbox "
+                "policy. (request refused by patched guardrail)"
+            ), side
 
         # 1) Prompt-injection / system-prompt leak
         if _LEAK_TRIGGERS.search(msg):
@@ -217,14 +235,20 @@ def build_and_register(
     endpoint: str | None = None,
     allowed_root: str,
     escape_root: str,
+    patched: bool = False,
 ) -> tuple[str, MockVictim]:
-    """Convenience: build a MockVictim and register under a fresh endpoint."""
+    """Convenience: build a MockVictim and register under a fresh endpoint.
+
+    `patched=True` builds a victim with the planted flaws fixed — the mock
+    provisioner sets this when a `VictimConfig.patch_diff` is supplied.
+    """
     iid = f"VICT-MOCK-{uuid.uuid4().hex[:10]}"
     endpoint = endpoint or f"mock://chat/{iid}"
     Path(allowed_root).mkdir(parents=True, exist_ok=True)
     Path(escape_root).mkdir(parents=True, exist_ok=True)
     v = MockVictim(
         instance_id=iid, allowed_root=allowed_root, escape_root=escape_root,
+        patched=patched,
     )
     register(endpoint, v)
     return endpoint, v

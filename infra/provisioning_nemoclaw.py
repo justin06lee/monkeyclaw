@@ -369,13 +369,27 @@ class MockProvisioner(VictimProvisioner):
         # an empty `env`). When set, bind that planted victim to the mock
         # transport for this instance. When unset, fall back to the
         # red_team multi-flaw MockVictim with tempdir sandbox roots.
+        # A non-empty `patch_diff` means the caller (the patch verifier)
+        # wants a victim built WITH a candidate patch applied. The mock
+        # provisioner cannot apply a real source diff, but it models the
+        # patched surface honestly: the planted flaws are fixed so the
+        # recorded attack no longer reproduces. This is the spec'd
+        # contract — "patched semantics come from the provisioner's
+        # patch_diff field" (see blue_team/patch_verifier.py docstring).
+        patched = bool(config.patch_diff and config.patch_diff.strip())
+
         profile = config.env.get("MC_PROFILE") or os.environ.get("MC_PROFILE")
         if profile:
             # Planted-profile mode (Person A demo profiles).
             # make_victim raises KeyError for an unknown profile.
             victim = make_victim(profile)
+            # Honor the patched surface for profiles that model it.
+            if patched and hasattr(victim, "patched"):
+                victim.patched = True  # type: ignore[attr-defined]
             register(chat_endpoint, victim)
             metadata["profile"] = profile
+            if patched:
+                metadata["patched"] = "true"
         else:
             # Default: the red_team multi-flaw MockVictim with tempdir
             # sandbox roots.
@@ -385,9 +399,12 @@ class MockProvisioner(VictimProvisioner):
             chat_endpoint, _ = mock_victim.build_and_register(
                 endpoint=chat_endpoint,
                 allowed_root=allowed, escape_root=escape,
+                patched=patched,
             )
             metadata.update(allowed_root=allowed, escape_root=escape,
                             base_dir=base)
+            if patched:
+                metadata["patched"] = "true"
 
         instance = VictimInstance(
             instance_id=iid,
