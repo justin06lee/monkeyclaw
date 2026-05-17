@@ -16,6 +16,7 @@
 ![migrations](https://img.shields.io/badge/migrations-20-7c3aed)
 ![tests](https://img.shields.io/badge/tests-1000%2B-2da44e)
 ![LLM](https://img.shields.io/badge/LLM-NVIDIA%20Nemotron-76B900?logo=nvidia&logoColor=white)
+![custom model](https://img.shields.io/badge/custom%20model-Nemotron--3--Nano--4B%20LoRA%20SFT-76B900?logo=nvidia&logoColor=white)
 
 </div>
 
@@ -36,7 +37,7 @@ visible*: that NemoClaw's own telemetry fired when the control did its job.
 
 <div align="center">
 
-[Quick Start](#-quick-start) · [Demo](#-demo) · [CLI](#-cli) · [Architecture](#-architecture) · [How it got here](#-how-monkeyclaw-got-here) · [Configuration](#-configuration) · [Project status](#-project-status) · [Documentation](#-documentation)
+[Quick Start](#-quick-start) · [Demo](#-demo) · [CLI](#-cli) · [Architecture](#-architecture) · [Custom model](#-custom-red-team-model) · [How it got here](#-how-monkeyclaw-got-here) · [Configuration](#-configuration) · [Project status](#-project-status) · [Documentation](#-documentation)
 
 </div>
 
@@ -289,6 +290,42 @@ informed by everything tried before.
 The full design lives in `.agents/` (workload split, interface contracts) and
 `docs/superpowers/` (the 17 upgrade specs and their implementation plans).
 
+## 🧠 Custom red-team model
+
+MonkeyClaw ships its own finetuned model for the `red_ideation` role — the
+step that turns an attack zone into structured `IdeaObject` JSON attack ideas.
+Off-the-shelf models do this unreliably: they refuse security-flavored prompts
+and drift from the JSON schema. So we distilled a purpose-built one.
+
+**Base:** `nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16` — the smallest Nemotron-3
+Nano variant, a 4B hybrid Mamba-Transformer.
+**Method:** LoRA SFT (r=16, α=32, all 92 linear projections), completion-only
+loss, served via an OpenAI-compatible shim.
+
+The SFT data is generated entirely from the repo's own corpora — 35 attack
+skills, the 18-zone catalog, and the zone→MITRE ATLAS / OWASP-LLM mapping — so
+every training example is schema-valid by construction and needs no external
+API calls. Each input mirrors the exact ideation prompt format from
+`red_team/ideation.py` (5 modes), and ~12% carry a "loaded" operator note for
+anti-refusal training. 1032 examples, all 18 zones covered, 10% held out.
+
+Held-out eval (16-prompt sample):
+
+| Metric | Result | Target |
+|--------|--------|--------|
+| Refusal rate | **0.0%** | 0% ✓ |
+| Valid-JSON rate | **93.8%** | ~100% |
+| Request failures | **0** | 0 ✓ |
+
+Zero refusals, and the model reliably emits parseable `IdeaObject` arrays that
+MonkeyClaw's lenient ideation parser accepts end-to-end (`redteam_model/smoke.py`
+runs the real `IdeationEngine` path). Merged weights (~7.5 GB) are not in git.
+
+Full build details — data pipeline, training config, eval, and engineering
+deviations (vLLM/CUDA, Mamba kernels, manual LoRA merge) — are in
+[`redteam_model/REPORT.md`](redteam_model/REPORT.md); run/redeploy steps in
+[`redteam_model/INSTRUCTIONS.md`](redteam_model/INSTRUCTIONS.md).
+
 ## 📈 How MonkeyClaw got here
 
 The system shipped as a working red→judge→repro→blue scaffold, then took
@@ -390,6 +427,8 @@ autonomous loop through the `monkeyclaw` CLI.
 | `docs/monkeyclaw_full_architecture_report.md` | The full system architecture report |
 | `docs/zone_failure_class_mapping.md` | The 18 zones mapped to agent-security failure classes |
 | `docs/zone_detection_mapping.md` | Per-zone expected telemetry signatures (detection-as-pass) |
+| `redteam_model/REPORT.md` | Custom red-team model — full build report (data, training, eval) |
+| `redteam_model/INSTRUCTIONS.md` | Custom red-team model — run / call / export / redeploy |
 | `docs/superpowers/specs/` | The 17 upgrade specs + the wave roadmap |
 | `.agents/` | Workload split, interface contracts, component specs |
 
@@ -398,6 +437,8 @@ autonomous loop through the `monkeyclaw` CLI.
 - **OpenClaw** agent framework
 - **NVIDIA Nemotron** (`nemotron-3-super-120b-a12b` workhorse; `-nano` cheap
   tier; `-ultra` heavy tier; `nemotron-content-safety-reasoning-4b` safety judge)
+- **Custom red-team model** — `Nemotron-3-Nano-4B` distilled via LoRA SFT for
+  the `red_ideation` role (see [`redteam_model/`](redteam_model/))
 - **NVIDIA NemoClaw** sandbox runtime
 - **MCP** (Model Context Protocol) for agent–tool communication
 
